@@ -54,6 +54,53 @@ class StreamProfileRuleEvaluator
     }
 
     /**
+     * Public flattening helper so other features (e.g. conditional
+     * Find & Replace) can reuse the exact same probe context shape used
+     * by adaptive stream profile rules.
+     *
+     * @return array<string, mixed>
+     */
+    public function buildProbeContext(?array $streamStats): array
+    {
+        return $this->buildContext($streamStats);
+    }
+
+    /**
+     * Evaluate a list of {field, op, value} conditions against probed
+     * stream stats. Supports both "all" (AND, default) and "any" (OR)
+     * match modes. Returns false when the condition list is empty so
+     * callers can treat "no conditions" as "do not gate".
+     *
+     * @param  array<int, array<string, mixed>>  $conditions
+     */
+    public function matches(array $conditions, ?array $streamStats, string $mode = 'all'): bool
+    {
+        if (empty($conditions)) {
+            return false;
+        }
+
+        $context = $this->buildContext($streamStats);
+        $mode = strtolower($mode) === 'any' ? 'any' : 'all';
+
+        foreach ($conditions as $condition) {
+            if (! is_array($condition)) {
+                continue;
+            }
+
+            $matched = $this->conditionMatches($condition, $context);
+
+            if ($mode === 'any' && $matched) {
+                return true;
+            }
+            if ($mode === 'all' && ! $matched) {
+                return false;
+            }
+        }
+
+        return $mode === 'all';
+    }
+
+    /**
      * Flatten the probe payload into a single dot-keyed map so condition
      * lookups become a flat array access. Picks the first video stream,
      * the first audio stream, and the format object — that's what users
@@ -82,6 +129,12 @@ class StreamProfileRuleEvaluator
                 $context['video.bit_rate'] = $this->numeric($stream['bit_rate'] ?? null);
                 $context['video.frame_rate'] = $this->parseFrameRate($stream['avg_frame_rate'] ?? null);
                 $context['video.display_aspect_ratio'] = $stream['display_aspect_ratio'] ?? null;
+                // Synthetic "1920x1080" string built from width × height. Lets
+                // rule authors match resolution as one value instead of having
+                // to combine width AND height conditions.
+                $context['video.resolution'] = ($context['video.width'] !== null && $context['video.height'] !== null)
+                    ? ((int) $context['video.width']).'x'.((int) $context['video.height'])
+                    : null;
                 $videoSeen = true;
 
                 continue;

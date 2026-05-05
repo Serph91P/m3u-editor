@@ -42,6 +42,7 @@ use App\Rules\Cron;
 use App\Rules\UrlIsAllowed;
 use App\Services\DateFormatService;
 use App\Services\EpgCacheService;
+use App\Services\FindReplaceService;
 use App\Services\M3uProxyService;
 use App\Services\ProfileService;
 use App\Tables\Columns\ProgressColumn;
@@ -2185,6 +2186,11 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->label(__('Replace with'))
                                 ->placeholder(__('Leave empty to remove'))
                                 ->columnSpan(3),
+                            Fieldset::make(__('Conditional on probe data'))
+                                ->columnSpanFull()
+                                ->visible(fn (Get $get): bool => FindReplaceService::targetSupportsProbeConditions((string) ($get('target') ?? 'channels')))
+                                ->columns(2)
+                                ->schema(FindReplaceService::getConditionsSchema()),
                         ])
                         ->columns(7)
                         ->reorderable()

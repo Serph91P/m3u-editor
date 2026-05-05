@@ -64,6 +64,9 @@ class RunPlaylistFindReplaceRules implements ShouldQueue
                     playlist_id: $this->playlist->id,
                     silent: true,
                     is_vod: false,
+                    conditions: self::ruleConditions($rule),
+                    conditions_match_mode: $rule['conditions_match_mode'] ?? 'all',
+                    require_probe_data: (bool) ($rule['require_probe_data'] ?? false),
                 ))->handle();
                 $liveChannelRulesRun++;
             } elseif ($target === 'vod_channels') {
@@ -77,6 +80,9 @@ class RunPlaylistFindReplaceRules implements ShouldQueue
                     playlist_id: $this->playlist->id,
                     silent: true,
                     is_vod: true,
+                    conditions: self::ruleConditions($rule),
+                    conditions_match_mode: $rule['conditions_match_mode'] ?? 'all',
+                    require_probe_data: (bool) ($rule['require_probe_data'] ?? false),
                 ))->handle();
                 $vodChannelRulesRun++;
             } elseif ($target === 'series') {
@@ -156,5 +162,44 @@ class RunPlaylistFindReplaceRules implements ShouldQueue
             ->body("Ran {$summary} for \"{$this->playlist->name}\" in {$completedIn}s.")
             ->broadcast($user)
             ->sendToDatabase($user);
+    }
+
+    /**
+     * Pull the {field, op, value} list from a saved rule, normalising
+     * any persisted "comma string" values for `in`/`not_in` operators
+     * back into arrays. Returns an empty array when the rule's
+     * `conditions_enabled` flag is off so the gating in the job is a no-op.
+     *
+     * @param  array<string, mixed>  $rule
+     * @return array<int, array<string, mixed>>
+     */
+    private static function ruleConditions(array $rule): array
+    {
+        if (! ($rule['conditions_enabled'] ?? false)) {
+            return [];
+        }
+
+        $conditions = $rule['conditions'] ?? [];
+        if (! is_array($conditions)) {
+            return [];
+        }
+
+        $normalised = [];
+        foreach ($conditions as $condition) {
+            if (! is_array($condition) || empty($condition['field']) || empty($condition['op'])) {
+                continue;
+            }
+            $value = $condition['value'] ?? null;
+            if (in_array($condition['op'], ['in', 'not_in'], true) && is_string($value)) {
+                $value = array_values(array_filter(array_map('trim', explode(',', $value)), fn ($v) => $v !== ''));
+            }
+            $normalised[] = [
+                'field' => $condition['field'],
+                'op' => $condition['op'],
+                'value' => $value,
+            ];
+        }
+
+        return $normalised;
     }
 }

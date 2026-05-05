@@ -12,6 +12,7 @@ use App\Jobs\MapPlaylistChannelsToEpg;
 use App\Models\Channel;
 use App\Models\Playlist;
 use App\Services\EpgCacheService;
+use App\Services\FindReplaceService;
 use App\Services\PlaylistService;
 use App\Traits\RenderlessColumnUpdates;
 use Filament\Actions\Action;
@@ -176,6 +177,7 @@ class ListChannels extends ListRecords
                                     $set('column', $rule['column'] ?? 'title');
                                     $set('find_replace', $rule['find_replace'] ?? '');
                                     $set('replace_with', $rule['replace_with'] ?? '');
+                                    FindReplaceService::applyConditionsFromSavedRule($rule, $set);
                                 })
                                 ->dehydrated(false),
                             Toggle::make('all_playlists')
@@ -219,6 +221,7 @@ class ListChannels extends ListRecords
                             TextInput::make('replace_with')
                                 ->label(__('Replace with (optional)'))
                                 ->placeholder(__('Leave empty to remove')),
+                            ...FindReplaceService::getConditionsSchema(),
                         ];
                     })
                     ->action(function (array $data): void {
@@ -230,7 +233,10 @@ class ListChannels extends ListRecords
                                 use_regex: $data['use_regex'] ?? true,
                                 column: $data['column'] ?? 'title',
                                 find_replace: $data['find_replace'] ?? null,
-                                replace_with: $data['replace_with'] ?? ''
+                                replace_with: $data['replace_with'] ?? '',
+                                conditions: FindReplaceService::normaliseConditionsFromFormData($data),
+                                conditions_match_mode: $data['conditions_match_mode'] ?? 'all',
+                                require_probe_data: (bool) ($data['require_probe_data'] ?? false),
                             ));
                     })->after(function () {
                         Notification::make()

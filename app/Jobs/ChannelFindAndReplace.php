@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Channel;
 use App\Models\User;
+use App\Services\StreamProfileRuleEvaluator;
 use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Collection;
@@ -16,6 +17,11 @@ class ChannelFindAndReplace implements ShouldQueue
 
     /**
      * Create a new job instance.
+     *
+     * @param  array<int, array<string, mixed>>  $conditions  Optional probe-data
+     *         conditions in the same shape as StreamProfile rule conditions
+     *         ({field, op, value}). When non-empty, rows whose
+     *         channels.stream_stats does not satisfy them are skipped.
      */
     public function __construct(
         public int $user_id, // The ID of the user who owns the playlist
@@ -28,6 +34,9 @@ class ChannelFindAndReplace implements ShouldQueue
         public ?int $playlist_id = null,
         public bool $silent = false,
         public ?bool $is_vod = null,
+        public array $conditions = [],
+        public string $conditions_match_mode = 'all',
+        public bool $require_probe_data = false,
     ) {
         //
     }
@@ -107,8 +116,27 @@ class ChannelFindAndReplace implements ShouldQueue
         $updatesMap = [];
         $find = $this->find_replace;
         $replace = $this->replace_with;
+        $hasConditions = ! empty($this->conditions);
+        $evaluator = $hasConditions ? app(StreamProfileRuleEvaluator::class) : null;
 
         foreach ($channels as $channel) {
+            // Probe-data gate: when conditions are configured, the channel
+            // must satisfy them before the find/replace is applied.
+            if ($hasConditions) {
+                $stats = $channel->stream_stats ?? null;
+                if (empty($stats)) {
+                    if ($this->require_probe_data) {
+                        continue;
+                    }
+                    // Without probe data no condition can match; treat as
+                    // "did not match" and skip the row.
+                    continue;
+                }
+                if (! $evaluator->matches($this->conditions, $stats, $this->conditions_match_mode)) {
+                    continue;
+                }
+            }
+
             $newValue = null;
 
             // Check if this is a JSON column

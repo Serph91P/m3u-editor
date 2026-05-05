@@ -27,6 +27,7 @@ use App\Models\Playlist;
 use App\Models\StreamProfile;
 use App\Rules\CheckIfUrlOrLocalPath;
 use App\Services\DateFormatService;
+use App\Services\FindReplaceService;
 use App\Services\LogoCacheService;
 use App\Services\PlaylistService;
 use App\Services\TmdbService;
@@ -1057,6 +1058,7 @@ class VodResource extends Resource implements CopilotResource
                                     $set('column', $rule['column'] ?? 'title');
                                     $set('find_replace', $rule['find_replace'] ?? '');
                                     $set('replace_with', $rule['replace_with'] ?? '');
+                                    FindReplaceService::applyConditionsFromSavedRule($rule, $set);
                                 })
                                 ->dehydrated(false),
                             Toggle::make('use_regex')
@@ -1090,6 +1092,7 @@ class VodResource extends Resource implements CopilotResource
                             TextInput::make('replace_with')
                                 ->label(__('Replace with (optional)'))
                                 ->placeholder(__('Leave empty to remove')),
+                            ...FindReplaceService::getConditionsSchema(),
                         ];
                     })
                     ->action(function (Collection $records, array $data): void {
@@ -1100,7 +1103,10 @@ class VodResource extends Resource implements CopilotResource
                                 column: $data['column'] ?? 'title',
                                 find_replace: $data['find_replace'] ?? null,
                                 replace_with: $data['replace_with'] ?? '',
-                                channels: $records
+                                channels: $records,
+                                conditions: FindReplaceService::normaliseConditionsFromFormData($data),
+                                conditions_match_mode: $data['conditions_match_mode'] ?? 'all',
+                                require_probe_data: (bool) ($data['require_probe_data'] ?? false),
                             ));
                     })->after(function () {
                         Notification::make()
