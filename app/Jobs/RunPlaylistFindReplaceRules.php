@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Playlist;
 use App\Models\User;
+use App\Services\FindReplaceService;
 use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -165,10 +166,11 @@ class RunPlaylistFindReplaceRules implements ShouldQueue
     }
 
     /**
-     * Pull the {field, op, value} list from a saved rule, normalising
-     * any persisted "comma string" values for `in`/`not_in` operators
-     * back into arrays. Returns an empty array when the rule's
-     * `conditions_enabled` flag is off so the gating in the job is a no-op.
+     * Pull the {field, op, value} list from a saved rule. Returns an empty
+     * array when the rule's `conditions_enabled` flag is off so the gating
+     * in the job is a no-op. Delegates the per-condition normalisation to
+     * {@see FindReplaceService::normaliseConditions()} so the form payload
+     * and persisted rule paths stay in sync.
      *
      * @param  array<string, mixed>  $rule
      * @return array<int, array<string, mixed>>
@@ -179,27 +181,6 @@ class RunPlaylistFindReplaceRules implements ShouldQueue
             return [];
         }
 
-        $conditions = $rule['conditions'] ?? [];
-        if (! is_array($conditions)) {
-            return [];
-        }
-
-        $normalised = [];
-        foreach ($conditions as $condition) {
-            if (! is_array($condition) || empty($condition['field']) || empty($condition['op'])) {
-                continue;
-            }
-            $value = $condition['value'] ?? null;
-            if (in_array($condition['op'], ['in', 'not_in'], true) && is_string($value)) {
-                $value = array_values(array_filter(array_map('trim', explode(',', $value)), fn ($v) => $v !== ''));
-            }
-            $normalised[] = [
-                'field' => $condition['field'],
-                'op' => $condition['op'],
-                'value' => $value,
-            ];
-        }
-
-        return $normalised;
+        return FindReplaceService::normaliseConditions($rule['conditions'] ?? []);
     }
 }

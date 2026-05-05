@@ -121,15 +121,13 @@ class ChannelFindAndReplace implements ShouldQueue
 
         foreach ($channels as $channel) {
             // Probe-data gate: when conditions are configured, the channel
-            // must satisfy them before the find/replace is applied.
+            // must satisfy them before the find/replace is applied. Channels
+            // without probe data can't satisfy any condition so they are
+            // always skipped — `require_probe_data` only affects whether a
+            // future improvement might surface a warning to the user.
             if ($hasConditions) {
                 $stats = $channel->stream_stats ?? null;
                 if (empty($stats)) {
-                    if ($this->require_probe_data) {
-                        continue;
-                    }
-                    // Without probe data no condition can match; treat as
-                    // "did not match" and skip the row.
                     continue;
                 }
                 if (! $evaluator->matches($this->conditions, $stats, $this->conditions_match_mode)) {

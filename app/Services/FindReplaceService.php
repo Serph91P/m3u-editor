@@ -401,21 +401,16 @@ class FindReplaceService
     }
 
     /**
-     * Normalise a Filament form payload into the {field, op, value} shape
-     * understood by {@see \App\Services\StreamProfileRuleEvaluator::matches()}.
-     * Returns `[]` when conditions are not enabled so callers can pass the
-     * result straight through to the job constructor.
+     * Normalise a raw conditions array (from a Filament payload or a
+     * persisted rule) into the {field, op, value} shape understood by
+     * {@see \App\Services\StreamProfileRuleEvaluator::matches()}. Strings
+     * passed for `in`/`not_in` operators are split on commas.
      *
-     * @param  array<string, mixed>  $data
+     * @param  mixed  $conditions
      * @return array<int, array<string, mixed>>
      */
-    public static function normaliseConditionsFromFormData(array $data): array
+    public static function normaliseConditions($conditions): array
     {
-        if (! ($data['conditions_enabled'] ?? false)) {
-            return [];
-        }
-
-        $conditions = $data['conditions'] ?? [];
         if (! is_array($conditions)) {
             return [];
         }
@@ -441,5 +436,22 @@ class FindReplaceService
         }
 
         return $normalised;
+    }
+
+    /**
+     * Normalise a Filament form payload, returning `[]` when conditions
+     * are not enabled so callers can pass the result straight through to
+     * the job constructor.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<int, array<string, mixed>>
+     */
+    public static function normaliseConditionsFromFormData(array $data): array
+    {
+        if (! ($data['conditions_enabled'] ?? false)) {
+            return [];
+        }
+
+        return self::normaliseConditions($data['conditions'] ?? []);
     }
 }
