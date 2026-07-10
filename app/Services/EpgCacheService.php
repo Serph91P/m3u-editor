@@ -248,18 +248,18 @@ class EpgCacheService
                 break;
             case 'previously-shown':
                 // The <previously-shown> element may carry start/channel attributes;
-                // only the boolean presence is recorded — attributes are intentionally ignored.
+                // only the boolean presence is recorded - attributes are intentionally ignored.
                 $programme['previously_shown'] = true;
                 break;
             case 'premiere':
                 // The <premiere> element may carry text content (a description);
-                // only the boolean presence is recorded — content is intentionally ignored.
+                // only the boolean presence is recorded - content is intentionally ignored.
                 $programme['premiere'] = true;
                 break;
             case 'episode-num':
-                $episodeNumValue = trim($reader->readString() ?: '');
+                $episodeNumValue = trim($reader->readString());
                 $episodeNumSystem = trim((string) ($reader->getAttribute('system') ?: ''));
-                if ($episodeNumValue !== '') {
+                if ($episodeNumValue !== '' && ($episodeNumSystem !== 'xmltv_ns' || $this->isValidXmltvNamespaceEpisodeNumber($episodeNumValue))) {
                     if ($programme['episode_num'] === '') {
                         $programme['episode_num'] = $episodeNumValue;
                     }
@@ -297,6 +297,14 @@ class EpgCacheService
                 }
                 break;
         }
+    }
+
+    private function isValidXmltvNamespaceEpisodeNumber(string $value): bool
+    {
+        $valueWithoutWhitespace = preg_replace('/\s+/', '', $value);
+
+        return $valueWithoutWhitespace !== '..'
+            && preg_match('/^(?:\d+(?:\/[1-9]\d*)?)?\.(?:\d+(?:\/[1-9]\d*)?)?\.(?:\d+(?:\/[1-9]\d*)?)?$/', $valueWithoutWhitespace) === 1;
     }
 
     /**
@@ -1218,7 +1226,7 @@ class EpgCacheService
      * Clear EPG file caches for all playlist types (source, custom, merged, aliases)
      * that contain any of the given channel IDs.
      *
-     * Executes 4 DB queries then one bulk Storage::delete — no model hydration, no N+1.
+     * Executes 4 DB queries then one bulk Storage::delete - no model hydration, no N+1.
      */
     public static function clearForChannelIds(array $channelIds): void
     {

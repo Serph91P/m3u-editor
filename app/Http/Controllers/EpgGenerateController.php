@@ -41,6 +41,55 @@ class EpgGenerateController extends Controller
     }
 
     /**
+     * @param  array<string, mixed>  $programme
+     * @return array<int, array{system: string, value: string}>
+     */
+    private function episodeNumbersForProgramme(array $programme): array
+    {
+        if (! array_key_exists('episode_nums', $programme)) {
+            $legacyEpisodeNumber = trim((string) ($programme['episode_num'] ?? ''));
+
+            return $this->isValidXmltvNamespaceEpisodeNumber($legacyEpisodeNumber)
+                ? [['system' => 'xmltv_ns', 'value' => $legacyEpisodeNumber]]
+                : [];
+        }
+
+        if (! is_array($programme['episode_nums'])) {
+            return [];
+        }
+
+        $episodeNumbers = [];
+
+        foreach ($programme['episode_nums'] as $episodeNumber) {
+            if (! is_array($episodeNumber)) {
+                continue;
+            }
+
+            $system = trim((string) ($episodeNumber['system'] ?? ''));
+            $value = trim((string) ($episodeNumber['value'] ?? ''));
+
+            if ($value === '' || ($system === 'xmltv_ns' && ! $this->isValidXmltvNamespaceEpisodeNumber($value))) {
+                continue;
+            }
+
+            $episodeNumbers[] = [
+                'system' => $system,
+                'value' => $value,
+            ];
+        }
+
+        return $episodeNumbers;
+    }
+
+    private function isValidXmltvNamespaceEpisodeNumber(string $value): bool
+    {
+        $valueWithoutWhitespace = preg_replace('/\s+/', '', $value);
+
+        return $valueWithoutWhitespace !== '..'
+            && preg_match('/^(?:\d+(?:\/[1-9]\d*)?)?\.(?:\d+(?:\/[1-9]\d*)?)?\.(?:\d+(?:\/[1-9]\d*)?)?$/', $valueWithoutWhitespace) === 1;
+    }
+
+    /**
      * Generate the EPG XML file
      *
      * @return Response
@@ -382,8 +431,8 @@ class EpgGenerateController extends Controller
                                 if ($programme['category']) {
                                     $progXml .= '    <category>'.$this->escapeXml($programme['category']).'</category>'.PHP_EOL;
                                 }
-                                if ($programme['episode_num']) {
-                                    $progXml .= '    <episode-num system="xmltv_ns">'.$this->escapeXml($programme['episode_num']).'</episode-num>'.PHP_EOL;
+                                foreach ($this->episodeNumbersForProgramme($programme) as $episodeNumber) {
+                                    $progXml .= '    <episode-num system="'.$this->escapeXml($episodeNumber['system']).'">'.$this->escapeXml($episodeNumber['value']).'</episode-num>'.PHP_EOL;
                                 }
                                 if ($programme['icon']) {
                                     $icon = $logoProxyEnabled
@@ -463,7 +512,6 @@ class EpgGenerateController extends Controller
             foreach ($dummyEpgChannels as $dummyEpgChannel) {
                 $tvgId = $this->escapeXml($dummyEpgChannel['tvg_id']);
                 $title = $dummyEpgChannel['title'];
-                $icon = $dummyEpgChannel['icon'];
                 $group = $this->escapeXml($dummyEpgChannel['group']);
                 $includeCategory = $dummyEpgChannel['include_category'];
                 $aedProfileId = $dummyEpgChannel['aed_profile_id'] ?? null;
@@ -479,7 +527,7 @@ class EpgGenerateController extends Controller
 
                     $aedIcon = $aedProfile->logo_url
                         ? $this->escapeXml($aedProfile->logo_url)
-                        : $icon;
+                        : null;
                     $aedCategory = $aedProfile->category
                         ? $this->escapeXml($aedProfile->category)
                         : ($includeCategory ? $group : null);
@@ -552,7 +600,7 @@ class EpgGenerateController extends Controller
                             }
                         }
                     } else {
-                        // Extraction failed or no time — use AED title with standard repeating slots
+                        // Extraction failed or no time - use AED title with standard repeating slots
                         $aedTitle = $this->escapeXml($aedEvent->title);
                         $aedDesc = $aedEvent->description
                             ? $this->escapeXml($aedEvent->description)
@@ -583,9 +631,6 @@ class EpgGenerateController extends Controller
                     foreach ($timeSlots as $slot) {
                         $buffer .= '  <programme channel="'.$tvgId.'" start="'.$slot['start'].'" stop="'.$slot['end'].'">'.PHP_EOL;
                         $buffer .= '    <title>'.$title.'</title>'.PHP_EOL;
-                        if ($icon) {
-                            $buffer .= '    <icon src="'.$icon.'"/>'.PHP_EOL;
-                        }
                         $buffer .= '    <desc>'.$title.'</desc>'.PHP_EOL;
                         if ($includeCategory) {
                             $buffer .= '    <category lang="en">'.$group.'</category>'.PHP_EOL;
