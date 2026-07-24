@@ -108,3 +108,30 @@ it('job continues to remaining devices when one delivery fails', function () {
 
     Http::assertSentCount(2);
 });
+
+// ── PushDeviceToken pruning ────────────────────────────────────────────────────────
+
+it('prunes devices that have not checked in within the configured window', function () {
+    config(['services.push_relay.stale_days' => 60]);
+
+    $stale = PushDeviceToken::factory()->for($this->playlist, 'notifiable')
+        ->create(['last_seen_at' => now()->subDays(61)]);
+    $fresh = PushDeviceToken::factory()->for($this->playlist, 'notifiable')
+        ->create(['last_seen_at' => now()->subDays(59)]);
+
+    $stale->pruneAll();
+
+    expect(PushDeviceToken::find($stale->id))->toBeNull();
+    expect(PushDeviceToken::find($fresh->id))->not->toBeNull();
+});
+
+it('does not prune a device right at the edge of the window', function () {
+    config(['services.push_relay.stale_days' => 60]);
+
+    $device = PushDeviceToken::factory()->for($this->playlist, 'notifiable')
+        ->create(['last_seen_at' => now()->subDays(60)->addMinute()]);
+
+    $device->pruneAll();
+
+    expect(PushDeviceToken::find($device->id))->not->toBeNull();
+});

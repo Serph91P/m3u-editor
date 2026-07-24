@@ -1044,7 +1044,6 @@ class Preferences extends SettingsPage
                                             ->label(__('Send Push Notification'))
                                             ->icon('heroicon-o-paper-airplane')
                                             ->color('gray')
-                                            ->size('sm')
                                             ->visible(fn (Get $get): bool => (bool) $get('push_relay_enabled') && app(PushRelayService::class)->isEnabled())
                                             ->schema([
                                                 Select::make('device_id')
@@ -1093,6 +1092,12 @@ class Preferences extends SettingsPage
                                                         ->send();
                                                 }
                                             }),
+                                        Action::make('view_relay_status')
+                                            ->label(__('View Relay Status'))
+                                            ->icon('heroicon-o-arrow-top-right-on-square')
+                                            ->url(config('services.push_relay.status_monitor_url'))
+                                            ->openUrlInNewTab()
+                                            ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled') || ! app(PushRelayService::class)->isEnabled()),
                                     ])
                                     ->schema([
                                         Toggle::make('push_relay_enabled')

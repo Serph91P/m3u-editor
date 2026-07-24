@@ -35,6 +35,7 @@ use App\Filament\Resources\PlaylistViewers\PlaylistViewerResource;
 use App\Filament\Resources\PluginInstallReviews\PluginInstallReviewResource;
 use App\Filament\Resources\Plugins\PluginResource;
 use App\Filament\Resources\PostProcesses\PostProcessResource;
+use App\Filament\Resources\PushDeviceTokens\PushDeviceTokenResource;
 use App\Filament\Resources\QueueMonitor\QueueMonitorResource;
 use App\Filament\Resources\Series\SeriesResource;
 use App\Filament\Resources\StreamFileSettings\StreamFileSettingResource;
@@ -185,6 +186,7 @@ class AdminPanelProvider extends PanelProvider
                                 ->icon('heroicon-s-shield-check')
                                 ->items([
                                     ...(config('auth.auto_login') ? [] : UserResource::getNavigationItems()),
+                                    ...PushDeviceTokenResource::getNavigationItems(),
                                     ...Preferences::getNavigationItems(),
                                 ]),
                         ] : []),
