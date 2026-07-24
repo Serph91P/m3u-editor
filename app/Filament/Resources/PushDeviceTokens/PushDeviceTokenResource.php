@@ -15,7 +15,6 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Resources\Resource;
-use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\RecordActionsPosition;
 use Filament\Tables\Filters\Filter;
@@ -30,7 +29,7 @@ class PushDeviceTokenResource extends Resource implements CopilotResource
 
     protected static ?string $model = PushDeviceToken::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedDevicePhoneMobile;
+    protected static string|BackedEnum|null $navigationIcon = null;
 
     public static function getNavigationLabel(): string
     {
