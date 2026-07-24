@@ -346,7 +346,7 @@ class ProcessEpgImport implements ShouldQueue
                                             if (! $elementData['display_name']) {
                                                 // Only use the first display-name element (could be multiple)
                                                 $rawDisplayName = trim($innerReader->readString());
-                                                $elementData['name'] = $this->sanitizeUtf8(Str::limit($rawDisplayName, 255));
+                                                $elementData['name'] = $this->sanitizeUtf8(Str::limit($rawDisplayName, 500, ''));
                                                 $elementData['display_name'] = $this->sanitizeUtf8($rawDisplayName);
                                                 $elementData['lang'] = trim($innerReader->getAttribute('lang'));
                                             } else {
