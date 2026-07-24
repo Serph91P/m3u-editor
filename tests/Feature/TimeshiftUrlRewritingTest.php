@@ -233,6 +233,82 @@ it('uses primary channel URL for timeshift when it has catchup support', functio
         ->not->toContain('sd-stream');
 });
 
+it('falls back to the channel catchup_source template when the upstream URL is not Xtream-shaped (xtream-format request)', function () {
+    // Regression test for issue #1317: plain M3U catch-up providers (e.g. EPGenius) are not
+    // Xtream servers, so their channel URLs never match the `/live/user/pass/id.ext` shape the
+    // rewrite regex expects. Previously this silently returned the untouched live URL — the
+    // channel's own catchup-source URL template (captured on import) must be used instead.
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'url' => 'https://provider.example/stream/464938/playlist.m3u8',
+        'catchup' => 'append',
+        'catchup_source' => 'https://provider.example/archive/464938?utc=${start}&lutc=${end}&offset=${duration}',
+    ]);
+
+    $request = Request::create('/timeshift/user/pass/30/2024-12-01:15-30-00/464938.ts');
+    $request->merge([
+        'timeshift_duration' => 30,
+        'timeshift_date' => '2024-12-01:15-30-00',
+    ]);
+
+    $result = PlaylistService::generateTimeshiftUrl($request, $channel->url, $this->playlist, $channel);
+
+    expect($result)
+        ->toContain('https://provider.example/archive/464938')
+        ->not->toContain('${start}')
+        ->toContain('offset=30');
+});
+
+it('falls back to the channel catchup_source template when the upstream URL is not Xtream-shaped (TiviMate utc request)', function () {
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'url' => 'https://provider.example/stream/464938/playlist.m3u8',
+        'catchup' => 'append',
+        'catchup_source' => 'https://provider.example/archive/464938?utc={start}&duration={duration}',
+    ]);
+
+    $utc = time() - 1800;
+    $lutc = time();
+    $request = Request::create('/live/user/pass/464938.ts', 'GET', [
+        'utc' => $utc,
+        'lutc' => $lutc,
+    ]);
+
+    $result = PlaylistService::generateTimeshiftUrl($request, $channel->url, $this->playlist, $channel);
+
+    expect($result)
+        ->toContain('https://provider.example/archive/464938')
+        ->toContain('utc='.$utc)
+        ->toContain('duration=30');
+});
+
+it('still prefers the standard Xtream rewrite over catchup_source when the upstream URL matches the Xtream shape', function () {
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'url' => 'https://provider.domain/live/user/pass/464938.ts',
+        'catchup' => '1',
+        'catchup_source' => 'https://should-not-be-used.example/${start}',
+    ]);
+
+    $request = Request::create('/timeshift/user/pass/30/2024-12-01:15-30-00/464938.ts');
+    $request->merge([
+        'timeshift_duration' => 30,
+        'timeshift_date' => '2024-12-01:15-30-00',
+    ]);
+
+    $result = PlaylistService::generateTimeshiftUrl($request, $channel->url, $this->playlist, $channel);
+
+    expect($result)
+        ->toContain('/timeshift/')
+        ->not->toContain('should-not-be-used');
+});
+
 it('preserves original URL when timeshift parameters are absent', function () {
     $request = Request::create('/live/user/pass/123.ts');
 

@@ -8,6 +8,7 @@ use App\Jobs\MergeEpisodes;
 use App\Jobs\UnmergeChannels;
 use App\Jobs\UnmergeEpisodes;
 use App\Models\Category;
+use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
 use App\Models\MergedPlaylist;
@@ -698,9 +699,8 @@ class PlaylistService
      * Generate a timeshift URL for a given stream.
      *
      * @param  Playlist|MergedPlaylist|CustomPlaylist|PlaylistAlias  $playlist
-     * @return string
      */
-    public static function generateTimeshiftUrl(Request $request, string $streamUrl, $playlist)
+    public static function generateTimeshiftUrl(Request $request, string $streamUrl, $playlist, ?Channel $channel = null): string
     {
         // TiviMate sends utc/lutc as UNIX epochs (UTC). We only convert TZ + format.
         $utcPresent = $request->filled('utc');
@@ -725,7 +725,7 @@ class PlaylistService
             $offset = max(1, (int) ceil(max(0, $lutc - $utc) / 60));
 
             // "…://host/live/u/p/<id>.<ext>" >>> "…://host/streaming/timeshift.php?username=u&password=p&stream=id&start=stamp&duration=offset"
-            $rewrite = static function (string $url, string $stamp, int $offset): string {
+            $rewrite = static function (string $url, string $stamp, int $offset) use ($channel, $utc, $lutc): string {
                 if (preg_match('~^(https?://[^/]+)/live/([^/]+)/([^/]+)/([^/]+)\.[^/]+$~', $url, $m)) {
                     [$_, $base, $user, $pass, $id] = $m;
 
@@ -740,7 +740,14 @@ class PlaylistService
                     );
                 }
 
-                return $url; // fallback if pattern does not match
+                // Upstream isn't itself an Xtream server, so there's no `/timeshift/` endpoint to
+                // rewrite to. Fall back to the provider's own catchup-source URL template, if one
+                // was captured on import (e.g. plain M3U catch-up providers like EPGenius).
+                if ($channel?->catchup_source) {
+                    return self::applyCatchupSourceTemplate($channel->catchup_source, $utc, $lutc, $offset);
+                }
+
+                return $url; // fallback if pattern does not match and no catchup_source template available
             };
         } elseif ($xtreamTimeshiftPresent) {
             /* ── Timeshift SETUP (Xtream API → Xtream API format) ─────────────────── */
@@ -749,8 +756,12 @@ class PlaylistService
             $duration = (int) $request->get('timeshift_duration'); // Duration in minutes
             $date = $request->get('timeshift_date'); // Format: YYYY-MM-DD:HH-MM-SS
 
+            // Programme start as a UTC epoch, used only for the catchup_source template fallback
+            // below. Set once the date has been parsed, further down.
+            $startEpoch = null;
+
             // "…://host/live/u/p/<id>.<ext>" >>> "…://host/timeshift/u/p/duration/stamp/<id>.<ext>"
-            $rewrite = static function (string $url, string $stamp, int $offset): string {
+            $rewrite = static function (string $url, string $stamp, int $offset) use ($channel, &$startEpoch): string {
                 if (preg_match('~^(https?://[^/]+)/live/([^/]+)/([^/]+)/([^/]+)\.([^/]+)$~', $url, $m)) {
                     [$_, $base, $user, $pass, $id, $ext] = $m;
 
@@ -766,7 +777,14 @@ class PlaylistService
                     );
                 }
 
-                return $url; // fallback if pattern does not match
+                // Upstream isn't itself an Xtream server, so there's no `/timeshift/` endpoint to
+                // rewrite to. Fall back to the provider's own catchup-source URL template, if one
+                // was captured on import (e.g. plain M3U catch-up providers like EPGenius).
+                if ($channel?->catchup_source && $startEpoch !== null) {
+                    return self::applyCatchupSourceTemplate($channel->catchup_source, $startEpoch, $startEpoch + ($offset * 60), $offset);
+                }
+
+                return $url; // fallback if pattern does not match and no catchup_source template available
             };
         }
         /* ─────────────────────────────────────────────────────────────────── */
@@ -805,9 +823,9 @@ class PlaylistService
             // Using config('app.timezone') keeps this consistent with how the unix-timestamp
             // path in XtreamStreamController formats the date (Carbon::createFromTimestamp uses
             // the PHP default timezone, which Laravel sets to config('app.timezone')).
-            $stamp = Carbon::createFromFormat('Y-m-d:H-i', $stamp, config('app.timezone', 'UTC'))
-                ->setTimezone($providerTz)
-                ->format('Y-m-d:H-i');
+            $startInstant = Carbon::createFromFormat('Y-m-d:H-i', $stamp, config('app.timezone', 'UTC'));
+            $startEpoch = $startInstant->getTimestamp();
+            $stamp = $startInstant->setTimezone($providerTz)->format('Y-m-d:H-i');
 
             $streamUrl = $rewrite($streamUrl, $stamp, $duration);
 
@@ -822,6 +840,32 @@ class PlaylistService
         }
 
         return $streamUrl;
+    }
+
+    /**
+     * Fill a provider's catchup-source URL template with the requested timeshift window.
+     *
+     * Providers advertise their own catchup URL grammar via the M3U `catchup-source` attribute,
+     * using placeholder tokens in either `{token}` or `${token}` form (both are seen in the wild).
+     */
+    private static function applyCatchupSourceTemplate(string $template, int $startEpoch, int $endEpoch, int $durationMinutes): string
+    {
+        $tokens = [
+            'start' => $startEpoch,
+            'utc' => $startEpoch,
+            'timestamp' => $startEpoch,
+            'end' => $endEpoch,
+            'offset' => $durationMinutes,
+            'duration' => $durationMinutes,
+        ];
+
+        $replacements = [];
+        foreach ($tokens as $token => $value) {
+            $replacements['{'.$token.'}'] = $value;
+            $replacements['${'.$token.'}'] = $value;
+        }
+
+        return strtr($template, $replacements);
     }
 
     /**

@@ -460,7 +460,7 @@ class XtreamStreamController extends Controller
             ]);
         } else {
             $streamUrl = PlaylistUrlService::getChannelUrl($timeshiftChannel, $playlist);
-            $streamUrl = PlaylistService::generateTimeshiftUrl($request, $streamUrl, $playlist);
+            $streamUrl = PlaylistService::generateTimeshiftUrl($request, $streamUrl, $playlist, $timeshiftChannel);
 
             return Redirect::to($this->applyMediaFlowProxy($streamUrl));
         }

@@ -1241,7 +1241,7 @@ class M3uProxyService
 
         // Check if timeshift parameters are provided
         if ($request && ($request->filled('timeshift_duration') || $request->filled('timeshift_date') || $request->filled('utc'))) {
-            $primaryUrl = PlaylistService::generateTimeshiftUrl($request, $primaryUrl, $playlist);
+            $primaryUrl = PlaylistService::generateTimeshiftUrl($request, $primaryUrl, $playlist, $channel);
         }
 
         $userAgent = $playlist->user_agent;

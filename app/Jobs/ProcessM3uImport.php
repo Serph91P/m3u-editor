@@ -916,8 +916,6 @@ class ProcessM3uImport implements ShouldQueue
                         'channel' => 'tvg-chno',
                         'lang' => 'tvg-language',
                         'country' => 'tvg-country',
-                        'shift' => 'tvg-shift', // deprecated, use 'timeshift' instead
-                        'shift' => 'timeshift', // timeshift in hours, falls back to 'tvg-shift' if not set
                         'catchup' => 'catchup',
                         'catchup_source' => 'catchup-source',
                         'tvg_shift' => 'tvg-shift', // used for EPG shift in hrs (can be negative)
@@ -972,6 +970,22 @@ class ProcessM3uImport implements ShouldQueue
                                                 trim($extTag->getAttribute($attribute))
                                             );
                                         }
+                                    }
+                                }
+
+                                // Catch-up window (in hours, matching Xtream's tv_archive_duration).
+                                // Providers use different attributes for this: 'timeshift'/'tvg-shift' are
+                                // already in hours, while 'catchup-days'/'tvg-rec' express it in days.
+                                // Check in precedence order and stop at the first one present.
+                                foreach ([
+                                    'timeshift' => 1,
+                                    'tvg-shift' => 1,
+                                    'catchup-days' => 24,
+                                    'tvg-rec' => 24,
+                                ] as $shiftAttribute => $hoursPerUnit) {
+                                    if ($extTag->hasAttribute($shiftAttribute)) {
+                                        $channel['shift'] = (int) trim($extTag->getAttribute($shiftAttribute)) * $hoursPerUnit;
+                                        break;
                                     }
                                 }
                             }
