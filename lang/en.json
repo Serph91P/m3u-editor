@@ -860,6 +860,7 @@
     "Encoder Preset": "Encoder Preset",
     "English": "English",
     "English, Spanish, French, etc.": "English, Spanish, French, etc.",
+    "Enhanced Xtream API output is disabled. Please enable that in the \"General\" settings tab to use the TV app.": "Enhanced Xtream API output is disabled. Please enable that in the \"General\" settings tab to use the TV app.",
     "Enhanced output enabled": "Enhanced output enabled",
     "Enhanced stability for live MPEG-TS streams with PVR clients like Kodi and HDHomeRun (only used when not using transcoding profiles).": "Enhanced stability for live MPEG-TS streams with PVR clients like Kodi and HDHomeRun (only used when not using transcoding profiles).",
     "Enter SMTP From Address": "Enter SMTP From Address",

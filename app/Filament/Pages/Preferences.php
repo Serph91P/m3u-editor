@@ -894,6 +894,10 @@ class Preferences extends SettingsPage
 
                         Tab::make(__('TV App'))
                             ->schema([
+                                Callout::make()
+                                    ->warning()
+                                    ->description(__('Enhanced Xtream API output is disabled. Please enable that in the "General" settings tab to use the TV app.'))
+                                    ->hidden(fn (Get $get): bool => (bool) $get('app_output_enabled')),
                                 Section::make(__('TV Notification Tester'))
                                     ->description(__('Send a test notification to a playlist target to verify the TV app notification system is connected and working.'))
                                     ->icon('heroicon-m-bell-alert')
@@ -1098,7 +1102,7 @@ class Preferences extends SettingsPage
                                             ->icon('heroicon-o-arrow-top-right-on-square')
                                             ->url(config('services.push_relay.status_monitor_url'))
                                             ->openUrlInNewTab()
-                                            ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled') || ! app(PushRelayService::class)->isEnabled()),
+                                            ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled')),
                                     ])
                                     ->schema([
                                         Callout::make()
@@ -1112,7 +1116,7 @@ class Preferences extends SettingsPage
                                             ->label(__('Manage Devices'))
                                             ->icon('heroicon-o-device-phone-mobile')
                                             ->url(PushDeviceTokenResource::getUrl())
-                                            ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled') || ! app(PushRelayService::class)->isEnabled()),
+                                            ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled')),
                                     ]),
 
                                 Section::make(__('Notification Channels'))

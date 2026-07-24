@@ -860,6 +860,7 @@
     "Encoder Preset": "编码器预设",
     "English": "英语",
     "English, Spanish, French, etc.": "英语、西班牙语、法语等",
+    "Enhanced Xtream API output is disabled. Please enable that in the \"General\" settings tab to use the TV app.": "增强版 Xtream API 输出已禁用。请在“常规”设置选项卡中启用该功能以使用 TV 应用。",
     "Enhanced output enabled": "增强输出已启用",
     "Enhanced stability for live MPEG-TS streams with PVR clients like Kodi and HDHomeRun (only used when not using transcoding profiles).": "增强使用 Kodi 和 HDHomeRun 等 PVR 客户端的实时 MPEG-TS 流稳定性（仅在不使用转码配置文件时生效）。",
     "Enter SMTP From Address": "输入 SMTP 发件人地址",

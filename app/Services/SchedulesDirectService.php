@@ -57,17 +57,32 @@ class SchedulesDirectService
     // Configuration constants for performance tuning
     private const MAX_STATIONS_PER_SYNC = null;      // Limit stations for faster processing
 
-    private const STATIONS_PER_CHUNK = 50;           // Smaller chunks for speed
+    // SchedulesDirect allows up to 5000 stationIDs per /schedules request; 500 keeps
+    // response size/time comfortably under the server's 10-minute hard cutoff while
+    // cutting the number of requests per sync by 10x versus the old chunk of 50.
+    private const STATIONS_PER_CHUNK = 500;
 
-    private const SCHEDULES_TIMEOUT = 180;           // Reduced timeout
+    private const SCHEDULES_TIMEOUT = 240;           // Bumped alongside the larger chunk size above
 
     private const DEFAULT_TIMEOUT = 60;              // Default timeout
 
     private const CHUNK_DELAY_MICROSECONDS = 50000;  // Reduced delay (50ms)
 
+    // Number of sub-groups each STATIONS_PER_CHUNK-sized /schedules response is split
+    // into for program-fetching/progress purposes. This is a fixed COUNT, not a fixed
+    // entry size: the /schedules response has one element per (stationID, date) pair,
+    // so a fixed entry-size sub-chunk would silently multiply /programs requests with
+    // sd_days_to_import (e.g. size 50 becomes ~7x more requests at 7 days). A fixed
+    // count instead keeps ~10 sd_progress updates (and ~10 /programs requests) per
+    // batch regardless of how many days are configured.
+    private const PROGRESS_STEPS_PER_BATCH = 10;
+
     private const MAX_RETRIES = 2;                   // Fewer retries for speed
 
-    private const PROGRAMS_BATCH_SIZE = 1000;        // Batch size for program requests
+    // SchedulesDirect allows up to 5000 programIDs per /programs request. This response
+    // is streamed straight to disk (see processProgramBatchDirectly's sink()), so there's
+    // no memory cost to requesting the maximum and cutting the number of requests by 5x.
+    private const PROGRAMS_BATCH_SIZE = 5000;
 
     public function __construct()
     {
@@ -1048,99 +1063,109 @@ class SchedulesDirectService
         @ini_set('max_execution_time', 0);
 
         $totalStations = count($stationIds);
-        $totalChunks = ceil($totalStations / self::STATIONS_PER_CHUNK);
+        $totalNetworkChunks = (int) ceil($totalStations / self::STATIONS_PER_CHUNK);
+        $totalProgressSteps = $totalNetworkChunks * self::PROGRESS_STEPS_PER_BATCH;
 
         Log::debug('Starting simplified EPG processing', [
             'epg_id' => $epg->id,
             'total_stations' => $totalStations,
-            'stations_per_chunk' => self::STATIONS_PER_CHUNK,
-            'total_chunks' => $totalChunks,
+            'schedules_request_chunk_size' => self::STATIONS_PER_CHUNK,
+            'progress_steps_per_batch' => self::PROGRESS_STEPS_PER_BATCH,
+            'total_progress_steps' => $totalProgressSteps,
         ]);
 
-        // Process schedules and programs in a single streaming pass
-        $chunkIndex = 0;
+        // Process schedules and programs in a single streaming pass. Schedules are
+        // fetched from SchedulesDirect in large STATIONS_PER_CHUNK batches (fewer
+        // requests), then each batch is split into a fixed COUNT of sub-groups
+        // (PROGRESS_STEPS_PER_BATCH) - not a fixed entry size - so /programs requests
+        // and sd_progress updates stay bounded regardless of sd_days_to_import.
+        $progressStep = 0;
         $totalProgramsWritten = 0;
         foreach ($this->processScheduleChunks($epg->sd_token, $stationIds, $dates) as $scheduleChunk) {
-            // Increment chunk index
-            $chunkIndex++;
-            Log::debug('Processing schedule chunk', [
-                'chunk' => $chunkIndex,
-                'total_chunks' => $totalChunks,
-            ]);
-
-            // Stream through schedule chunk and collect unique program IDs using file-based deduplication
-            $tempProgramIdFile = tempnam(sys_get_temp_dir(), 'epg_programs_chunk_'.$chunkIndex.'_');
-            $programIdHandle = fopen($tempProgramIdFile, 'w');
-            $seenProgramIds = []; // Small lookup table for deduplication
-            $scheduleCount = 0;
-            $programCount = 0;
-            foreach ($scheduleChunk as $schedule) {
-                $scheduleCount++;
-                foreach ($schedule['programs'] ?? [] as $program) {
-                    $programId = $program['programID'];
-                    // Use array key existence check for O(1) deduplication
-                    if (! isset($seenProgramIds[$programId])) {
-                        $seenProgramIds[$programId] = true;
-                        fwrite($programIdHandle, $programId."\n");
-                        $programCount++;
-                    }
-                }
-            }
-
-            // Close the program ID file handle
-            fclose($programIdHandle);
-            Log::debug('Collected program IDs from schedule chunk', [
-                'chunk' => $chunkIndex,
-                'schedules_in_chunk' => $scheduleCount,
-                'unique_program_ids' => $programCount,
-            ]);
-
-            // Fetch programs for this chunk only using streaming batches
-            if ($programCount > 0) {
-                Log::debug('Fetching programs for chunk', [
-                    'chunk' => $chunkIndex,
-                    'program_count' => $programCount,
+            $subChunkSize = max(1, (int) ceil(count($scheduleChunk) / self::PROGRESS_STEPS_PER_BATCH));
+            foreach (array_chunk($scheduleChunk, $subChunkSize) as $scheduleSubChunk) {
+                $progressStep++;
+                Log::debug('Processing schedule sub-chunk', [
+                    'step' => $progressStep,
+                    'total_steps' => $totalProgressSteps,
                 ]);
-                try {
-                    // Stream process programs directly without creating lookup arrays
-                    $chunkProgramsWritten = 0;
-                    $this->streamProcessProgramsDirectly($tempProgramIdFile, $epg->sd_token, $chunkIndex, $scheduleChunk, $file, $chunkProgramsWritten, $artworkCache, $epg);
-                    $totalProgramsWritten += $chunkProgramsWritten;
-                    Log::debug('Chunk completed', [
-                        'chunk' => $chunkIndex,
-                        'programs_written' => $chunkProgramsWritten,
-                        'total_programs_written' => $totalProgramsWritten,
-                    ]);
 
-                    // Update progress
-                    $progress = min(100, (int) (($chunkIndex / $totalChunks) * 100));
-                    $epg->update(['sd_progress' => $progress]);
-                } catch (Exception $e) {
-                    Log::error('Error processing chunk programs', [
-                        'chunk' => $chunkIndex,
-                        'error' => $e->getMessage(),
-                    ]);
-
-                    continue;
-                } finally {
-                    // Clean up temporary file
-                    if (isset($tempProgramIdFile) && file_exists($tempProgramIdFile)) {
-                        unlink($tempProgramIdFile);
+                // Stream through the sub-chunk and collect unique program IDs using file-based deduplication
+                $tempProgramIdFile = tempnam(sys_get_temp_dir(), 'epg_programs_chunk_'.$progressStep.'_');
+                $programIdHandle = fopen($tempProgramIdFile, 'w');
+                $seenProgramIds = []; // Small lookup table for deduplication
+                $scheduleCount = 0;
+                $programCount = 0;
+                foreach ($scheduleSubChunk as $schedule) {
+                    $scheduleCount++;
+                    foreach ($schedule['programs'] ?? [] as $program) {
+                        $programId = $program['programID'];
+                        // Use array key existence check for O(1) deduplication
+                        if (! isset($seenProgramIds[$programId])) {
+                            $seenProgramIds[$programId] = true;
+                            fwrite($programIdHandle, $programId."\n");
+                            $programCount++;
+                        }
                     }
+                }
+
+                // Close the program ID file handle
+                fclose($programIdHandle);
+                Log::debug('Collected program IDs from schedule sub-chunk', [
+                    'step' => $progressStep,
+                    'schedules_in_sub_chunk' => $scheduleCount,
+                    'unique_program_ids' => $programCount,
+                ]);
+
+                // Fetch programs for this sub-chunk only using streaming batches
+                if ($programCount > 0) {
+                    Log::debug('Fetching programs for sub-chunk', [
+                        'step' => $progressStep,
+                        'program_count' => $programCount,
+                    ]);
+                    try {
+                        // Stream process programs directly without creating lookup arrays
+                        $chunkProgramsWritten = 0;
+                        $this->streamProcessProgramsDirectly($tempProgramIdFile, $epg->sd_token, $progressStep, $scheduleSubChunk, $file, $chunkProgramsWritten, $artworkCache, $epg);
+                        $totalProgramsWritten += $chunkProgramsWritten;
+                        Log::debug('Sub-chunk completed', [
+                            'step' => $progressStep,
+                            'programs_written' => $chunkProgramsWritten,
+                            'total_programs_written' => $totalProgramsWritten,
+                        ]);
+                    } catch (Exception $e) {
+                        Log::error('Error processing sub-chunk programs', [
+                            'step' => $progressStep,
+                            'error' => $e->getMessage(),
+                        ]);
+
+                        continue;
+                    } finally {
+                        // Clean up temporary file
+                        if (isset($tempProgramIdFile) && file_exists($tempProgramIdFile)) {
+                            unlink($tempProgramIdFile);
+                        }
+                    }
+                }
+
+                // Update progress
+                $progress = min(100, (int) (($progressStep / $totalProgressSteps) * 100));
+                $epg->update(['sd_progress' => $progress]);
+
+                // Clear sub-chunk from memory
+                unset($scheduleSubChunk, $seenProgramIds);
+
+                // Force garbage collection every few sub-chunks
+                if ($progressStep % 2 === 0) {
+                    gc_collect_cycles();
                 }
             }
 
-            // Clear schedule chunk from memory
-            unset($scheduleChunk, $seenProgramIds);
-
-            // Force garbage collection every few chunks
-            if ($chunkIndex % 2 === 0) {
-                gc_collect_cycles();
-            }
+            unset($scheduleChunk);
         }
         Log::debug('EPG processing completed', [
             'total_programs_written' => $totalProgramsWritten,
-            'chunks_processed' => $chunkIndex,
+            'steps_processed' => $progressStep,
         ]);
     }
 
