@@ -76,6 +76,7 @@ class PushDeviceTokenResource extends Resource implements CopilotResource
             ->defaultSort('last_seen_at', 'desc')
             ->paginated([10, 25, 50, 100])
             ->defaultPaginationPageOption(25)
+            ->emptyStateIcon('heroicon-o-device-phone-mobile')
             ->columns([
                 TextColumn::make('notifiable.user.name')
                     ->label(__('Owner'))

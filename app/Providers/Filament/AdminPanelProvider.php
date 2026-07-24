@@ -114,6 +114,7 @@ class AdminPanelProvider extends PanelProvider
             'copilot_global_tools' => [],
             'copilot_quick_actions' => [],
             'copilot_url' => null,
+            'push_relay_enabled' => true,
         ];
         try {
             $envShowWan = config('dev.show_wan_details', false);
@@ -134,6 +135,7 @@ class AdminPanelProvider extends PanelProvider
                 'copilot_global_tools' => $userPreferences->copilot_global_tools ?? $settings['copilot_global_tools'],
                 'copilot_quick_actions' => $userPreferences->copilot_quick_actions ?? $settings['copilot_quick_actions'],
                 'copilot_url' => $userPreferences->copilot_url ?? $settings['copilot_url'],
+                'push_relay_enabled' => $userPreferences->push_relay_enabled ?? $settings['push_relay_enabled'],
             ];
         } catch (Exception $e) {
             // Ignore
@@ -175,7 +177,7 @@ class AdminPanelProvider extends PanelProvider
             // Explicit navigation replaces auto-discovery. When adding a new Resource or Page,
             // register its getNavigationItems() call in the appropriate group below, or it
             // will not appear in the sidebar.
-            ->navigation(function (NavigationBuilder $builder): NavigationBuilder {
+            ->navigation(function (NavigationBuilder $builder) use ($settings): NavigationBuilder {
                 return $builder
                     ->items([
                         ...CustomDashboard::getNavigationItems(),
@@ -186,7 +188,7 @@ class AdminPanelProvider extends PanelProvider
                                 ->icon('heroicon-s-shield-check')
                                 ->items([
                                     ...(config('auth.auto_login') ? [] : UserResource::getNavigationItems()),
-                                    ...PushDeviceTokenResource::getNavigationItems(),
+                                    ...($settings['push_relay_enabled'] ? PushDeviceTokenResource::getNavigationItems() : []),
                                     ...Preferences::getNavigationItems(),
                                 ]),
                         ] : []),

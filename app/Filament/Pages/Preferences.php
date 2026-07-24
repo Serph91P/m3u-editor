@@ -11,6 +11,7 @@ use App\Filament\CopilotTools\ExecuteDatabaseQueryTool;
 use App\Filament\CopilotTools\GetDatabaseSchemaTool;
 use App\Filament\CopilotTools\SearchDocsTool;
 use App\Filament\Resources\Assets\AssetResource;
+use App\Filament\Resources\PushDeviceTokens\PushDeviceTokenResource;
 use App\Jobs\RestartQueue;
 use App\Models\CustomPlaylist;
 use App\Models\MergedPlaylist;
@@ -899,7 +900,6 @@ class Preferences extends SettingsPage
                                     ->headerActions([
                                         Action::make('send_tv_notification')
                                             ->label(__('Send Notification'))
-                                            ->color('gray')
                                             ->icon('heroicon-o-paper-airplane')
                                             ->modalWidth('2xl')
                                             ->schema([
@@ -1026,6 +1026,7 @@ class Preferences extends SettingsPage
                                             }),
                                         Action::make('get_tv_app')
                                             ->label(__('Download the app'))
+                                            ->color('gray')
                                             ->icon('heroicon-o-arrow-top-right-on-square')
                                             ->url('https://github.com/m3ue/m3u-tv/releases')
                                             ->openUrlInNewTab(true),
@@ -1043,7 +1044,6 @@ class Preferences extends SettingsPage
                                         Action::make('test_push_relay')
                                             ->label(__('Send Push Notification'))
                                             ->icon('heroicon-o-paper-airplane')
-                                            ->color('gray')
                                             ->visible(fn (Get $get): bool => (bool) $get('push_relay_enabled') && app(PushRelayService::class)->isEnabled())
                                             ->schema([
                                                 Select::make('device_id')
@@ -1094,6 +1094,7 @@ class Preferences extends SettingsPage
                                             }),
                                         Action::make('view_relay_status')
                                             ->label(__('View Relay Status'))
+                                            ->color('gray')
                                             ->icon('heroicon-o-arrow-top-right-on-square')
                                             ->url(config('services.push_relay.status_monitor_url'))
                                             ->openUrlInNewTab()
@@ -1107,6 +1108,11 @@ class Preferences extends SettingsPage
                                             ->label(__('Enable push relay'))
                                             ->helperText(__('When enabled, TV notifications are also forwarded to registered mobile devices through the public relay.'))
                                             ->live(),
+                                        Action::make(__('Manage Devices'))
+                                            ->label(__('Manage Devices'))
+                                            ->icon('heroicon-o-device-phone-mobile')
+                                            ->url(PushDeviceTokenResource::getUrl())
+                                            ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled') || ! app(PushRelayService::class)->isEnabled()),
                                     ]),
 
                                 Section::make(__('Notification Channels'))
