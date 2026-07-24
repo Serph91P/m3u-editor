@@ -1243,6 +1243,7 @@
     "Ends": "Se termine",
     "English": "Anglais",
     "English, Spanish, French, etc.": "Anglais, espagnol, français, etc.",
+    "Enhanced Xtream API output is disabled. Please enable that in the \"General\" settings tab to use the TV app.": "La sortie API Xtream améliorée est désactivée. Veuillez l'activer dans l'onglet « Général » pour utiliser l'application TV.",
     "Enhanced output enabled": "Sortie améliorée activée",
     "Enhanced stability for live MPEG-TS streams with PVR clients like Kodi and HDHomeRun (only used when not using transcoding profiles).": "Stabilité améliorée pour les flux MPEG-TS en direct avec des clients PVR comme Kodi et HDHomeRun (utilisé uniquement lorsque vous n'utilisez pas de profils de transcodage).",
     "Enter SMTP From Address": "Entrez l'adresse SMTP de",
