@@ -33,6 +33,10 @@ return [
     */
     'push_relay' => [
         'url' => env('PUSH_RELAY_URL', 'https://push-relay.sparkison.dev'),
+        // Registered device tokens that haven't checked in (via the mobile app's
+        // push/subscribe call) within this many days are pruned by model:prune.
+        'stale_days' => env('PUSH_RELAY_STALE_DAYS', 60),
+        'status_monitor_url' => env('PUSH_RELAY_STATUS_MONITOR_URL', 'https://stats.uptimerobot.com/Zw57JMIDc2'),
     ],
 
     'ses' => [
