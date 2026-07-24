@@ -2669,6 +2669,7 @@
     "The queue workers have been restarted and any pending jobs flushed.": "队列工作进程已重启，所有待处理任务已清空。",
     "The queue workers have been restarted and any pending jobs flushed. You may need to manually sync any Playlists or EPGs that were in progress.": "队列工作进程已重启，所有待处理任务已清空。您可能需要手动同步之前正在处理的播放列表或 EPG。",
     "The rating of the VOD content on a scale of 0 to 5.": "VOD 内容的评分（0 到 5 星）。",
+    "The relay forwards TV notifications to Apple/Google push services so the mobile app can receive them while backgrounded or closed.": "中继将电视通知转发到 Apple/Google 推送服务，以便移动应用程序可以在后台或关闭时接收它们。",
     "The release date of the content.": "内容的发布日期。",
     "The run has been cancelled. In-progress checks will complete before stopping.": "运行已被取消。正在进行的检查将在停止前完成。",
     "The run was queued again and will continue from the last saved checkpoint when possible.": "任务已重新进入队列，并将在可能的情况下从上次保存的检查点继续执行。",

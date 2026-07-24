@@ -1100,6 +1100,9 @@ class Preferences extends SettingsPage
                                             ->hidden(fn (Get $get): bool => ! (bool) $get('push_relay_enabled') || ! app(PushRelayService::class)->isEnabled()),
                                     ])
                                     ->schema([
+                                        Callout::make()
+                                            ->info()
+                                            ->description(__('The relay forwards TV notifications to Apple/Google push services so the mobile app can receive them while backgrounded or closed.')),
                                         Toggle::make('push_relay_enabled')
                                             ->label(__('Enable push relay'))
                                             ->helperText(__('When enabled, TV notifications are also forwarded to registered mobile devices through the public relay.'))

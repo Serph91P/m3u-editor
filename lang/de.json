@@ -2669,6 +2669,7 @@
     "The queue workers have been restarted and any pending jobs flushed.": "Die Worker wurden neu gestartet und alle ausstehenden Jobs wurden entfernt.",
     "The queue workers have been restarted and any pending jobs flushed. You may need to manually sync any Playlists or EPGs that were in progress.": "Die Warteschlangenarbeiter wurden neu gestartet und alle ausstehenden Jobs gelöscht. Möglicherweise müssen Sie alle laufenden Wiedergabelisten oder EPGs manuell synchronisieren.",
     "The rating of the VOD content on a scale of 0 to 5.": "Die Bewertung des VOD-Inhalts auf einer Skala von 0 bis 5.",
+    "The relay forwards TV notifications to Apple/Google push services so the mobile app can receive them while backgrounded or closed.": "Das Relay leitet TV-Benachrichtigungen an die Push-Dienste von Apple/Google weiter, sodass die mobile App sie im Hintergrund oder geschlossen empfangen kann.",
     "The release date of the content.": "Das Veröffentlichungsdatum des Inhalts.",
     "The run has been cancelled. In-progress checks will complete before stopping.": "Der Lauf wurde abgesagt. Laufende Prüfungen werden vor dem Stoppen abgeschlossen.",
     "The run was queued again and will continue from the last saved checkpoint when possible.": "Der Lauf wurde erneut in die Warteschlange gestellt und wird nach Möglichkeit vom letzten gespeicherten Kontrollpunkt aus fortgesetzt.",

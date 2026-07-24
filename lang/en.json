@@ -2669,6 +2669,7 @@
     "The queue workers have been restarted and any pending jobs flushed.": "The queue workers have been restarted and any pending jobs flushed.",
     "The queue workers have been restarted and any pending jobs flushed. You may need to manually sync any Playlists or EPGs that were in progress.": "The queue workers have been restarted and any pending jobs flushed. You may need to manually sync any Playlists or EPGs that were in progress.",
     "The rating of the VOD content on a scale of 0 to 5.": "The rating of the VOD content on a scale of 0 to 5.",
+    "The relay forwards TV notifications to Apple/Google push services so the mobile app can receive them while backgrounded or closed.": "The relay forwards TV notifications to Apple/Google push services so the mobile app can receive them while backgrounded or closed.",
     "The release date of the content.": "The release date of the content.",
     "The run has been cancelled. In-progress checks will complete before stopping.": "The run has been cancelled. In-progress checks will complete before stopping.",
     "The run was queued again and will continue from the last saved checkpoint when possible.": "The run was queued again and will continue from the last saved checkpoint when possible.",
