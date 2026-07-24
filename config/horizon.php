@@ -194,6 +194,23 @@ return [
             'timeout' => 60 * 125, // Should be longer than the retry_after value set in queue.php
             'nice' => 0,
         ],
+
+        // SchedulesDirect syncs (ProcessEpgImport for SD-sourced EPGs) run here
+        // exclusively. maxProcesses is fixed at 1 regardless of DB driver so only
+        // one SD sync runs at a time across all accounts/EPGs - SD blocks accounts
+        // that make concurrent/duplicate requests for the same station+date.
+        'm3u-editor-sd-queue' => [
+            'connection' => 'redis',
+            'queue' => ['schedules-direct'],
+            'balance' => 'simple',
+            'maxProcesses' => 1,
+            'maxTime' => 0,
+            'maxJobs' => 0,
+            'memory' => 512, // MB
+            'tries' => 3,
+            'timeout' => 60 * 125,
+            'nice' => 0,
+        ],
     ],
 
     'environments' => [
