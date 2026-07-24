@@ -413,6 +413,19 @@ class Preferences extends SettingsPage
                                             ->columnSpanFull()
                                             ->columns(2)
                                             ->schema([
+                                                Toggle::make('app_output_enabled')
+                                                    ->label(__('Enhanced output enabled'))
+                                                    ->helperText(__('When enabled, the application will output additional Xtream API fields for the M3U TV app.'))
+                                                    ->hintAction(
+                                                        Action::make('TV App settings')
+                                                            ->label(__('TV App settings'))
+                                                            ->icon('heroicon-o-arrow-top-right-on-square')
+                                                            ->iconPosition('after')
+                                                            ->size('sm')
+                                                            ->url('/preferences?tab=tv-app%3A%3Adata%3A%3Atab')
+                                                    )
+                                                    ->columnSpanFull()
+                                                    ->default(true),
                                                 TextInput::make('xtream_api_details.http_port')
                                                     ->label(__('HTTP Port'))
                                                     ->numeric()

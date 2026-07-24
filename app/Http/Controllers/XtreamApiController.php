@@ -28,6 +28,7 @@ use App\Models\PlaylistViewer;
 use App\Models\Series;
 use App\Models\StreamProfile;
 use App\Models\ViewerWatchProgress;
+use App\Providers\VersionServiceProvider;
 use App\Services\ContentRequestService;
 use App\Services\DvrRecorderService;
 use App\Services\EpgCacheService;
@@ -535,6 +536,7 @@ class XtreamApiController extends Controller
 
             $settings = app(GeneralSettings::class);
             $message = $settings->xtream_api_message ?? '';
+            $enhancedOutputEnabled = $settings->app_output_enabled ?? false;
 
             $userInfo = [
                 'username' => $username,
@@ -573,65 +575,72 @@ class XtreamApiController extends Controller
                 'process' => true, // Always true
             ];
 
-            $features = $this->resolveM3uEditorFeatures($playlist, $authMethod, $playlistAuth);
-            $aiostreamsData = $this->resolveAIOStreamsData($playlist, $features);
-
-            $m3uEditorPayload = [
-                'version' => config('dev.version'),
-                'features' => $features,
-            ];
-
-            if (in_array('requests', $features, true)) {
-                $requestPlaylist = $this->authorizedRequestPlaylist($playlist, $authMethod, $playlistAuth);
-
-                $m3uEditorPayload['requests'] = [
-                    'api_version' => 1,
-                    'actions' => [
-                        'search' => 'request_search',
-                        'submit' => 'request_submit',
-                        'history' => 'request_history',
-                        'status' => 'request_status',
-                        'dismiss' => 'request_dismiss',
-                    ],
-                    'content_types' => $requestPlaylist
-                        ? app(ContentRequestService::class)->contentTypes($requestPlaylist)
-                        : [],
-                    'approval_behavior' => $playlistAuth->auto_approve_requests
-                        ? 'auto_approval'
-                        : 'pending_approval',
-                    'error_codes' => [
-                        'invalid_request',
-                        'authentication_failed',
-                        'request_access_denied',
-                        'rate_limited',
-                        'providers_unavailable',
-                        'provider_unavailable',
-                        'submission_failed',
-                        'invalid_integration',
-                        'invalid_seasons',
-                        'not_found',
-                        'already_requested',
-                        'already_available',
-                        'request_not_found',
-                        'request_not_dismissible',
-                    ],
-                ];
-            }
-
-            if (! empty($aiostreamsData)) {
-                $m3uEditorPayload['aiostreams'] = $aiostreamsData;
-            }
-
-            $proxyData = $this->resolveProxyData($playlist, $features, $authMethod, $playlistAuth);
-            if (! empty($proxyData)) {
-                $m3uEditorPayload['proxy'] = $proxyData;
-            }
-
-            return response()->json([
+            $payload = [
                 'user_info' => $userInfo,
                 'server_info' => $serverInfo,
-                'm3u_editor' => $m3uEditorPayload,
-            ]);
+            ];
+
+            // If enhanced output is enabled, include the m3u_editor payload with version and features
+            // This is required for the M3U TV app to connect via the Xtream API and resolve the features available for the playlist.
+            if ($enhancedOutputEnabled) {
+                $features = $this->resolveM3uEditorFeatures($playlist, $authMethod, $playlistAuth);
+                $aiostreamsData = $this->resolveAIOStreamsData($playlist, $features);
+
+                $m3uEditorPayload = [
+                    'version' => VersionServiceProvider::getVersion(),
+                    'features' => $features,
+                ];
+
+                if (in_array('requests', $features, true)) {
+                    $requestPlaylist = $this->authorizedRequestPlaylist($playlist, $authMethod, $playlistAuth);
+
+                    $m3uEditorPayload['requests'] = [
+                        'api_version' => 1,
+                        'actions' => [
+                            'search' => 'request_search',
+                            'submit' => 'request_submit',
+                            'history' => 'request_history',
+                            'status' => 'request_status',
+                            'dismiss' => 'request_dismiss',
+                        ],
+                        'content_types' => $requestPlaylist
+                            ? app(ContentRequestService::class)->contentTypes($requestPlaylist)
+                            : [],
+                        'approval_behavior' => $playlistAuth->auto_approve_requests
+                            ? 'auto_approval'
+                            : 'pending_approval',
+                        'error_codes' => [
+                            'invalid_request',
+                            'authentication_failed',
+                            'request_access_denied',
+                            'rate_limited',
+                            'providers_unavailable',
+                            'provider_unavailable',
+                            'submission_failed',
+                            'invalid_integration',
+                            'invalid_seasons',
+                            'not_found',
+                            'already_requested',
+                            'already_available',
+                            'request_not_found',
+                            'request_not_dismissible',
+                        ],
+                    ];
+                }
+
+                if (! empty($aiostreamsData)) {
+                    $m3uEditorPayload['aiostreams'] = $aiostreamsData;
+                }
+
+                $proxyData = $this->resolveProxyData($playlist, $features, $authMethod, $playlistAuth);
+                if (! empty($proxyData)) {
+                    $m3uEditorPayload['proxy'] = $proxyData;
+                }
+
+                $payload['m3u_editor'] = $m3uEditorPayload;
+            }
+
+            return response()->json($payload);
         } elseif ($action === 'get_live_streams') {
             // Handle network playlists - return networks as live streams
             if ($isNetworkPlaylist) {
