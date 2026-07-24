@@ -86,7 +86,7 @@ Playlist and EPG syncing is the app's flagship feature and the single highest-co
 
 The actual import/sync work lives in the `Process*` job chains, not just `Sync*`:
 - M3U: `app/Jobs/ProcessM3uImport.php` → `ProcessM3uImportChunk.php` → `ProcessM3uImportComplete.php` (plus the series variants: `ProcessM3uImportSeries*`, `ProcessM3uVodImportChunk.php`)
-- EPG: `app/Jobs/ProcessEpgImport.php` → `ProcessEpgImportChunk.php` → `ProcessEpgImportComplete.php` (plus `ProcessEpgSDImport.php` for Schedules Direct)
+- EPG: `app/Jobs/ProcessEpgImport.php` → `ProcessEpgImportChunk.php` → `ProcessEpgImportComplete.php` (Schedules Direct EPGs are also synced through `ProcessEpgImport`, routed onto the dedicated `schedules-direct` Horizon queue — see `config/horizon.php`)
 - Also relevant: `app/Jobs/ProcessChannelScrubber*.php`, `app/Jobs/ProcessVodChannels*.php`, `app/Sync/`, `app/Jobs/Sync*.php`, `app/Services/SyncPipelineService.php`, `app/Services/NetworkChannelSyncService.php`, and anything touching `SyncRun`/`PlaylistSyncStatus`
 
 A diff touching any stage of one of these chains needs the same "did a default silently change" scrutiny described above — check the whole chain's control flow, not just the file the PR happened to edit.
@@ -121,6 +121,6 @@ If a PR adds a blocking index/DDL change to one of these tables without `CONCURR
 
 1. Get the diff under review (`git diff <base>...HEAD` or the PR's changed files).
 2. Walk the five sections above against the changed files — most PRs will only touch one or two. If the diff includes a `database/migrations/*.php` file, §5 always applies — check it even if the rest of the PR is otherwise clean.
-3. Apply §4 to whatever the diff touches, not just sync — it's a whole-app rule. Give it extra scrutiny when the diff touches the `Process*` import job chains (`ProcessM3uImport*`, `ProcessEpgImport*`, `ProcessEpgSDImport`, `ProcessVodChannels*`, `ProcessChannelScrubber*`), `app/Sync/`, or `app/Jobs/Sync*.php`, since that's the highest-cost feature to regress, but don't skip it elsewhere.
+3. Apply §4 to whatever the diff touches, not just sync — it's a whole-app rule. Give it extra scrutiny when the diff touches the `Process*` import job chains (`ProcessM3uImport*`, `ProcessEpgImport*`, `ProcessVodChannels*`, `ProcessChannelScrubber*`), `app/Sync/`, or `app/Jobs/Sync*.php`, since that's the highest-cost feature to regress, but don't skip it elsewhere.
 4. For §2's straggler check, don't stop at the diff — `grep` the codebase for other call sites matching the pattern a new helper was introduced to replace. This is the one check in this skill that requires looking outside the changed files.
 5. Report findings the same way the invoking review flow expects (e.g. via `ReportFindings` when running under `/code-review`) — category slug `pr-review-standards` or the specific rule number, most-severe first.
