@@ -16,6 +16,7 @@ use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -186,7 +187,15 @@ class ProcessEpgImport implements ShouldQueue
                         }
                     }
                     if ($shouldSync) {
-                        $service->syncEpgData($epg);
+                        // Multiple EPGs can share the same SchedulesDirect account/lineup
+                        // (e.g. duplicate configs, or overlapping stations across lineups).
+                        // Serialize syncs per account so concurrent Horizon workers don't
+                        // hammer SD's API with the same station/date requests at once,
+                        // which gets the account rate-limited or blocked.
+                        Cache::lock("sd-sync-lock:{$epg->sd_username}", 60 * 15)
+                            ->block(60 * 5, function () use ($service, $epg) {
+                                $service->syncEpgData($epg);
+                            });
                     }
 
                     // Calculate the time taken to complete the import

@@ -878,16 +878,16 @@ class SchedulesDirectService
                 }
             }
 
-            // Extract station IDs if not configured
-            if (empty($epg->sd_station_ids)) {
-                $stationIds = array_column($lineupData['map'], 'stationID');
-                $epg->update(['sd_station_ids' => $stationIds]);
-            }
+            // Refresh station IDs from the current lineup on every sync so stations
+            // Schedules Direct removes/remaps server-side don't linger and get
+            // requested after they're no longer valid (causes SD to block the app).
+            $stationIds = array_column($lineupData['map'], 'stationID');
+            $epg->update(['sd_station_ids' => $stationIds]);
 
             // Use limited stations for faster processing
             $stationIds = self::MAX_STATIONS_PER_SYNC
-                ? array_slice($epg->sd_station_ids, 0, self::MAX_STATIONS_PER_SYNC)
-                : $epg->sd_station_ids;
+                ? array_slice($stationIds, 0, self::MAX_STATIONS_PER_SYNC)
+                : $stationIds;
 
             Log::debug('Starting SchedulesDirect sync', [
                 'epg_id' => $epg->id,
