@@ -12,6 +12,7 @@ use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\Series;
 use App\Models\User;
+use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
@@ -131,6 +132,39 @@ class XtreamApiControllerTest extends TestCase
                 'time_now',
                 'process',
             ],
+        ]);
+    }
+
+    public function test_panel_action_includes_m3u_editor_payload_when_enhanced_output_enabled(): void
+    {
+        $settings = app(GeneralSettings::class);
+        $settings->app_output_enabled = true;
+        $settings->save();
+
+        $response = $this->setupAuthenticatedPanelRequest();
+
+        $response->assertOk();
+        $response->assertJsonStructure([
+            'm3u_editor' => [
+                'version',
+                'features',
+            ],
+        ]);
+    }
+
+    public function test_panel_action_omits_m3u_editor_payload_when_enhanced_output_disabled(): void
+    {
+        $settings = app(GeneralSettings::class);
+        $settings->app_output_enabled = false;
+        $settings->save();
+
+        $response = $this->setupAuthenticatedPanelRequest();
+
+        $response->assertOk();
+        $response->assertJsonMissingPath('m3u_editor');
+        $response->assertJsonStructure([
+            'user_info',
+            'server_info',
         ]);
     }
 

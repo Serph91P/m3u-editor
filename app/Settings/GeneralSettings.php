@@ -297,6 +297,10 @@ class GeneralSettings extends Settings
     // The relay URL itself is config-only (not exposed here) - see PushRelayService.
     public ?bool $push_relay_enabled = true;
 
+    // App output toggle for xAPI integration
+    // This setting allows users to enable or disable the app output for xAPI integration.
+    public ?bool $app_output_enabled = true;
+
     public static function group(): string
     {
         return 'general';
