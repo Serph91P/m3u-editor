@@ -1974,7 +1974,7 @@ class XtreamApiController extends Controller
             // For m3u_plus, redirect to the m3u method which handles the request
             return $this->m3u($playlist);
         } elseif ($action === 'get_viewers') {
-            return $this->getViewers($playlist);
+            return $this->getViewers($request, $playlist, $authMethod, $username, $password);
         } elseif ($action === 'create_viewer') {
             return $this->createViewer($request, $playlist);
         } elseif ($action === 'get_progress') {
@@ -2262,33 +2262,80 @@ class XtreamApiController extends Controller
     }
 
     /**
-     * Resolve the PlaylistViewer from the viewer_id (ulid) ensuring it belongs
-     * to the current playlist context.
+     * Resolve the PlaylistAuth for the current request's credentials, applying
+     * the same enabled/expiry filtering used at authentication time.
      */
-    private function resolveViewer(string $viewerUlid, $playlist): ?PlaylistViewer
+    private function resolvePlaylistAuth(string $authMethod, string $username, string $password): ?PlaylistAuth
     {
-        return PlaylistViewer::where('ulid', $viewerUlid)
-            ->where('viewerable_type', $playlist->getMorphClass())
-            ->where('viewerable_id', $playlist->id)
+        if ($authMethod !== 'playlist_auth') {
+            return null;
+        }
+
+        return PlaylistAuth::where('username', $username)
+            ->where('password', $password)
+            ->where('enabled', true)
+            ->where(function ($query) {
+                $query->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            })
             ->first();
     }
 
     /**
+     * Resolve the PlaylistViewer from the viewer_id (ulid) ensuring it belongs
+     * both to the current playlist context AND to the requesting auth — a
+     * playlist_auth login may only resolve its own viewer, and an owner/alias
+     * login may only resolve admin-owned (non playlist_auth) viewers.
+     */
+    private function resolveViewer(string $viewerUlid, $playlist, string $authMethod, string $username, string $password): ?PlaylistViewer
+    {
+        $viewer = PlaylistViewer::where('ulid', $viewerUlid)
+            ->where('viewerable_type', $playlist->getMorphClass())
+            ->where('viewerable_id', $playlist->id)
+            ->first();
+
+        if (! $viewer) {
+            return null;
+        }
+
+        if ($authMethod === 'playlist_auth') {
+            $playlistAuth = $this->resolvePlaylistAuth($authMethod, $username, $password);
+
+            return ($playlistAuth && $viewer->playlist_auth_id === $playlistAuth->id) ? $viewer : null;
+        }
+
+        return $viewer->playlist_auth_id === null ? $viewer : null;
+    }
+
+    /**
      * Resolve viewer from request context, with fallback based on auth method:
-     * - viewer_id param provided → use it
+     * - viewer_id param provided and owned by this auth → use it
+     * - viewer_id missing, or provided but owned by someone else (e.g. a
+     *   stale client cache predating per-auth viewer isolation) → self-heal
+     *   by deriving this auth's own viewer instead of failing the request
      * - playlist_auth → find or create PlaylistViewer linked to the PlaylistAuth
      * - owner_auth / alias_auth → use the admin viewer for this playlist
      */
     private function resolveContextViewer(Request $request, $playlist, string $authMethod, string $username, string $password): ?PlaylistViewer
     {
         if ($viewerUlid = $request->input('viewer_id')) {
-            return $this->resolveViewer($viewerUlid, $playlist);
+            $viewer = $this->resolveViewer($viewerUlid, $playlist, $authMethod, $username, $password);
+            if ($viewer) {
+                return $viewer;
+            }
         }
 
+        return $this->resolveOwnViewer($playlist, $authMethod, $username, $password);
+    }
+
+    /**
+     * Derive the viewer that belongs to this auth context, independent of any
+     * (possibly stale or foreign) viewer_id the client may have sent.
+     */
+    private function resolveOwnViewer($playlist, string $authMethod, string $username, string $password): ?PlaylistViewer
+    {
         if ($authMethod === 'playlist_auth') {
-            $playlistAuth = PlaylistAuth::where('username', $username)
-                ->where('password', $password)
-                ->first();
+            $playlistAuth = $this->resolvePlaylistAuth($authMethod, $username, $password);
 
             if ($playlistAuth) {
                 $viewer = PlaylistViewer::where('playlist_auth_id', $playlistAuth->id)
@@ -2319,12 +2366,23 @@ class XtreamApiController extends Controller
     }
 
     /**
-     * Return all viewers for the current playlist context.
+     * Return the viewers visible to the current auth context:
+     * - playlist_auth → only that login's own viewer (auto-created if missing)
+     * - owner_auth / alias_auth → the admin-owned/switchable viewer profiles
+     *   (playlist_auth-owned viewers are a distinct login's identity, not a
+     *   selectable "profile", and must never be exposed to other logins)
      */
-    private function getViewers($playlist): \Illuminate\Http\JsonResponse
+    private function getViewers(Request $request, $playlist, string $authMethod = 'none', string $username = '', string $password = ''): \Illuminate\Http\JsonResponse
     {
+        if ($authMethod === 'playlist_auth') {
+            $viewer = $this->resolveContextViewer($request, $playlist, $authMethod, $username, $password);
+
+            return response()->json($viewer ? [$viewer->only(['id', 'ulid', 'name', 'is_admin'])] : []);
+        }
+
         $viewers = PlaylistViewer::where('viewerable_type', $playlist->getMorphClass())
             ->where('viewerable_id', $playlist->id)
+            ->whereNull('playlist_auth_id')
             ->orderByDesc('is_admin')
             ->orderBy('name')
             ->get(['id', 'ulid', 'name', 'is_admin']);

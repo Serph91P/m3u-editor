@@ -28,13 +28,14 @@ beforeEach(function () {
     ]);
     $this->playlist->playlistAuths()->attach($this->playlistAuth);
 
-    $this->viewer = PlaylistViewer::create([
-        'ulid' => (string) Str::ulid(),
-        'name' => 'admin',
-        'is_admin' => true,
-        'viewerable_type' => $this->playlist->getMorphClass(),
-        'viewerable_id' => $this->playlist->id,
-    ]);
+    // A PlaylistViewer for the panel-wide admin is auto-created by
+    // AppServiceProvider's Playlist::created observer — reuse it rather than
+    // creating a duplicate is_admin=true viewer, which would make the
+    // fall-back-to-admin-viewer query in resolveContextViewer ambiguous.
+    $this->viewer = PlaylistViewer::where('viewerable_type', $this->playlist->getMorphClass())
+        ->where('viewerable_id', $this->playlist->id)
+        ->where('is_admin', true)
+        ->firstOrFail();
 
     $this->childAuth = PlaylistAuth::create([
         'name' => 'Kid',
@@ -58,8 +59,16 @@ beforeEach(function () {
 function favoritesPost(array $body): TestResponse
 {
     return test()->postJson(route('xtream.api.player'), array_merge([
-        'username' => 'testuser',
-        'password' => 'testpass',
+        'username' => test()->user->name,
+        'password' => test()->playlist->uuid,
+    ], $body));
+}
+
+function childFavoritesPost(array $body): TestResponse
+{
+    return test()->postJson(route('xtream.api.player'), array_merge([
+        'username' => 'kiduser',
+        'password' => 'kidpass',
     ], $body));
 }
 
@@ -149,12 +158,44 @@ it('isolates favorites between viewers on the same playlist', function () {
         'favorited' => 'true',
     ])->assertOk();
 
-    $response = favoritesPost([
+    $response = childFavoritesPost([
         'action' => 'get_favorites',
         'viewer_id' => $this->otherViewer->ulid,
     ])->assertOk();
 
     expect($response->json())->toBeEmpty();
+});
+
+it('self-heals a playlist_auth login sending another playlist_auth\'s viewer_id, instead of failing or leaking into it', function () {
+    // This is the exact cross-user leak previously reported: one PlaylistAuth
+    // login (e.g. childAuth) must never write favorites under a different
+    // PlaylistAuth's viewer, even if it knows its ulid (e.g. a stale client
+    // cache predating per-auth viewer isolation). Rather than hard-failing
+    // (which left pre-fix clients stuck with 404s and stagnant progress),
+    // the server transparently redirects to childAuth's own viewer.
+    childFavoritesPost([
+        'action' => 'toggle_favorite',
+        'viewer_id' => $this->viewer->ulid, // the admin viewer, not childAuth's own
+        'content_type' => 'live',
+        'stream_id' => '101',
+        'favorited' => 'true',
+    ])->assertOk();
+
+    expect(ViewerFavorite::where('playlist_viewer_id', $this->viewer->id)->count())->toBe(0);
+    expect(ViewerFavorite::where('playlist_viewer_id', $this->otherViewer->id)->count())->toBe(1);
+});
+
+it('self-heals an owner login sending a playlist_auth-owned viewer_id, instead of failing', function () {
+    favoritesPost([
+        'action' => 'toggle_favorite',
+        'viewer_id' => $this->otherViewer->ulid, // childAuth's own viewer
+        'content_type' => 'live',
+        'stream_id' => '101',
+        'favorited' => 'true',
+    ])->assertOk();
+
+    expect(ViewerFavorite::where('playlist_viewer_id', $this->otherViewer->id)->count())->toBe(0);
+    expect(ViewerFavorite::where('playlist_viewer_id', $this->viewer->id)->count())->toBe(1);
 });
 
 it('rejects an invalid content_type', function () {
@@ -213,7 +254,7 @@ it('broadcasts aiostreams metadata on the favorite.toggled event so other device
 it('broadcasts to the child profile\'s own channel, not the owner channel', function () {
     Event::fake([ViewerFavoriteEvent::class]);
 
-    favoritesPost([
+    childFavoritesPost([
         'action' => 'toggle_favorite',
         'viewer_id' => $this->otherViewer->ulid,
         'content_type' => 'vod',

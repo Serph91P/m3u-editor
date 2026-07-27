@@ -34,7 +34,8 @@ beforeEach(function () {
     $this->viewer = PlaylistViewer::create([
         'ulid' => (string) Str::ulid(),
         'name' => 'admin',
-        'is_admin' => true,
+        'is_admin' => false,
+        'playlist_auth_id' => $this->playlistAuth->id,
         'viewerable_type' => $this->playlist->getMorphClass(),
         'viewerable_id' => $this->playlist->id,
     ]);
@@ -132,7 +133,8 @@ it('does not mark vod as completed via merged playlist when client sends string 
     $mergedViewer = PlaylistViewer::create([
         'ulid' => (string) Str::ulid(),
         'name' => 'admin',
-        'is_admin' => true,
+        'is_admin' => false,
+        'playlist_auth_id' => $mergedAuth->id,
         'viewerable_type' => $merged->getMorphClass(),
         'viewerable_id' => $merged->id,
     ]);
