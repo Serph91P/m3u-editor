@@ -6,6 +6,7 @@ use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\PushDeviceToken;
 use App\Models\TvNotification;
+use App\Models\TvNotificationRead;
 use App\Models\User;
 use App\Notifications\Notification;
 use Illuminate\Support\Facades\Bus;
@@ -94,7 +95,7 @@ it('tvBroadcast with adminOnly:true stores admin_only flag and broadcasts only t
     });
 });
 
-it('standard tvBroadcast broadcasts on both playlist and admin channels', function () {
+it('standard tvBroadcast broadcasts on playlist, admin, and entitled credential channels', function () {
     Event::fake([TvNotificationEvent::class]);
 
     Notification::make()->title('News')->info()->tvBroadcast($this->playlist, 'general');
@@ -105,6 +106,7 @@ it('standard tvBroadcast broadcasts on both playlist and admin channels', functi
         return $channels === [
             "private-tv.playlist.{$this->playlist->uuid}",
             "private-tv.playlist-admin.{$this->playlist->uuid}",
+            "private-tv.playlist.{$this->playlist->uuid}.{$this->auth->id}",
         ];
     });
 });
@@ -144,7 +146,7 @@ it('GET notifications returns unread notifications for the playlist', function (
         ->assertJsonCount(1, 'notifications')
         ->assertJsonPath('notifications.0.title', 'Hello')
         ->assertJsonPath('is_admin', false)
-        ->assertJsonPath('reverb.channel', "private-tv.playlist.{$this->playlist->uuid}");
+        ->assertJsonPath('reverb.channel', "private-tv.playlist.{$this->playlist->uuid}.{$this->auth->id}");
 });
 
 it('GET notifications filters by channel when channels[] passed', function () {
@@ -175,6 +177,7 @@ it('GET notifications does not return read notifications', function () {
         'title' => 'Already read',
         'body' => null,
         'status' => 'info',
+        'playlist_auth_id' => $this->auth->id,
         'read_at' => now(),
     ]);
 
@@ -236,11 +239,11 @@ it('owner_auth with admin user returns admin scope and admin channel', function 
         ->assertJsonPath('reverb.channel', "private-tv.playlist-admin.{$playlist->uuid}");
 });
 
-it('admin scope sees admin_only notifications', function () {
+it('admin scope sees and marks admin_only global notifications', function () {
     $admin = User::factory()->create(['is_admin' => true]);
     $playlist = Playlist::factory()->for($admin)->create();
 
-    TvNotification::create([
+    $adminOnlyNotification = TvNotification::create([
         'notifiable_type' => $playlist->getMorphClass(),
         'notifiable_id' => $playlist->id,
         'channel' => 'billing',
@@ -263,6 +266,14 @@ it('admin scope sees admin_only notifications', function () {
     $this->getJson(route('tv.notifications', ['username' => $admin->name, 'password' => $playlist->uuid]))
         ->assertOk()
         ->assertJsonCount(2, 'notifications');
+
+    $this->postJson(route('tv.notifications.read', [
+        'username' => $admin->name,
+        'password' => $playlist->uuid,
+        'id' => $adminOnlyNotification->id,
+    ]))->assertOk();
+
+    expect($adminOnlyNotification->fresh()->read_at)->not->toBeNull();
 });
 
 it('non-admin playlist scope does not see admin_only notifications', function () {
@@ -306,7 +317,7 @@ it('owner_auth with non-admin user returns playlist scope', function () {
 
 // ── POST /api/tv/{username}/{password}/notifications/{id}/read ─────────────────
 
-it('POST mark-read marks notification as read', function () {
+it('POST mark-read records a global notification read for the credential', function () {
     $notification = TvNotification::create([
         'notifiable_type' => $this->playlist->getMorphClass(),
         'notifiable_id' => $this->playlist->id,
@@ -320,7 +331,49 @@ it('POST mark-read marks notification as read', function () {
 
     $this->postJson($url)->assertOk()->assertJsonPath('ok', true);
 
-    expect($notification->fresh()->read_at)->not->toBeNull();
+    expect($notification->fresh()->read_at)->toBeNull()
+        ->and(TvNotificationRead::whereBelongsTo($notification)->whereBelongsTo($this->auth)->count())->toBe(1);
+});
+
+it('keeps global notification read state isolated between credentials', function () {
+    $secondAuth = PlaylistAuth::factory()->for($this->user)->create([
+        'username' => 'tv_user_2',
+        'password' => 'tv_pass_2',
+        'enabled' => true,
+    ]);
+    $secondAuth->assignTo($this->playlist);
+
+    $notification = TvNotification::create([
+        'notifiable_type' => $this->playlist->getMorphClass(),
+        'notifiable_id' => $this->playlist->id,
+        'channel' => 'general',
+        'title' => 'Read independently',
+        'body' => null,
+        'status' => 'info',
+    ]);
+
+    $this->postJson(route('tv.notifications.read', [
+        'username' => 'tv_user',
+        'password' => 'tv_pass',
+        'id' => $notification->id,
+    ]))->assertOk();
+
+    expect($notification->fresh()->read_at)->toBeNull()
+        ->and(TvNotificationRead::whereBelongsTo($notification)->whereBelongsTo($this->auth)->count())->toBe(1);
+
+    $this->getJson(route('tv.notifications', ['username' => 'tv_user', 'password' => 'tv_pass']))
+        ->assertOk()
+        ->assertJsonCount(0, 'notifications');
+
+    $this->getJson(route('tv.notifications', ['username' => 'tv_user_2', 'password' => 'tv_pass_2']))
+        ->assertOk()
+        ->assertJsonCount(1, 'notifications')
+        ->assertJsonPath('notifications.0.id', $notification->id);
+
+    $this->auth->delete();
+
+    expect(TvNotificationRead::whereBelongsTo($notification)->count())->toBe(0)
+        ->and($notification->fresh())->not->toBeNull();
 });
 
 it('non-admin cannot mark-read an admin_only notification', function () {
@@ -343,7 +396,7 @@ it('non-admin cannot mark-read an admin_only notification', function () {
 
 it('broadcastingAuth returns HMAC for playlist scope channel', function () {
     $socketId = '123456.78910';
-    $channelName = "private-tv.playlist.{$this->playlist->uuid}";
+    $channelName = "private-tv.playlist.{$this->playlist->uuid}.{$this->auth->id}";
     $secret = config('broadcasting.connections.reverb.secret');
     $key = config('broadcasting.connections.reverb.key');
 

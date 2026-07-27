@@ -7,6 +7,7 @@ use App\Models\ArrQueueEvent;
 use App\Models\MediaRequest;
 use App\Services\Arr\ArrService;
 use App\Services\Arr\SonarrService;
+use App\Services\ContentRequestService;
 use Filament\Notifications\Notification;
 use Illuminate\Http\Client\Pool;
 use Illuminate\Support\Facades\Http;
@@ -310,12 +311,7 @@ class ArrQueueMonitor extends Component
         }
 
         if ($ok) {
-            $request->update([
-                'status' => 'approved',
-                'reviewed_at' => now(),
-                'reviewed_by_user_id' => auth()->id(),
-            ]);
-            $request->broadcastStatus();
+            app(ContentRequestService::class)->approveRequest($request, auth()->id());
 
             Notification::make()
                 ->success()
@@ -355,12 +351,7 @@ class ArrQueueMonitor extends Component
             return;
         }
 
-        $request->update([
-            'status' => 'rejected',
-            'reviewed_at' => now(),
-            'reviewed_by_user_id' => auth()->id(),
-        ]);
-        $request->broadcastStatus();
+        app(ContentRequestService::class)->rejectRequest($request, auth()->id());
 
         Notification::make()
             ->warning()

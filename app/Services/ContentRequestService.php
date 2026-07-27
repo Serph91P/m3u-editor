@@ -9,7 +9,9 @@ use App\Models\CustomPlaylist;
 use App\Models\MediaRequest;
 use App\Models\MergedPlaylist;
 use App\Models\Playlist;
+use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
+use App\Notifications\Notification as AppNotification;
 use App\Services\Arr\ArrService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\QueryException;
@@ -395,8 +397,7 @@ class ContentRequestService
         if (in_array($status, ['completed', 'imported'], true)) {
             $status = 'completed';
             if ($canPersistCompleted) {
-                $mediaRequest->update(['status' => $status]);
-                $mediaRequest->broadcastStatus();
+                $this->completeRequest($mediaRequest);
                 $formatted = $this->formatRequest($mediaRequest);
             }
         }
@@ -430,6 +431,70 @@ class ContentRequestService
         $mediaRequest->delete();
 
         return ['ok' => true];
+    }
+
+    public function approveRequest(MediaRequest $request, ?int $reviewedByUserId = null): void
+    {
+        $this->transitionRequest($request, 'pending', [
+            'status' => 'approved',
+            'reviewed_at' => now(),
+            'reviewed_by_user_id' => $reviewedByUserId,
+        ], 'Request Approved', 'success');
+    }
+
+    public function rejectRequest(MediaRequest $request, ?int $reviewedByUserId = null): void
+    {
+        $this->transitionRequest($request, 'pending', [
+            'status' => 'rejected',
+            'reviewed_at' => now(),
+            'reviewed_by_user_id' => $reviewedByUserId,
+        ], 'Request Rejected', 'warning');
+    }
+
+    public function completeRequest(MediaRequest $request): void
+    {
+        $this->transitionRequest($request, 'approved', [
+            'status' => 'completed',
+        ], 'Request Completed', 'success');
+    }
+
+    /**
+     * Guarded status transition shared by approve/reject/complete: only the request that wins
+     * the conditional update (i.e. is still in $fromStatus) broadcasts and notifies, so stale
+     * retries and repeated polling can never mint a second event for the same transition.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function transitionRequest(MediaRequest $request, string $fromStatus, array $attributes, string $notificationTitle, string $notificationStatus): void
+    {
+        $updated = MediaRequest::query()
+            ->whereKey($request->getKey())
+            ->where('status', $fromStatus)
+            ->update($attributes);
+
+        if ($updated !== 1) {
+            return;
+        }
+
+        $request->refresh();
+        $request->broadcastStatus();
+        $playlist = $request->playlistAuth?->getAssignedModel();
+        if ($playlist) {
+            $this->notifyRequester($playlist, $request, $notificationTitle, $notificationStatus);
+        }
+    }
+
+    private function notifyRequester(Playlist|MergedPlaylist|CustomPlaylist|PlaylistAlias $playlist, MediaRequest $request, string $title, string $status): void
+    {
+        AppNotification::make()
+            ->title(__($title))
+            ->body($request->title)
+            ->status($status)
+            ->tvBroadcast($playlist, 'requests', false, $request->playlistAuth, [
+                'request_id' => $request->id,
+                'request_title' => $request->title,
+                'request_status' => $request->status,
+            ]);
     }
 
     /** @return array<string, mixed> */

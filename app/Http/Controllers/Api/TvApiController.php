@@ -4,12 +4,15 @@ namespace App\Http\Controllers\Api;
 
 use App\Facades\PlaylistFacade;
 use App\Http\Controllers\Controller;
+use App\Models\PlaylistAlias;
 use App\Models\PushDeviceToken;
 use App\Models\TvNotification;
 use App\Settings\GeneralSettings;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class TvApiController extends Controller
 {
@@ -18,6 +21,8 @@ class TvApiController extends Controller
      *
      * Returns unread TV notifications for the authenticated playlist.
      * Admin-scope sessions (owner_auth + isAdmin) also see admin_only notifications.
+     * Owner-auth sessions are intentionally limited to global notifications; admin
+     * status only expands that global scope to include admin_only rows.
      * Pass optional `channels[]` query param to filter by notification channel.
      * Also returns Reverb connection config so the TV app can subscribe.
      */
@@ -26,12 +31,27 @@ class TvApiController extends Controller
         $auth = $this->resolveAuth($request);
         $playlist = $auth['playlist'];
 
-        $query = TvNotification::where('notifiable_type', $playlist->getMorphClass())
-            ->where('notifiable_id', $playlist->id)
-            ->when(! $auth['isAdmin'], fn ($q) => $q->where('admin_only', 0))
-            ->whereNull('read_at')
-            ->latest()
-            ->limit(50);
+        $query = TvNotification::query();
+        $this->scopeToNotifiable($query, $playlist);
+        $query->when(! $auth['isAdmin'], fn (Builder $query) => $query->where('admin_only', false));
+
+        if ($auth['playlistAuthId'] === null) {
+            $query->whereNull('playlist_auth_id')
+                ->whereNull('read_at');
+        } else {
+            $query->where(function (Builder $query) use ($auth): void {
+                $query->where(function (Builder $query) use ($auth): void {
+                    $query->where('playlist_auth_id', $auth['playlistAuthId'])
+                        ->whereNull('read_at');
+                })->orWhere(function (Builder $query) use ($auth): void {
+                    $query->whereNull('playlist_auth_id')
+                        ->whereDoesntHave('credentialReads', fn (Builder $query) => $query
+                            ->where('playlist_auth_id', $auth['playlistAuthId']));
+                });
+            });
+        }
+
+        $query->latest()->limit(50);
 
         if ($request->filled('channels')) {
             $query->whereIn('channel', (array) $request->input('channels'));
@@ -66,6 +86,8 @@ class TvApiController extends Controller
      *
      * Marks a single TV notification as read. Verifies playlist ownership.
      * Non-admin sessions cannot mark admin_only notifications as read.
+     * Owner-auth sessions intentionally may mark only global notifications; admin
+     * status only adds permission to mark admin_only global rows.
      */
     public function markRead(Request $request): JsonResponse
     {
@@ -73,13 +95,29 @@ class TvApiController extends Controller
         $playlist = $auth['playlist'];
         $id = $request->route('id');
 
-        $notification = TvNotification::where('id', $id)
-            ->where('notifiable_type', $playlist->getMorphClass())
-            ->where('notifiable_id', $playlist->id)
-            ->when(! $auth['isAdmin'], fn ($q) => $q->where('admin_only', 0))
+        $query = TvNotification::where('id', $id);
+        $this->scopeToNotifiable($query, $playlist);
+
+        $notification = $query
+            ->when(! $auth['isAdmin'], fn (Builder $query) => $query->where('admin_only', false))
+            ->when(
+                $auth['playlistAuthId'] === null,
+                fn (Builder $query) => $query->whereNull('playlist_auth_id'),
+                fn (Builder $query) => $query->where(function (Builder $query) use ($auth): void {
+                    $query->where('playlist_auth_id', $auth['playlistAuthId'])
+                        ->orWhereNull('playlist_auth_id');
+                }),
+            )
             ->firstOrFail();
 
-        $notification->update(['read_at' => now()]);
+        if ($auth['playlistAuthId'] !== null && $notification->playlist_auth_id === null) {
+            $notification->credentialReads()->firstOrCreate(
+                ['playlist_auth_id' => $auth['playlistAuthId']],
+                ['read_at' => now()],
+            );
+        } else {
+            $notification->update(['read_at' => now()]);
+        }
 
         return response()->json(['ok' => true]);
     }
@@ -125,26 +163,86 @@ class TvApiController extends Controller
             'platform' => ['required', 'string', 'in:ios,android'],
         ]);
 
-        PushDeviceToken::updateOrCreate(
-            [
+        DB::transaction(function () use ($auth, $data, $playlist): void {
+            $device = PushDeviceToken::where('token', $data['token'])
+                ->lockForUpdate()
+                ->first();
+
+            if ($device === null) {
+                PushDeviceToken::create([
+                    'notifiable_type' => $playlist->getMorphClass(),
+                    'notifiable_id' => $playlist->id,
+                    'token' => $data['token'],
+                    'platform' => $data['platform'],
+                    'last_seen_at' => now(),
+                    'playlist_auth_id' => $auth['playlistAuthId'],
+                ]);
+
+                return;
+            }
+
+            $device->update([
                 'notifiable_type' => $playlist->getMorphClass(),
                 'notifiable_id' => $playlist->id,
-                'token' => $data['token'],
-            ],
-            [
                 'platform' => $data['platform'],
                 'last_seen_at' => now(),
-            ],
-        );
+                'playlist_auth_id' => $auth['playlistAuthId'],
+            ]);
+        });
 
         return response()->json(['ok' => true]);
+    }
+
+    public function unregisterPushToken(Request $request): JsonResponse
+    {
+        $auth = $this->resolveAuth($request);
+        $playlist = $auth['playlist'];
+        $data = $request->validate([
+            'token' => ['required', 'string', 'max:4096'],
+        ]);
+
+        PushDeviceToken::query()
+            ->where('notifiable_type', $playlist->getMorphClass())
+            ->where('notifiable_id', $playlist->id)
+            ->where('playlist_auth_id', $auth['playlistAuthId'])
+            ->where('token', $data['token'])
+            ->delete();
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * A credential assigned to a PlaylistAlias only ever subscribes to the alias's own
+     * channel, but DVR/global notifications are raised against the alias's *effective*
+     * playlist. So an alias guest must also see (and be able to mark read) global rows
+     * recorded against that effective playlist — never rows targeted at another credential.
+     */
+    private function scopeToNotifiable(Builder $query, Model $playlist): Builder
+    {
+        $effectivePlaylist = $playlist instanceof PlaylistAlias ? $playlist->getEffectivePlaylist() : null;
+
+        return $query->where(function (Builder $query) use ($playlist, $effectivePlaylist): void {
+            $query->where(function (Builder $query) use ($playlist): void {
+                $query->where('notifiable_type', $playlist->getMorphClass())
+                    ->where('notifiable_id', $playlist->id);
+            });
+
+            if ($effectivePlaylist) {
+                $query->orWhere(function (Builder $query) use ($effectivePlaylist): void {
+                    $query->where('notifiable_type', $effectivePlaylist->getMorphClass())
+                        ->where('notifiable_id', $effectivePlaylist->id)
+                        ->whereNull('playlist_auth_id')
+                        ->where('admin_only', false);
+                });
+            }
+        });
     }
 
     /**
      * Resolve the playlist and auth scope from Xtream credentials in the URL path.
      * Returns playlist model, isAdmin flag, and the expected WebSocket channel name.
      *
-     * @return array{playlist: Model, isAdmin: bool, channel: string}
+     * @return array{playlist: Model, isAdmin: bool, playlistAuthId: ?int, channel: string}
      */
     private function resolveAuth(Request $request): array
     {
@@ -166,9 +264,17 @@ class TvApiController extends Controller
         return [
             'playlist' => $playlist,
             'isAdmin' => $isAdmin,
-            'channel' => $isAdmin
-                ? "private-tv.{$type}-admin.{$uuid}"
-                : "private-tv.{$type}.{$uuid}",
+            'playlistAuthId' => $result[4] ?? null,
+            'channel' => $this->channelName($type, $uuid, $isAdmin, $result[4] ?? null),
         ];
+    }
+
+    private function channelName(string $type, string $uuid, bool $isAdmin, ?int $playlistAuthId): string
+    {
+        if ($isAdmin) {
+            return "private-tv.{$type}-admin.{$uuid}";
+        }
+
+        return "private-tv.{$type}.{$uuid}".($playlistAuthId === null ? '' : ".{$playlistAuthId}");
     }
 }

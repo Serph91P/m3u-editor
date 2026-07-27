@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
 class TvNotification extends Model
@@ -29,7 +30,13 @@ class TvNotification extends Model
         return [
             'read_at' => 'datetime',
             'admin_only' => 'boolean',
+            'metadata' => 'array',
         ];
+    }
+
+    public function credentialReads(): HasMany
+    {
+        return $this->hasMany(TvNotificationRead::class);
     }
 
     public function prunable(): Builder
