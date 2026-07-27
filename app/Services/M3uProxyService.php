@@ -145,7 +145,10 @@ class M3uProxyService
                 'message' => 'Proxy returned status '.$response->status(),
             ];
         } catch (Exception $e) {
-            Log::warning('Failed to test resolver URL: '.$e->getMessage());
+            Log::warning('Failed to test resolver URL', [
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -217,7 +220,11 @@ class M3uProxyService
 
             return 0;
         } catch (Exception $e) {
-            Log::warning('Failed to fetch playlist streams from m3u-proxy: '.$e->getMessage());
+            Log::warning('Failed to fetch playlist streams from m3u-proxy', [
+                'playlist_uuid' => $playlist->uuid,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return 0;
         }
@@ -269,9 +276,12 @@ class M3uProxyService
                 }
 
             } catch (Exception $e) {
-                Log::warning('Failed to fetch playlist streams from m3u-proxy: '.$e->getMessage(), [
+                Log::warning('Failed to fetch playlist streams from m3u-proxy', [
+                    'playlist_uuid' => $playlist->uuid,
                     'attempt' => $attempt + 1,
                     'max_attempts' => $retries,
+                    'exception_class' => $e::class,
+                    'exception_code' => $e->getCode(),
                 ]);
 
                 $attempt++;
@@ -330,7 +340,11 @@ class M3uProxyService
 
             return false;
         } catch (Exception $e) {
-            Log::warning('Failed to check channel active status: '.$e->getMessage());
+            Log::warning('Failed to check channel active status', [
+                'channel_id' => $channel->id,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return false;
         }
@@ -371,7 +385,11 @@ class M3uProxyService
 
             return 0;
         } catch (Exception $e) {
-            Log::warning("Failed to get active streams count for {$field}={$value}: ".$e->getMessage());
+            Log::warning('Failed to get active streams count by metadata', [
+                'metadata_field' => $field,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return 0;
         }
@@ -425,7 +443,12 @@ class M3uProxyService
 
             return array_fill_keys($values, 0);
         } catch (Exception $e) {
-            Log::warning("Failed to get batch stream counts for {$field}: ".$e->getMessage());
+            Log::warning('Failed to get batch stream counts', [
+                'metadata_field' => $field,
+                'value_count' => count($values),
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return array_fill_keys($values, 0);
         }
@@ -534,7 +557,6 @@ class M3uProxyService
 
                 Log::debug('Successfully stopped streams by metadata', [
                     'field' => $field,
-                    'value' => $value,
                     'exclude_channel_id' => $excludeChannelId,
                     'deleted_count' => $data['deleted_count'] ?? 0,
                 ]);
@@ -555,7 +577,12 @@ class M3uProxyService
                 'deleted_count' => 0,
             ];
         } catch (Exception $e) {
-            Log::warning("Failed to stop streams by metadata ({$field}={$value}): ".$e->getMessage());
+            Log::warning('Failed to stop streams by metadata', [
+                'metadata_field' => $field,
+                'exclude_channel_id' => $excludeChannelId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -636,8 +663,8 @@ class M3uProxyService
                 Log::debug('Successfully stopped oldest stream for playlist', [
                     'playlist_uuid' => $playlistUuid,
                     'exclude_channel_id' => $excludeChannelId,
-                    'deleted_stream' => $data['deleted_stream'] ?? null,
                     'stream_age_seconds' => $data['stream_age_seconds'] ?? null,
+                    'deleted_count' => $data['deleted_count'] ?? 0,
                 ]);
 
                 return [
@@ -657,7 +684,12 @@ class M3uProxyService
                 'deleted_count' => 0,
             ];
         } catch (Exception $e) {
-            Log::warning("Failed to stop oldest stream for playlist ({$playlistUuid}): ".$e->getMessage());
+            Log::warning('Failed to stop oldest stream for playlist', [
+                'playlist_uuid' => $playlistUuid,
+                'exclude_channel_id' => $excludeChannelId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -719,7 +751,12 @@ class M3uProxyService
                 'deleted_count' => 0,
             ];
         } catch (Exception $e) {
-            Log::warning("Failed to stop oldest stream (field={$field}, value={$value}): ".$e->getMessage());
+            Log::warning('Failed to stop oldest stream by metadata', [
+                'metadata_field' => $field,
+                'exclude_channel_id' => $excludeChannelId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -811,7 +848,6 @@ class M3uProxyService
                 Log::debug('Stopped oldest stream to free per-auth capacity', [
                     'playlist_auth_id' => $playlistAuthId,
                     'max_connections' => $auth->max_connections,
-                    'stopped_stream' => $result['deleted_stream'] ?? null,
                     'stream_age_seconds' => $result['stream_age_seconds'] ?? null,
                 ]);
 
@@ -1006,7 +1042,6 @@ class M3uProxyService
                 if (! $selectedProfile) {
                     Log::warning('No profiles with capacity available for new stream (after reconciliation)', [
                         'playlist_id' => $profileSourcePlaylist->id,
-                        'source_playlist' => $profileSourcePlaylist->name,
                         'channel_id' => $id,
                     ]);
                     abort(503, 'All provider profiles have reached their maximum stream limit. Please try again later.');
@@ -1014,7 +1049,6 @@ class M3uProxyService
 
                 Log::debug('Selected provider profile for new stream creation', [
                     'playlist_id' => $profileSourcePlaylist->id,
-                    'source_playlist' => $profileSourcePlaylist->name,
                     'provider_profile_id' => $selectedProfile?->id,
                     'channel_id' => $id,
                 ]);
@@ -1087,7 +1121,6 @@ class M3uProxyService
                         Log::debug('Stopped oldest stream to free capacity for new channel request', [
                             'channel_id' => $id,
                             'playlist_uuid' => $playlist->uuid,
-                            'stopped_stream' => $stopResult['deleted_stream'] ?? null,
                             'stream_age_seconds' => $stopResult['stream_age_seconds'] ?? null,
                         ]);
 
@@ -1198,7 +1231,6 @@ class M3uProxyService
                         Log::debug('Stopped oldest stream to free provider profile capacity', [
                             'channel_id' => $id,
                             'playlist_uuid' => $playlist->uuid,
-                            'stopped_stream' => $stopResult['deleted_stream'] ?? null,
                             'stream_age_seconds' => $stopResult['stream_age_seconds'] ?? null,
                         ]);
 
@@ -1213,7 +1245,6 @@ class M3uProxyService
                 if (! $selectedProfile) {
                     Log::warning('No profiles with capacity available (after reconciliation)', [
                         'playlist_id' => $profileSourcePlaylist->id,
-                        'source_playlist' => $profileSourcePlaylist->name,
                         'channel_id' => $id,
                     ]);
                     abort(503, 'All provider profiles have reached their maximum stream limit. Please try again later.');
@@ -1223,7 +1254,6 @@ class M3uProxyService
             Log::debug('Selected profile for streaming', [
                 'profile_id' => $selectedProfile->id,
                 'profile_name' => $selectedProfile->name,
-                'source_playlist' => $profileSourcePlaylist->name,
                 'playlist_id' => $profileSourcePlaylist->id,
                 'channel_id' => $id,
             ]);
@@ -1315,7 +1345,6 @@ class M3uProxyService
                 'stream_profile_id' => $profile->id,
                 'provider_profile_id' => $selectedProfile?->id,
                 'is_failover' => $isFailover,
-                'primary_url' => $primaryUrl,
                 'failover_count' => is_array($failovers) ? count($failovers) : ($failovers ? 'using_resolver' : 0),
             ]);
 
@@ -1350,7 +1379,6 @@ class M3uProxyService
                 'is_vod' => $actualChannel->is_vod ?? false,
                 'provider_profile_id' => $selectedProfile?->id,
                 'provider_profile_name' => $selectedProfile?->name,
-                'primary_url' => preg_replace('#/[^/]+/[^/]+/(live|series|movie)/#', '/***/***/\1/', $primaryUrl),
                 'url_transformed' => $selectedProfile !== null,
             ]);
 
@@ -1470,7 +1498,6 @@ class M3uProxyService
                         Log::debug('Stopped oldest stream to free capacity for new episode request', [
                             'episode_id' => $id,
                             'playlist_uuid' => $playlist->uuid,
-                            'stopped_stream' => $stopResult['deleted_stream'] ?? null,
                             'stream_age_seconds' => $stopResult['stream_age_seconds'] ?? null,
                         ]);
 
@@ -1608,7 +1635,6 @@ class M3uProxyService
                         Log::debug('Stopped oldest stream to free provider profile capacity for episode', [
                             'episode_id' => $id,
                             'playlist_uuid' => $playlist->uuid,
-                            'stopped_stream' => $stopResult['deleted_stream'] ?? null,
                         ]);
 
                         usleep(200000); // 200ms
@@ -1786,16 +1812,26 @@ class M3uProxyService
                 ->post($endpoint);
 
             if ($response->successful()) {
-                Log::debug("Failover triggered successfully for stream {$streamId}");
+                Log::debug('Failover triggered successfully', [
+                    'stream_id' => $streamId,
+                    'status_code' => $response->status(),
+                ]);
 
                 return true;
             }
 
-            Log::warning("Failed to trigger failover for stream {$streamId}: ".$response->body());
+            Log::warning('Failed to trigger failover', [
+                'stream_id' => $streamId,
+                'status_code' => $response->status(),
+            ]);
 
             return false;
         } catch (Exception $e) {
-            Log::error("Error triggering failover for stream {$streamId}: ".$e->getMessage());
+            Log::error('Error triggering failover', [
+                'stream_id' => $streamId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return false;
         }
@@ -1856,7 +1892,11 @@ class M3uProxyService
                 'stream_ids' => $triggered,
             ];
         } catch (Exception $e) {
-            Log::error("Error triggering failover for channel {$channelId}: ".$e->getMessage());
+            Log::error('Error triggering failover for channel', [
+                'channel_id' => $channelId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return ['success' => false, 'triggered_count' => 0, 'stream_ids' => [], 'error' => $e->getMessage()];
         }
@@ -1883,16 +1923,26 @@ class M3uProxyService
                 ->delete($endpoint);
 
             if ($response->successful()) {
-                Log::debug("Stream {$streamId} stopped successfully");
+                Log::debug('Stream stopped successfully', [
+                    'stream_id' => $streamId,
+                    'status_code' => $response->status(),
+                ]);
 
                 return true;
             }
 
-            Log::warning("Failed to stop stream {$streamId}: ".$response->body());
+            Log::warning('Failed to stop stream', [
+                'stream_id' => $streamId,
+                'status_code' => $response->status(),
+            ]);
 
             return false;
         } catch (Exception $e) {
-            Log::error("Error stopping stream {$streamId}: ".$e->getMessage());
+            Log::error('Error stopping stream', [
+                'stream_id' => $streamId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return false;
         }
@@ -1947,7 +1997,11 @@ class M3uProxyService
                 'streams' => [],
             ];
         } catch (ConnectionException $e) {
-            Log::warning('m3u-proxy connection error on /streams: '.$e->getMessage());
+            Log::warning('m3u-proxy connection error', [
+                'operation' => 'fetch_streams',
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -1956,7 +2010,10 @@ class M3uProxyService
                 'streams' => [],
             ];
         } catch (Exception $e) {
-            Log::warning('Unexpected error fetching active streams from m3u-proxy: '.$e->getMessage());
+            Log::warning('Unexpected error fetching active streams from m3u-proxy', [
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -2010,7 +2067,11 @@ class M3uProxyService
                 'clients' => [],
             ];
         } catch (ConnectionException $e) {
-            Log::warning('m3u-proxy connection error on /clients: '.$e->getMessage());
+            Log::warning('m3u-proxy connection error', [
+                'operation' => 'fetch_clients',
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -2019,7 +2080,10 @@ class M3uProxyService
                 'clients' => [],
             ];
         } catch (Exception $e) {
-            Log::warning('Unexpected error fetching active clients from m3u-proxy: '.$e->getMessage());
+            Log::warning('Unexpected error fetching active clients from m3u-proxy', [
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -2080,7 +2144,11 @@ class M3uProxyService
                 'broadcasts' => [],
             ];
         } catch (ConnectionException $e) {
-            Log::warning('m3u-proxy connection error on /broadcast: '.$e->getMessage());
+            Log::warning('m3u-proxy connection error', [
+                'operation' => 'fetch_broadcasts',
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -2089,7 +2157,10 @@ class M3uProxyService
                 'broadcasts' => [],
             ];
         } catch (Exception $e) {
-            Log::warning('Unexpected error fetching broadcasts from m3u-proxy: '.$e->getMessage());
+            Log::warning('Unexpected error fetching broadcasts from m3u-proxy', [
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -2120,7 +2191,10 @@ class M3uProxyService
                 ->post($endpoint);
 
             if ($response->successful()) {
-                Log::debug("Broadcast {$networkId} stopped successfully");
+                Log::debug('Broadcast stopped successfully', [
+                    'network_id' => $networkId,
+                    'status_code' => $response->status(),
+                ]);
 
                 // Always update local state
                 $network = Network::where('uuid', $networkId)->first();
@@ -2145,11 +2219,18 @@ class M3uProxyService
                 return true;
             }
 
-            Log::warning("Failed to stop broadcast {$networkId}: ".$response->body());
+            Log::warning('Failed to stop broadcast', [
+                'network_id' => $networkId,
+                'status_code' => $response->status(),
+            ]);
 
             return false;
         } catch (Exception $e) {
-            Log::error("Error stopping broadcast {$networkId}: ".$e->getMessage());
+            Log::error('Error stopping broadcast', [
+                'network_id' => $networkId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return false;
         }
@@ -2252,7 +2333,12 @@ class M3uProxyService
                 if (isset($data['stream_id'])) {
                     Log::debug('m3u-proxy stream created/updated successfully', [
                         'stream_id' => $data['stream_id'],
-                        'url' => $url,
+                        'channel_id' => $metadata['channel_id'] ?? $metadata['id'] ?? null,
+                        'episode_id' => $metadata['episode_id'] ?? null,
+                        'playlist_uuid' => $metadata['playlist_uuid'] ?? null,
+                        'profile_id' => $metadata['profile_id'] ?? null,
+                        'provider_profile_id' => $metadata['provider_profile_id'] ?? null,
+                        'status_code' => $response->status(),
                     ]);
 
                     return $data['stream_id'];
@@ -2264,8 +2350,13 @@ class M3uProxyService
             throw new Exception('Failed to create stream: '.$response->body());
         } catch (Exception $e) {
             Log::error('Error creating/updating stream on m3u-proxy', [
-                'error' => $e->getMessage(),
-                'url' => $url,
+                'channel_id' => $metadata['channel_id'] ?? $metadata['id'] ?? null,
+                'episode_id' => $metadata['episode_id'] ?? null,
+                'playlist_uuid' => $metadata['playlist_uuid'] ?? null,
+                'profile_id' => $metadata['profile_id'] ?? null,
+                'provider_profile_id' => $metadata['provider_profile_id'] ?? null,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
             ]);
             throw $e;
         }
@@ -2412,7 +2503,12 @@ class M3uProxyService
                     Log::debug('Created transcoded stream on m3u-proxy', [
                         'stream_id' => $data['stream_id'],
                         'format' => $profile->format,
-                        'payload' => $payload,
+                        'channel_id' => $metadata['channel_id'] ?? $metadata['id'] ?? null,
+                        'episode_id' => $metadata['episode_id'] ?? null,
+                        'playlist_uuid' => $metadata['playlist_uuid'] ?? null,
+                        'profile_id' => $profile->id,
+                        'provider_profile_id' => $metadata['provider_profile_id'] ?? null,
+                        'status_code' => $response->status(),
                     ]);
 
                     return $data['stream_id'];
@@ -2424,9 +2520,14 @@ class M3uProxyService
             throw new Exception('Failed to create transcoded stream: '.$response->body());
         } catch (Exception $e) {
             Log::error('Error creating transcoded stream on m3u-proxy', [
-                'error' => $e->getMessage(),
-                'profile' => $profile->getProfileIdentifier(),
-                'url' => $url,
+                'channel_id' => $metadata['channel_id'] ?? $metadata['id'] ?? null,
+                'episode_id' => $metadata['episode_id'] ?? null,
+                'playlist_uuid' => $metadata['playlist_uuid'] ?? null,
+                'profile_id' => $profile->id,
+                'profile_name' => $profile->name,
+                'provider_profile_id' => $metadata['provider_profile_id'] ?? null,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
             ]);
             throw $e;
         }
@@ -2691,7 +2792,14 @@ class M3uProxyService
 
             return null;
         } catch (Exception $e) {
-            Log::warning('Error finding existing pooled stream: '.$e->getMessage());
+            Log::warning('Error finding existing pooled stream', [
+                'model_id' => $modelId,
+                'model_type' => $type,
+                'profile_id' => $profileId,
+                'provider_profile_id' => $providerProfileId,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return null;
         }
@@ -2798,7 +2906,10 @@ class M3uProxyService
                 'info' => [],
             ];
         } catch (Exception $e) {
-            Log::warning('Failed to fetch proxy info from m3u-proxy: '.$e->getMessage());
+            Log::warning('Failed to fetch proxy info from m3u-proxy', [
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
 
             return [
                 'success' => false,
@@ -2869,7 +2980,7 @@ class M3uProxyService
                 if ($idx < $index) {
                     // If the index is higher than the current loop, chances are it has already been attempted, continue to the next...
                     Log::debug('Channel already attempted, skipping', [
-                        'channel' => $failoverPlaylist->title_custom ?? $failoverPlaylist->title,
+                        'channel_id' => $failoverChannel->id,
                         'index' => $idx,
                         'requested_index' => $index,
                     ]);
@@ -2884,7 +2995,7 @@ class M3uProxyService
                 if ($invalidExpiresAt && now()->timestamp < (int) $invalidExpiresAt) {
                     Log::debug('Failover playlist marked invalid by fail condition, skipping', [
                         'playlist_uuid' => $failoverPlaylist->uuid,
-                        'playlist' => $failoverPlaylist->title_custom ?? $failoverPlaylist->title,
+                        'channel_id' => $failoverChannel->id,
                     ]);
 
                     continue;
@@ -2896,8 +3007,8 @@ class M3uProxyService
                 // Check if the url is the current URL (skip it)
                 if ($url === $currentUrl) {
                     Log::debug('Failover URL matches current URL, skipping', [
-                        'url' => substr($url, 0, 100),
                         'playlist_uuid' => $failoverPlaylist->uuid,
+                        'channel_id' => $failoverChannel->id,
                     ]);
 
                     continue;
@@ -2923,8 +3034,8 @@ class M3uProxyService
 
                 // At capacity, skip this URL
                 Log::debug('Failover URL playlist at capacity, skipping', [
-                    'url' => substr($url, 0, 100),
                     'playlist_uuid' => $failoverPlaylist->uuid,
+                    'channel_id' => $failoverChannel->id,
                     'active' => $activeStreams,
                     'limit' => $failoverPlaylist->available_streams,
                 ]);
@@ -2935,9 +3046,13 @@ class M3uProxyService
                 'next_url' => $nextUrl,
             ];
         } catch (Exception $e) {
-            Log::warning('Error resolving failover url: '.$e->getMessage(), [
+            Log::warning('Error resolving failover URL', [
                 'channel_id' => $channelId,
                 'playlist_uuid' => $playlistUuid,
+                'failover_index' => $index,
+                'status_code' => $statusCode,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
             ]);
 
             // Return null so the proxy stops retrying instead of looping on the same URL
@@ -3001,7 +3116,13 @@ class M3uProxyService
                 }
             }
         } catch (Exception $e) {
-            Log::warning('Error marking failover playlist as invalid: '.$e->getMessage());
+            Log::warning('Error marking failover playlist as invalid', [
+                'channel_id' => $channelId,
+                'failover_index' => $index,
+                'status_code' => $statusCode,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
         }
     }
 
