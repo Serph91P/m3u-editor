@@ -58,6 +58,35 @@ class VersionServiceProvider extends ServiceProvider
         return $version;
     }
 
+    public static string $tvCacheKey = 'app.tvRemoteVersion';
+
+    public static function getRemoteTvVersion($refresh = false): string
+    {
+        // If using redis, may not be initialized yet, so catch the exception
+        try {
+            $remoteVersion = Cache::get(self::$tvCacheKey);
+        } catch (Exception $e) {
+            $remoteVersion = null;
+        }
+        if ($remoteVersion === null || $refresh) {
+            $remoteVersion = '';
+            try {
+                $response = Http::get('https://raw.githubusercontent.com/'.config('dev.tv_repo').'/refs/heads/master/flutter_client/pubspec.yaml');
+                if ($response->ok()) {
+                    preg_match('/^version:\s*([0-9]+\.[0-9]+\.[0-9]+)/m', $response->body(), $matches);
+                    if (! empty($matches[1])) {
+                        $remoteVersion = $matches[1];
+                        Cache::put(self::$tvCacheKey, $remoteVersion, 60 * 5);
+                    }
+                }
+            } catch (Exception $e) {
+                // Ignore
+            }
+        }
+
+        return $remoteVersion;
+    }
+
     public static string $releasesFile = 'app/m3u_releases.json';
 
     public static function getRemoteVersion($refresh = false): string

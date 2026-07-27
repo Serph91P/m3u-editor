@@ -51,6 +51,7 @@ use App\Filament\Widgets\DiscordWidget;
 use App\Filament\Widgets\DocumentsWidget;
 use App\Filament\Widgets\DonateCrypto;
 use App\Filament\Widgets\KoFiWidget;
+use App\Filament\Widgets\M3uTvWidget;
 use App\Filament\Widgets\PluginsOverviewWidget;
 use App\Filament\Widgets\QueueDashboardWidget;
 use App\Filament\Widgets\SharedStreamStatsWidget;
@@ -293,6 +294,7 @@ class AdminPanelProvider extends PanelProvider
                 AccountWidget::class,
                 DocumentsWidget::class,
                 DiscordWidget::class,
+                M3uTvWidget::class,
                 // PayPalDonateWidget::class,
                 KoFiWidget::class,
                 QueueDashboardWidget::class,
