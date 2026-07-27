@@ -379,6 +379,7 @@ return [
         'a6558982e4e4', // PlaylistAuthPivot
         'b06385c305da', // AedProfile
         'eadad9842f9e', // TvNotification
+        '24408d770873', // ViewerFavorite
 
         // Experimental branch — new models managed via Filament forms,
         // same rationale as all other models above.

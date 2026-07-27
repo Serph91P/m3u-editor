@@ -8,6 +8,7 @@ use App\Enums\DvrRecordingStatus;
 use App\Enums\DvrRuleType;
 use App\Enums\DvrSeriesMode;
 use App\Enums\PlaylistChannelId;
+use App\Events\ViewerFavoriteEvent;
 use App\Facades\PlaylistFacade;
 use App\Facades\ProxyFacade;
 use App\Models\ArrIntegration;
@@ -66,6 +67,11 @@ class XtreamApiController extends Controller
         'create_dvr_series_rule',
         'cancel_dvr_recording',
         'delete_dvr_recording',
+    ];
+
+    private const FAVORITE_COLUMNS = [
+        'content_type', 'stream_id', 'aio_item_id', 'imdb_id', 'tmdb_id',
+        'aio_integration_id', 'title', 'thumbnail_url', 'item_type', 'favorited_at',
     ];
 
     /**
@@ -2637,13 +2643,17 @@ class XtreamApiController extends Controller
         }
 
         $type = $request->input('content_type'); // 'live', 'vod', 'series', 'aiostreams', or null for all
+        $imdbId = $request->input('imdb_id'); // cross-reference: favorites of this title from any content_type/source
 
         $query = ViewerFavorite::where('playlist_viewer_id', $viewer->id);
         if ($type && in_array($type, ['live', 'vod', 'series', 'aiostreams'], true)) {
             $query->where('content_type', $type);
         }
+        if ($imdbId) {
+            $query->forImdbId($imdbId);
+        }
 
-        $favorites = $query->get(['content_type', 'stream_id', 'aio_item_id', 'favorited_at']);
+        $favorites = $query->get(self::FAVORITE_COLUMNS);
 
         return response()->json($favorites);
     }
@@ -2677,16 +2687,104 @@ class XtreamApiController extends Controller
             ? ['playlist_viewer_id' => $viewer->id, 'aio_item_id' => $aioItemId]
             : ['playlist_viewer_id' => $viewer->id, 'content_type' => $contentType, 'stream_id' => $streamId];
 
+        $aioMetadata = [];
+
         if ($favorited) {
-            ViewerFavorite::updateOrCreate($key, array_merge($key, [
+            $crossRef = $this->resolveFavoriteCrossReference(
+                $contentType,
+                $streamId,
+                $aioItemId,
+                $request->input('imdb_id'),
+                $request->input('tmdb_id'),
+            );
+
+            $aioMetadata = $isAio ? $this->aioMetadataFromRequest($request) : [];
+
+            $attributes = array_merge($key, [
                 'content_type' => $contentType,
                 'favorited_at' => now(),
-            ]));
+                'imdb_id' => $crossRef['imdb'],
+                'tmdb_id' => $crossRef['tmdb'],
+            ], $aioMetadata);
+
+            ViewerFavorite::updateOrCreate($key, $attributes);
         } else {
             ViewerFavorite::where($key)->delete();
         }
 
+        broadcast(ViewerFavoriteEvent::build(
+            $playlist,
+            $viewer,
+            $contentType,
+            $streamId,
+            $aioItemId,
+            $favorited,
+            $aioMetadata,
+        ));
+
         return response()->json(['favorited' => $favorited]);
+    }
+
+    /**
+     * @return array{aio_integration_id: ?int, title: ?string, thumbnail_url: ?string, item_type: ?string}
+     */
+    private function aioMetadataFromRequest(Request $request): array
+    {
+        return [
+            'aio_integration_id' => $request->input('aio_integration_id') ? (int) $request->input('aio_integration_id') : null,
+            'title' => $request->input('title'),
+            'thumbnail_url' => $request->input('thumbnail_url'),
+            'item_type' => $request->input('item_type'),
+        ];
+    }
+
+    /**
+     * Server-side lookup of universal cross-reference ids for a favorite.
+     * vod/series are resolved from the local Channel/Series row — authoritative,
+     * never trusted from the client. AIOStreams items have no local row, so their
+     * imdb_id is derived from the addon's own item id when it looks like an IMDb
+     * id (the common case for AIOStreams catalogs), falling back to whatever the
+     * addon's metadata told the client, since the server can't independently
+     * verify third-party addon content.
+     *
+     * @return array{imdb: ?string, tmdb: ?string}
+     */
+    private function resolveFavoriteCrossReference(
+        string $contentType,
+        ?int $streamId,
+        ?string $aioItemId,
+        ?string $clientImdbId,
+        ?string $clientTmdbId,
+    ): array {
+        if ($contentType === 'vod' && $streamId) {
+            $channel = Channel::find($streamId);
+            $tmdbId = $channel?->getTmdbId();
+
+            return [
+                'imdb' => $channel?->getImdbId(),
+                'tmdb' => $tmdbId !== null ? (string) $tmdbId : null,
+            ];
+        }
+
+        if ($contentType === 'series' && $streamId) {
+            $ids = Series::find($streamId)?->getMovieDbIds() ?? [];
+
+            return [
+                'imdb' => $ids['imdb'] ?? null,
+                'tmdb' => isset($ids['tmdb']) ? (string) $ids['tmdb'] : null,
+            ];
+        }
+
+        if ($contentType === 'aiostreams') {
+            $looksLikeImdbId = is_string($aioItemId) && preg_match('/^tt\d+$/', $aioItemId) === 1;
+
+            return [
+                'imdb' => $clientImdbId ?: ($looksLikeImdbId ? $aioItemId : null),
+                'tmdb' => $clientTmdbId,
+            ];
+        }
+
+        return ['imdb' => null, 'tmdb' => null];
     }
 
     /**
@@ -2730,14 +2828,31 @@ class XtreamApiController extends Controller
                 ? ['playlist_viewer_id' => $viewer->id, 'aio_item_id' => $aioItemId]
                 : ['playlist_viewer_id' => $viewer->id, 'content_type' => $contentType, 'stream_id' => $streamId];
 
-            ViewerFavorite::updateOrCreate($key, array_merge($key, [
+            $crossRef = $this->resolveFavoriteCrossReference(
+                $contentType,
+                $streamId,
+                $aioItemId,
+                is_string($item['imdb_id'] ?? null) ? $item['imdb_id'] : null,
+                is_string($item['tmdb_id'] ?? null) ? $item['tmdb_id'] : null,
+            );
+
+            $attributes = array_merge($key, [
                 'content_type' => $contentType,
                 'favorited_at' => now(),
-            ]));
+                'imdb_id' => $crossRef['imdb'],
+                'tmdb_id' => $crossRef['tmdb'],
+            ], $isAio ? [
+                'aio_integration_id' => isset($item['aio_integration_id']) ? (int) $item['aio_integration_id'] : null,
+                'title' => is_string($item['title'] ?? null) ? $item['title'] : null,
+                'thumbnail_url' => is_string($item['thumbnail_url'] ?? null) ? $item['thumbnail_url'] : null,
+                'item_type' => is_string($item['item_type'] ?? null) ? $item['item_type'] : null,
+            ] : []);
+
+            ViewerFavorite::updateOrCreate($key, $attributes);
         }
 
         $favorites = ViewerFavorite::where('playlist_viewer_id', $viewer->id)
-            ->get(['content_type', 'stream_id', 'aio_item_id', 'favorited_at']);
+            ->get(self::FAVORITE_COLUMNS);
 
         return response()->json($favorites);
     }

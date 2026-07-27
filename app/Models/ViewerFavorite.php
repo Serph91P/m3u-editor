@@ -12,6 +12,7 @@ class ViewerFavorite extends Model
 
     protected $casts = [
         'stream_id' => 'integer',
+        'aio_integration_id' => 'integer',
         'favorited_at' => 'datetime',
     ];
 
@@ -56,5 +57,15 @@ class ViewerFavorite extends Model
     public function scopeAiostreams(Builder $query): Builder
     {
         return $query->where('content_type', 'aiostreams');
+    }
+
+    /**
+     * Any favorite (any content_type/source) sharing this IMDb id — the
+     * cross-reference that lets e.g. an AIOStreams favorite be recognised
+     * against the same title favorited via Xtream VOD, or vice versa.
+     */
+    public function scopeForImdbId(Builder $query, string $imdbId): Builder
+    {
+        return $query->where('imdb_id', $imdbId);
     }
 }
