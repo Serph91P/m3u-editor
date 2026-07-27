@@ -1034,7 +1034,7 @@ class Preferences extends SettingsPage
                                                     ->send();
                                             }),
                                         Action::make('get_tv_app')
-                                            ->label(__('Download the app'))
+                                            ->label(__('Get the app'))
                                             ->color('gray')
                                             ->icon('heroicon-o-arrow-top-right-on-square')
                                             ->url('https://github.com/m3ue/m3u-tv/releases')
