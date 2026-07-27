@@ -27,6 +27,7 @@ use App\Models\PlaylistAuth;
 use App\Models\PlaylistViewer;
 use App\Models\Series;
 use App\Models\StreamProfile;
+use App\Models\ViewerFavorite;
 use App\Models\ViewerWatchProgress;
 use App\Providers\VersionServiceProvider;
 use App\Services\ContentRequestService;
@@ -1978,6 +1979,12 @@ class XtreamApiController extends Controller
             return $this->getSeriesProgress($request, $playlist, $authMethod, $username, $password);
         } elseif ($action === 'get_recently_watched') {
             return $this->getRecentlyWatched($request, $playlist, $authMethod, $username, $password);
+        } elseif ($action === 'get_favorites') {
+            return $this->getFavorites($request, $playlist, $authMethod, $username, $password);
+        } elseif ($action === 'toggle_favorite') {
+            return $this->toggleFavorite($request, $playlist, $authMethod, $username, $password);
+        } elseif ($action === 'sync_favorites') {
+            return $this->syncFavorites($request, $playlist, $authMethod, $username, $password);
         } elseif ($action === 'request_search') {
             return $this->searchRequests($request, $playlist, $authMethod, $playlistAuth);
         } elseif ($action === 'request_submit') {
@@ -2617,6 +2624,122 @@ class XtreamApiController extends Controller
         });
 
         return response()->json($enriched);
+    }
+
+    /**
+     * Get all favorites for a viewer, optionally filtered by content_type.
+     */
+    private function getFavorites(Request $request, $playlist, string $authMethod = 'none', string $username = '', string $password = ''): \Illuminate\Http\JsonResponse
+    {
+        $viewer = $this->resolveContextViewer($request, $playlist, $authMethod, $username, $password);
+        if (! $viewer) {
+            return response()->json(['error' => 'Viewer not found'], 404);
+        }
+
+        $type = $request->input('content_type'); // 'live', 'vod', 'series', 'aiostreams', or null for all
+
+        $query = ViewerFavorite::where('playlist_viewer_id', $viewer->id);
+        if ($type && in_array($type, ['live', 'vod', 'series', 'aiostreams'], true)) {
+            $query->where('content_type', $type);
+        }
+
+        $favorites = $query->get(['content_type', 'stream_id', 'aio_item_id', 'favorited_at']);
+
+        return response()->json($favorites);
+    }
+
+    /**
+     * Add or remove a single favorite for a viewer. Idempotent: favoriting an
+     * already-favorited item (or unfavoriting one that isn't) is a no-op.
+     */
+    private function toggleFavorite(Request $request, $playlist, string $authMethod = 'none', string $username = '', string $password = ''): \Illuminate\Http\JsonResponse
+    {
+        $contentType = $request->input('content_type');
+        $aioItemId = $request->input('aio_item_id');
+        $isAio = $contentType === 'aiostreams';
+        $streamId = $isAio ? null : (int) $request->input('stream_id');
+        $favorited = $request->boolean('favorited', true);
+
+        if (! in_array($contentType, ['live', 'vod', 'series', 'aiostreams'], true)) {
+            return response()->json(['error' => 'content_type must be one of live, vod, series, aiostreams'], 400);
+        }
+
+        if ((! $isAio && ! $streamId) || ($isAio && ! $aioItemId)) {
+            return response()->json(['error' => 'stream_id or aio_item_id is required'], 400);
+        }
+
+        $viewer = $this->resolveContextViewer($request, $playlist, $authMethod, $username, $password);
+        if (! $viewer) {
+            return response()->json(['error' => 'Viewer not found'], 404);
+        }
+
+        $key = $isAio
+            ? ['playlist_viewer_id' => $viewer->id, 'aio_item_id' => $aioItemId]
+            : ['playlist_viewer_id' => $viewer->id, 'content_type' => $contentType, 'stream_id' => $streamId];
+
+        if ($favorited) {
+            ViewerFavorite::updateOrCreate($key, array_merge($key, [
+                'content_type' => $contentType,
+                'favorited_at' => now(),
+            ]));
+        } else {
+            ViewerFavorite::where($key)->delete();
+        }
+
+        return response()->json(['favorited' => $favorited]);
+    }
+
+    /**
+     * One-time reconciliation for a client with pre-existing local-only favorites:
+     * union the client's set into the viewer's server-side favorites and return the
+     * merged result. Clients call this once (e.g. on first connect after upgrading to
+     * server-backed favorites) and treat get_favorites/toggle_favorite as authoritative
+     * afterward — this endpoint does not delete anything, only adds.
+     */
+    private function syncFavorites(Request $request, $playlist, string $authMethod = 'none', string $username = '', string $password = ''): \Illuminate\Http\JsonResponse
+    {
+        $viewer = $this->resolveContextViewer($request, $playlist, $authMethod, $username, $password);
+        if (! $viewer) {
+            return response()->json(['error' => 'Viewer not found'], 404);
+        }
+
+        $items = $request->input('favorites', []);
+        if (! is_array($items)) {
+            return response()->json(['error' => 'favorites must be an array'], 400);
+        }
+
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $contentType = $item['content_type'] ?? null;
+            if (! in_array($contentType, ['live', 'vod', 'series', 'aiostreams'], true)) {
+                continue;
+            }
+
+            $isAio = $contentType === 'aiostreams';
+            $aioItemId = $item['aio_item_id'] ?? null;
+            $streamId = $isAio ? null : (isset($item['stream_id']) ? (int) $item['stream_id'] : null);
+
+            if ((! $isAio && ! $streamId) || ($isAio && ! $aioItemId)) {
+                continue;
+            }
+
+            $key = $isAio
+                ? ['playlist_viewer_id' => $viewer->id, 'aio_item_id' => $aioItemId]
+                : ['playlist_viewer_id' => $viewer->id, 'content_type' => $contentType, 'stream_id' => $streamId];
+
+            ViewerFavorite::updateOrCreate($key, array_merge($key, [
+                'content_type' => $contentType,
+                'favorited_at' => now(),
+            ]));
+        }
+
+        $favorites = ViewerFavorite::where('playlist_viewer_id', $viewer->id)
+            ->get(['content_type', 'stream_id', 'aio_item_id', 'favorited_at']);
+
+        return response()->json($favorites);
     }
 
     /**
