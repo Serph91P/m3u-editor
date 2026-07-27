@@ -495,7 +495,7 @@ class M3uProxyApiController extends Controller
                 'exception_code' => $e->getCode(),
             ]);
 
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => 'Failed to handle broadcast callback'], 500);
         }
     }
 
