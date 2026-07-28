@@ -158,6 +158,7 @@ class SimilaritySearchService
      *     fuzzy_max_distance: int,
      *     exact_match_distance: int,
      *     quality_indicators: array<int, string>|null,
+     *     trigram_matching_enabled: bool,
      * }
      */
     public function matcherOptionsFromSettings(array $settings): array
@@ -168,6 +169,7 @@ class SimilaritySearchService
             'fuzzy_max_distance' => $settings['fuzzy_max_distance'] ?? 25,
             'exact_match_distance' => $settings['exact_match_distance'] ?? 8,
             'quality_indicators' => $settings['quality_indicators'] ?? null,
+            'trigram_matching_enabled' => $settings['trigram_matching_enabled'] ?? false,
         ];
     }
 
@@ -205,6 +207,7 @@ class SimilaritySearchService
         ?string $cleanedTitle = null,
         ?string $cleanedName = null,
         ?Collection $prefetchedCandidates = null,
+        bool $trigramMatchingEnabled = false,
     ): ?EpgChannel {
         return $this->findEpgChannelCandidates(
             channel: $channel,
@@ -217,6 +220,7 @@ class SimilaritySearchService
             cleanedTitle: $cleanedTitle,
             cleanedName: $cleanedName,
             prefetchedCandidates: $prefetchedCandidates,
+            trigramMatchingEnabled: $trigramMatchingEnabled,
         )['automatic_match'];
     }
 
@@ -259,7 +263,7 @@ class SimilaritySearchService
      * @param  list<string>  $unionTerms
      * @return Collection<int, EpgChannel>
      */
-    public function loadEpgCandidates(Epg $epg, array $unionTerms): Collection
+    public function loadEpgCandidates(Epg $epg, array $unionTerms, bool $trigramMatchingEnabled = false): Collection
     {
         $unionTerms = collect($unionTerms)
             ->filter(fn (string $term): bool => mb_strlen($term, 'UTF-8') >= $this->minChannelLength)
@@ -276,14 +280,14 @@ class SimilaritySearchService
         }
 
         $candidates = $epg->matchableChannels()
-            ->where(function (Builder $query) use ($unionTerms): void {
+            ->where(function (Builder $query) use ($unionTerms, $trigramMatchingEnabled): void {
                 foreach ($unionTerms as $term) {
                     $likeTerm = $this->likePattern($term);
                     $query->orWhereRaw("LOWER(channel_id) LIKE ? ESCAPE '!'", [$likeTerm])
                         ->orWhereRaw("LOWER(name) LIKE ? ESCAPE '!'", [$likeTerm])
                         ->orWhereRaw("LOWER(display_name) LIKE ? ESCAPE '!'", [$likeTerm]);
                     $this->addJsonSearchCondition($query, $term);
-                    $this->addTrigramSearchCondition($query, $term);
+                    $this->addTrigramSearchCondition($query, $term, $trigramMatchingEnabled);
                 }
             })
             ->select('id', 'channel_id', 'name', 'display_name', 'additional_display_names', 'epg_id')
@@ -349,6 +353,7 @@ class SimilaritySearchService
         ?string $cleanedTitle = null,
         ?string $cleanedName = null,
         ?Collection $prefetchedCandidates = null,
+        bool $trigramMatchingEnabled = false,
     ): array {
         $this->removeQualityIndicators = $removeQualityIndicators;
         $this->upperFuzzyThreshold = $fuzzyMaxDistance;
@@ -389,19 +394,19 @@ class SimilaritySearchService
         if ($prefetchedCandidates !== null) {
             $databaseCandidates = $prefetchedCandidates;
         } else {
-            [$relevanceSql, $relevanceBindings] = $this->candidateRelevanceOrder($searchTerms->all());
+            [$relevanceSql, $relevanceBindings] = $this->candidateRelevanceOrder($searchTerms->all(), $trigramMatchingEnabled);
 
             $databaseCandidates = $this->dedupeByPriority(
                 $epg,
                 $epg->matchableChannels()
-                    ->where(function (Builder $query) use ($searchTerms): void {
+                    ->where(function (Builder $query) use ($searchTerms, $trigramMatchingEnabled): void {
                         foreach ($searchTerms as $term) {
                             $likeTerm = $this->likePattern($term);
                             $query->orWhereRaw("LOWER(channel_id) LIKE ? ESCAPE '!'", [$likeTerm])
                                 ->orWhereRaw("LOWER(name) LIKE ? ESCAPE '!'", [$likeTerm])
                                 ->orWhereRaw("LOWER(display_name) LIKE ? ESCAPE '!'", [$likeTerm]);
                             $this->addJsonSearchCondition($query, $term);
-                            $this->addTrigramSearchCondition($query, $term);
+                            $this->addTrigramSearchCondition($query, $term, $trigramMatchingEnabled);
                         }
                     })
                     ->select('id', 'channel_id', 'name', 'display_name', 'additional_display_names', 'epg_id')
@@ -648,11 +653,12 @@ class SimilaritySearchService
      * Widen the candidate pool on Postgres using pg_trgm similarity(), so
      * channels without a literal LIKE-able substring match (typos,
      * transliteration differences) can still surface as a candidate. No-op
-     * on other drivers — the LIKE-based search is unchanged there.
+     * on other drivers, and opt-in per EpgMap via settings.trigram_matching_enabled
+     * — the LIKE-based search is unchanged when disabled.
      */
-    private function addTrigramSearchCondition(Builder $query, string $term): void
+    private function addTrigramSearchCondition(Builder $query, string $term, bool $trigramMatchingEnabled): void
     {
-        [$condition, $bindings] = $this->trigramSearchCondition($term);
+        [$condition, $bindings] = $this->trigramSearchCondition($term, $trigramMatchingEnabled);
 
         if ($condition === '') {
             return;
@@ -662,9 +668,9 @@ class SimilaritySearchService
     }
 
     /** @return array{string, list<string>} */
-    private function trigramSearchCondition(string $term): array
+    private function trigramSearchCondition(string $term, bool $trigramMatchingEnabled): array
     {
-        if (! $this->trigramAvailable()) {
+        if (! $trigramMatchingEnabled || ! $this->trigramAvailable()) {
             return ['', []];
         }
 
@@ -713,10 +719,21 @@ class SimilaritySearchService
     }
 
     /**
+     * Whether trigram matching can actually be turned on for an EpgMap right
+     * now - i.e. pg_trgm is installed on this connection. Used by the EpgMap
+     * form to disable the "trigram matching" toggle instead of letting a user
+     * enable a setting that silently does nothing on their database.
+     */
+    public function trigramMatchingAvailable(): bool
+    {
+        return $this->trigramAvailable();
+    }
+
+    /**
      * @param  list<string>  $searchTerms
      * @return array{string, list<string>}
      */
-    private function candidateRelevanceOrder(array $searchTerms): array
+    private function candidateRelevanceOrder(array $searchTerms, bool $trigramMatchingEnabled): array
     {
         $expressions = [];
         $bindings = [];
@@ -724,7 +741,7 @@ class SimilaritySearchService
         foreach ($searchTerms as $term) {
             $likeTerm = $this->likePattern($term);
             [$jsonCondition, $jsonBindings] = $this->jsonSearchCondition($term);
-            [$trgmCondition, $trgmBindings] = $this->trigramSearchCondition($term);
+            [$trgmCondition, $trgmBindings] = $this->trigramSearchCondition($term, $trigramMatchingEnabled);
             $trgmClause = $trgmCondition === '' ? '' : " OR {$trgmCondition}";
             $expressions[] = "CASE WHEN (LOWER(COALESCE(channel_id, '')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(name, '')) LIKE ? ESCAPE '!' OR LOWER(COALESCE(display_name, '')) LIKE ? ESCAPE '!' OR {$jsonCondition}{$trgmClause}) THEN 1 ELSE 0 END";
             array_push($bindings, $likeTerm, $likeTerm, $likeTerm, ...$jsonBindings, ...$trgmBindings);

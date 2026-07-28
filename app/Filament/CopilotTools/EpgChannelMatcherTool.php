@@ -150,7 +150,7 @@ class EpgChannelMatcherTool extends BaseTool
                 cleanedName: $cleanedNames[$channel->id],
             ),
         )->unique()->values()->all();
-        $prefetched = $matcher->loadEpgCandidates($epg, $unionTerms);
+        $prefetched = $matcher->loadEpgCandidates($epg, $unionTerms, $options['trigram_matching_enabled']);
 
         foreach ($channels as $channel) {
             $result = $matcher->findEpgChannelCandidates(
@@ -164,6 +164,7 @@ class EpgChannelMatcherTool extends BaseTool
                 cleanedTitle: $cleanedTitles[$channel->id],
                 cleanedName: $cleanedNames[$channel->id],
                 prefetchedCandidates: $prefetched,
+                trigramMatchingEnabled: $options['trigram_matching_enabled'],
             );
             $topCandidate = $result['candidates'][0] ?? null;
 

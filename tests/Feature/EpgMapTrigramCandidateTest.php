@@ -60,9 +60,37 @@ it('widens the candidate pool on Postgres via pg_trgm for typos with no shared l
     ]);
     $channel = trigramChannel('Sportsnet');
 
-    $result = app(SimilaritySearchService::class)->findEpgChannelCandidates($channel, $this->epg);
+    // Trigram matching is opt-in per EpgMap (settings.trigram_matching_enabled)
+    // since it measurably slows down large EPG imports - enable it explicitly
+    // to exercise the widened path.
+    $result = app(SimilaritySearchService::class)->findEpgChannelCandidates(
+        $channel,
+        $this->epg,
+        trigramMatchingEnabled: true,
+    );
 
     expect(collect($result['candidates'])->pluck('epg_channel_id'))->toContain($match->id);
+});
+
+it('does not widen the candidate pool on Postgres when trigram matching is disabled (default)', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        test()->markTestSkipped('Requires the pgsql connection (DB_CONNECTION=pgsql) to exercise pg_trgm.');
+    }
+
+    DB::statement('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+
+    $match = trigramEpgChannel([
+        'name' => 'Soprtsnet',
+        'display_name' => 'Soprtsnet',
+        'channel_id' => 'soprtsnet.us',
+    ]);
+    $channel = trigramChannel('Sportsnet');
+
+    // No trigramMatchingEnabled argument - defaults to false, same as an
+    // EpgMap whose settings never set trigram_matching_enabled.
+    $result = app(SimilaritySearchService::class)->findEpgChannelCandidates($channel, $this->epg);
+
+    expect(collect($result['candidates'])->pluck('epg_channel_id'))->not->toContain($match->id);
 });
 
 it('does not find the typo candidate on non-Postgres drivers (documents current baseline)', function () {
