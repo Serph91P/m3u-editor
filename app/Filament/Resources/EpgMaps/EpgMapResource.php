@@ -409,13 +409,15 @@ class EpgMapResource extends Resource implements CopilotResource
                                 ->inline(true)
                                 ->default(false)
                                 ->disabled(fn (): bool => ! app(SimilaritySearchService::class)->trigramMatchingAvailable())
-                                ->helperText(function (): string {
-                                    if (! app(SimilaritySearchService::class)->trigramMatchingAvailable()) {
-                                        return __('Unavailable: requires a Postgres connection with the pg_trgm extension installed. The embedded database image provisions this automatically; an external Postgres instance needs it enabled manually (CREATE EXTENSION pg_trgm) — see the EPG setup docs.');
-                                    }
-
-                                    return __('When enabled, candidate matching also considers Postgres trigram similarity, catching typos and transliteration differences plain matching misses (e.g. "Soprtsnet" vs "Sportsnet"). This widens the search on every match attempt and measurably slows down mapping — leave disabled unless you are seeing missed matches from spelling variations. Default: disabled.');
-                                }),
+                                ->helperText(fn (): string => app(SimilaritySearchService::class)->trigramMatchingAvailable()
+                                    ? __('Catches typos and misspellings, but slows down mapping. Off by default.')
+                                    : __('Requires the pg_trgm extension on your Postgres database.'))
+                                ->hintIcon(
+                                    'heroicon-m-question-mark-circle',
+                                    tooltip: fn (): string => app(SimilaritySearchService::class)->trigramMatchingAvailable()
+                                        ? __('Runs an extra similarity check against every candidate (e.g. matches "Soprtsnet" to "Sportsnet"). Only enable this if you\'re missing matches due to spelling variations.')
+                                        : __('Run "php artisan app:configure-pg-trgm" on an external Postgres database to enable this. The embedded database sets this up automatically.'),
+                                ),
                         ]),
 
                     Fieldset::make(__('Matching Thresholds'))
