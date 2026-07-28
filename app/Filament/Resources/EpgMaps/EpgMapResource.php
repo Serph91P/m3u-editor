@@ -13,6 +13,7 @@ use App\Models\Epg;
 use App\Models\EpgMap;
 use App\Models\Group;
 use App\Models\Playlist;
+use App\Services\SimilaritySearchService;
 use App\Tables\Columns\ProgressColumn;
 use App\Traits\HasUserFiltering;
 use EslamRedaDiv\FilamentCopilot\Contracts\CopilotResource;
@@ -398,6 +399,23 @@ class EpgMapResource extends Resource implements CopilotResource
                                 ->suggestions(['hd', 'fhd', 'uhd', '4k', '8k', 'sd', '720p', '1080p', '1080i', '2160p', 'hdraw', 'sdraw', 'hevc', 'h264', 'h265'])
                                 ->splitKeys(['Tab', 'Return'])
                                 ->visible(fn (Get $get): bool => (bool) $get('settings.remove_quality_indicators')),
+                        ]),
+
+                    Fieldset::make(__('Postgres Trigram Matching'))
+                        ->schema([
+                            Toggle::make('settings.trigram_matching_enabled')
+                                ->label(__('Widen matching with pg_trgm similarity (Postgres only)'))
+                                ->columnSpanFull()
+                                ->inline(true)
+                                ->default(false)
+                                ->disabled(fn (): bool => ! app(SimilaritySearchService::class)->trigramMatchingAvailable())
+                                ->helperText(function (): string {
+                                    if (! app(SimilaritySearchService::class)->trigramMatchingAvailable()) {
+                                        return __('Unavailable: requires a Postgres connection with the pg_trgm extension installed. The embedded database image provisions this automatically; an external Postgres instance needs it enabled manually (CREATE EXTENSION pg_trgm) — see the EPG setup docs.');
+                                    }
+
+                                    return __('When enabled, candidate matching also considers Postgres trigram similarity, catching typos and transliteration differences plain matching misses (e.g. "Soprtsnet" vs "Sportsnet"). This widens the search on every match attempt and measurably slows down mapping — leave disabled unless you are seeing missed matches from spelling variations. Default: disabled.');
+                                }),
                         ]),
 
                     Fieldset::make(__('Matching Thresholds'))

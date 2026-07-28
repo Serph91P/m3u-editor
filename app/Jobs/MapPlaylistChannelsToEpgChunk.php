@@ -247,6 +247,7 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
             $fuzzyMaxDistance = $this->settings['fuzzy_max_distance'] ?? 25;
             $exactMatchDistance = $this->settings['exact_match_distance'] ?? 8;
             $customQualityIndicators = $this->settings['quality_indicators'] ?? null;
+            $trigramMatchingEnabled = $this->settings['trigram_matching_enabled'] ?? false;
 
             $unionTerms = collect($pendingSimilarity)
                 ->flatMap(fn (array $pending): array => $this->similaritySearch->searchTermsFor(
@@ -257,7 +258,7 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
                 ->unique()
                 ->values()
                 ->all();
-            $prefetchedCandidates = $this->similaritySearch->loadEpgCandidates($epg, $unionTerms);
+            $prefetchedCandidates = $this->similaritySearch->loadEpgCandidates($epg, $unionTerms, $trigramMatchingEnabled);
 
             foreach ($pendingSimilarity as $pending) {
                 $epgChannel = $this->similaritySearch->findMatchingEpgChannel(
@@ -273,6 +274,7 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
                     cleanedTitle: $pending['cleaned_title'],
                     cleanedName: $pending['cleaned_name'],
                     prefetchedCandidates: $prefetchedCandidates,
+                    trigramMatchingEnabled: $trigramMatchingEnabled,
                 );
 
                 if ($epgChannel) {

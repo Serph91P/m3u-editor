@@ -107,7 +107,8 @@ class BuildEpgMapCandidatesJob implements ShouldQueue
                 cleanedName: $matcher->cleanNameForMatching($channel->name_custom ?? $channel->name, $settings),
             ),
         )->unique()->values()->all();
-        $prefetched = $matcher->loadEpgCandidates($epg, $unionTerms);
+        $trigramMatchingEnabled = $settings['trigram_matching_enabled'] ?? false;
+        $prefetched = $matcher->loadEpgCandidates($epg, $unionTerms, $trigramMatchingEnabled);
 
         $processed = 0;
         $rows = [];
@@ -126,6 +127,7 @@ class BuildEpgMapCandidatesJob implements ShouldQueue
                 cleanedTitle: $cleanedTitle,
                 cleanedName: $cleanedName,
                 prefetchedCandidates: $prefetched,
+                trigramMatchingEnabled: $trigramMatchingEnabled,
             );
 
             $top = $result['candidates'][0] ?? null;
