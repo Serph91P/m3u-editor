@@ -33,6 +33,20 @@ class EditPlugin extends EditRecord
         return 'Monitor this plugin, queue one-off jobs, and tune the defaults that automation will reuse.';
     }
 
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function mutateFormDataBeforeFill(array $data): array
+    {
+        /** @var Plugin $record */
+        $record = $this->record;
+
+        $data['settings'] = app(PluginManager::class)->resolvedSettings($record);
+
+        return $data;
+    }
+
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         abort_unless(auth()->user()?->canManagePlugins(), 403);

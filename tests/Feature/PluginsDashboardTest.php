@@ -255,3 +255,21 @@ it('blocks non-admin users from editing plugin settings via the edit page save',
         ->call('save')
         ->assertForbidden();
 });
+
+it('renders declared plugin.json defaults for a freshly installed plugin with no saved settings', function () {
+    $admin = adminUserForPluginsTests();
+    $this->actingAs($admin);
+
+    $plugin = createPluginForDashboardTests('Fresh Defaults Plugin', [
+        'settings_schema' => [
+            ['id' => 'skip_vod', 'label' => 'Skip VOD channels', 'type' => 'boolean', 'default' => true],
+            ['id' => 'cache_ttl_days', 'label' => 'Match cache TTL in days', 'type' => 'number', 'default' => 7],
+        ],
+        'settings' => null,
+    ]);
+
+    Livewire::test(EditPlugin::class, ['record' => $plugin->getKey()])
+        ->assertOk()
+        ->assertSet('data.settings.skip_vod', true)
+        ->assertSet('data.settings.cache_ttl_days', 7);
+});
