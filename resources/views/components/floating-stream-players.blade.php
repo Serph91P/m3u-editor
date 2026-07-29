@@ -102,7 +102,13 @@
                     :data-player-id="player.id" :data-content-type="player.content_type || ''"
                     :data-stream-id="player.stream_id || ''" :data-playlist-id="player.playlist_id || ''"
                     :data-series-id="player.series_id || ''" :data-season-number="player.season_number || ''"
-                    :data-edl-url="player.edl_url || ''" x-init="if (window.streamPlayer && $el.dataset.streamUrl && $el.dataset.streamUrl !== '') {
+                    :data-edl-url="player.edl_url || ''" :data-title="player.title || ''"
+                    :data-aio-item-id="player.aio_item_id || ''"
+                    :data-aio-integration-id="player.aio_integration_id || ''"
+                    :data-episode-number="player.episode_number || ''" :data-episode-title="player.episode_title || ''"
+                    :data-thumbnail-url="player.thumbnail_url || ''" :data-backdrop-url="player.backdrop_url || ''"
+                    :data-rating="player.rating || ''" :data-year="player.year || ''" :data-plot="player.plot || ''"
+                    x-init="if (window.streamPlayer && $el.dataset.streamUrl && $el.dataset.streamUrl !== '') {
                         playerInstance = window.streamPlayer();
                         const sep = $el.dataset.streamUrl.includes('?') ? '&' : '?';
                         const urlWithClientId = $el.dataset.streamUrl + sep + 'client_id=' + encodeURIComponent($el.dataset.playerId);

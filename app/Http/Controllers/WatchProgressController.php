@@ -3,8 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Models\Channel;
+use App\Models\CustomPlaylist;
 use App\Models\DvrRecording;
 use App\Models\Episode;
+use App\Models\MediaServerIntegration;
+use App\Models\MergedPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\PlaylistViewer;
@@ -21,12 +24,17 @@ class WatchProgressController extends Controller
      */
     public function fetch(Request $request): JsonResponse
     {
+        $contentType = $request->input('content_type');
+
+        if ($contentType === 'aiostreams') {
+            return $this->fetchAiostreams($request);
+        }
+
         $viewer = $this->resolveViewer($request);
         if (! $viewer) {
             return response()->json(null, 401);
         }
 
-        $contentType = $request->input('content_type');
         $streamId = (int) $request->input('stream_id');
 
         if (! $contentType || ! $streamId) {
@@ -49,12 +57,17 @@ class WatchProgressController extends Controller
      */
     public function update(Request $request): JsonResponse
     {
+        $contentType = $request->input('content_type');
+
+        if ($contentType === 'aiostreams') {
+            return $this->updateAiostreams($request);
+        }
+
         $viewer = $this->resolveViewer($request);
         if (! $viewer) {
             return response()->json(['error' => 'Unauthenticated'], 401);
         }
 
-        $contentType = $request->input('content_type');
         $streamId = (int) $request->input('stream_id');
 
         if (! $contentType || ! $streamId) {
@@ -113,6 +126,87 @@ class WatchProgressController extends Controller
     }
 
     /**
+     * Fetch watch progress for an AIOStreams item, keyed by aio_item_id (no integer stream_id exists).
+     */
+    private function fetchAiostreams(Request $request): JsonResponse
+    {
+        $viewer = $this->resolveAiostreamsViewer($request);
+        if (! $viewer) {
+            return response()->json(null, 401);
+        }
+
+        $aioItemId = $request->input('aio_item_id');
+        if (! $aioItemId) {
+            return response()->json(null);
+        }
+
+        $progress = ViewerWatchProgress::where('playlist_viewer_id', $viewer->id)
+            ->where('content_type', 'aiostreams')
+            ->where('aio_item_id', $aioItemId)
+            ->first(['position_seconds', 'duration_seconds', 'completed', 'watch_count', 'last_watched_at']);
+
+        return response()->json($progress);
+    }
+
+    /**
+     * Create or update watch progress for an AIOStreams item, keyed by aio_item_id.
+     * Also persists the denormalised metadata (title, artwork, plot, etc.) since there's
+     * no Channel/Episode row to join against for display elsewhere (e.g. Continue Watching).
+     */
+    private function updateAiostreams(Request $request): JsonResponse
+    {
+        $viewer = $this->resolveAiostreamsViewer($request);
+        if (! $viewer) {
+            return response()->json(['error' => 'Unauthenticated'], 401);
+        }
+
+        $aioItemId = $request->input('aio_item_id');
+        if (! $aioItemId) {
+            return response()->json(['error' => 'aio_item_id is required'], 400);
+        }
+
+        $positionSeconds = (int) $request->input('position_seconds', 0);
+        $durationSeconds = $request->input('duration_seconds') !== null
+            ? (int) $request->input('duration_seconds')
+            : null;
+
+        $completed = $request->boolean('completed');
+        if (! $completed && $durationSeconds && $durationSeconds > 0) {
+            $completed = $positionSeconds >= ($durationSeconds * 0.9);
+        }
+
+        $progress = ViewerWatchProgress::updateOrCreate(
+            [
+                'playlist_viewer_id' => $viewer->id,
+                'aio_item_id' => $aioItemId,
+            ],
+            [
+                'content_type' => 'aiostreams',
+                'aio_integration_id' => $request->input('aio_integration_id') ? (int) $request->input('aio_integration_id') : null,
+                'season_number' => $request->input('season_number') ? (int) $request->input('season_number') : null,
+                'episode_number' => $request->input('episode_number') ? (int) $request->input('episode_number') : null,
+                'title' => $request->input('title'),
+                'episode_title' => $request->input('episode_title'),
+                'thumbnail_url' => $request->input('thumbnail_url'),
+                'backdrop_url' => $request->input('backdrop_url'),
+                'rating' => $request->input('rating'),
+                'year' => $request->input('year'),
+                'plot' => $request->input('plot'),
+                'position_seconds' => $positionSeconds,
+                'duration_seconds' => $durationSeconds,
+                'completed' => $completed,
+                'last_watched_at' => now(),
+            ]
+        );
+
+        if ($progress->wasRecentlyCreated) {
+            $progress->increment('watch_count');
+        }
+
+        return response()->json($progress->only(['position_seconds', 'duration_seconds', 'completed', 'watch_count']));
+    }
+
+    /**
      * Resolve the current PlaylistViewer from the request, auto-creating if needed.
      *
      * Supports:
@@ -133,6 +227,51 @@ class WatchProgressController extends Controller
             return null;
         }
 
+        return $this->resolveViewerForPlaylist($playlist);
+    }
+
+    /**
+     * Resolve the current PlaylistViewer for an AIOStreams item.
+     * AIOStreams items have no Channel/Episode row to trace back to a playlist, so the
+     * anchor Playlist/CustomPlaylist/MergedPlaylist is always re-derived here from the
+     * integration itself — mirroring AioStreamsBrowse::resolveViewer() exactly. A raw
+     * playlist_id from the client is intentionally ignored: it's ambiguous across the
+     * three playlist tables (they don't share an id space), and using it caused
+     * progress to be saved against the wrong viewer whenever the integration was
+     * attached to a Custom/MergedPlaylist instead of a plain Playlist.
+     */
+    private function resolveAiostreamsViewer(Request $request): ?PlaylistViewer
+    {
+        $integrationId = (int) $request->input('aio_integration_id');
+        $integration = $integrationId ? MediaServerIntegration::find($integrationId) : null;
+
+        if (! $integration) {
+            return null;
+        }
+
+        $playlist = null;
+        foreach ([Playlist::class, CustomPlaylist::class, MergedPlaylist::class] as $model) {
+            $playlist = $model::where('user_id', $integration->user_id)
+                ->where('aiostreams_integration_id', $integration->id)
+                ->first();
+            if ($playlist) {
+                break;
+            }
+        }
+        $playlist ??= Playlist::where('user_id', $integration->user_id)->first();
+
+        if (! $playlist) {
+            return null;
+        }
+
+        return $this->resolveViewerForPlaylist($playlist);
+    }
+
+    /**
+     * Shared admin/guest-session PlaylistViewer resolution for a known Playlist.
+     */
+    private function resolveViewerForPlaylist(Playlist|CustomPlaylist|MergedPlaylist $playlist): ?PlaylistViewer
+    {
         // Admin panel: standard Laravel auth — find or create the admin viewer
         if (auth()->check()) {
             $user = auth()->user();

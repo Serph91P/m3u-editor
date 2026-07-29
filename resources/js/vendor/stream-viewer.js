@@ -40,6 +40,31 @@ function streamPlayer() {
             if (!this.player) return;
             const el = this.player;
             const contentType = el.dataset.contentType;
+
+            if (contentType === 'aiostreams') {
+                const aioItemId = el.dataset.aioItemId;
+                if (!aioItemId) return;
+
+                this.progressConfig = {
+                    contentType,
+                    aioItemId,
+                    aioIntegrationId: el.dataset.aioIntegrationId ? parseInt(el.dataset.aioIntegrationId) : null,
+                    playlistId: parseInt(el.dataset.playlistId) || null,
+                    seasonNumber: el.dataset.seasonNumber ? parseInt(el.dataset.seasonNumber) : null,
+                    episodeNumber: el.dataset.episodeNumber ? parseInt(el.dataset.episodeNumber) : null,
+                    title: el.dataset.title || null,
+                    episodeTitle: el.dataset.episodeTitle || null,
+                    thumbnailUrl: el.dataset.thumbnailUrl || null,
+                    backdropUrl: el.dataset.backdropUrl || null,
+                    rating: el.dataset.rating || null,
+                    year: el.dataset.year || null,
+                    plot: el.dataset.plot || null,
+                };
+
+                this._fetchProgress();
+                return;
+            }
+
             const streamId = parseInt(el.dataset.streamId);
             if (!contentType || !streamId) return;
 
@@ -79,11 +104,18 @@ function streamPlayer() {
         async _fetchProgress() {
             if (!this.progressConfig) return;
             try {
-                const params = new URLSearchParams({
-                    content_type: this.progressConfig.contentType,
-                    stream_id: this.progressConfig.streamId,
-                    playlist_id: this.progressConfig.playlistId ?? '',
-                });
+                const params = this.progressConfig.contentType === 'aiostreams'
+                    ? new URLSearchParams({
+                        content_type: 'aiostreams',
+                        aio_item_id: this.progressConfig.aioItemId,
+                        aio_integration_id: this.progressConfig.aioIntegrationId ?? '',
+                        playlist_id: this.progressConfig.playlistId ?? '',
+                    })
+                    : new URLSearchParams({
+                        content_type: this.progressConfig.contentType,
+                        stream_id: this.progressConfig.streamId,
+                        playlist_id: this.progressConfig.playlistId ?? '',
+                    });
                 const res = await fetch(`/api/watch-progress?${params}`, {
                     headers: { 'X-CSRF-TOKEN': this._getCsrfToken() },
                 });
@@ -117,19 +149,40 @@ function streamPlayer() {
             const duration = isFinite(this.player.duration) ? Math.floor(this.player.duration) : null;
             if (!force && Math.abs(position - this._lastSavedPosition) < 5) return;
             this._lastSavedPosition = position;
+
+            const body = this.progressConfig.contentType === 'aiostreams'
+                ? {
+                    content_type: 'aiostreams',
+                    aio_item_id: this.progressConfig.aioItemId,
+                    aio_integration_id: this.progressConfig.aioIntegrationId,
+                    playlist_id: this.progressConfig.playlistId,
+                    season_number: this.progressConfig.seasonNumber,
+                    episode_number: this.progressConfig.episodeNumber,
+                    title: this.progressConfig.title,
+                    episode_title: this.progressConfig.episodeTitle,
+                    thumbnail_url: this.progressConfig.thumbnailUrl,
+                    backdrop_url: this.progressConfig.backdropUrl,
+                    rating: this.progressConfig.rating,
+                    year: this.progressConfig.year,
+                    plot: this.progressConfig.plot,
+                    position_seconds: position,
+                    duration_seconds: duration,
+                }
+                : {
+                    content_type: this.progressConfig.contentType,
+                    stream_id: this.progressConfig.streamId,
+                    playlist_id: this.progressConfig.playlistId,
+                    series_id: this.progressConfig.seriesId,
+                    season_number: this.progressConfig.seasonNumber,
+                    position_seconds: position,
+                    duration_seconds: duration,
+                };
+
             try {
                 await fetch('/api/watch-progress', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': this._getCsrfToken() },
-                    body: JSON.stringify({
-                        content_type: this.progressConfig.contentType,
-                        stream_id: this.progressConfig.streamId,
-                        playlist_id: this.progressConfig.playlistId,
-                        series_id: this.progressConfig.seriesId,
-                        season_number: this.progressConfig.seasonNumber,
-                        position_seconds: position,
-                        duration_seconds: duration,
-                    }),
+                    body: JSON.stringify(body),
                 });
             } catch (e) {
                 console.warn('[WatchProgress] Failed to save progress:', e);
