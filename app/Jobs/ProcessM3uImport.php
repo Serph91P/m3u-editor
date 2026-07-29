@@ -821,7 +821,7 @@ class ProcessM3uImport implements ShouldQueue
                 $userAgent = empty($playlist->user_agent) ? $this->userAgent : $playlist->user_agent;
                 $response = $this->withProviderThrottling(fn () => Http::withUserAgent($userAgent)
                     ->withOptions(['verify' => $verify])
-                    ->timeout(60 * 5) // set timeout to five minues
+                    ->timeout(config('dev.playlist_download_timeout', 900))
                     ->throw()->get($url->toString()));
 
                 if ($response->ok()) {

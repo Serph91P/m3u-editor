@@ -36,4 +36,9 @@ return [
 
     // restrict playlists to specific domains (comma separated list, supports wildcards, e.g. *.example.com)
     'allowed_playlist_domains' => env('ALLOWED_PLAYLIST_DOMAINS', null),
+
+    // Timeout (seconds) for downloading the playlist file itself from the provider. Large
+    // playlists (many VOD entries) on throttled/slow connections can take a while to fully
+    // transfer; this covers the whole request (connect + transfer), not just the connect phase.
+    'playlist_download_timeout' => env('PLAYLIST_DOWNLOAD_TIMEOUT', 900),
 ];
