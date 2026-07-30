@@ -83,6 +83,26 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
     /** @var array<string, mixed>|null */
     public ?array $pendingWatchContext = null;
 
+    public bool $streamsLoading = false;
+
+    public bool $streamsFailed = false;
+
+    /**
+     * Season/episode currently being resolved into streams — set at the top of
+     * playStream() regardless of entry point, so retryLoadStreams() always knows
+     * what to re-fetch.
+     */
+    public ?int $resumeSeason = null;
+
+    public ?int $resumeEpisode = null;
+
+    /**
+     * Only populated by resumeWatch(), since the per-episode video list (which
+     * would normally supply this) is intentionally never fetched for a resume —
+     * see resumeWatch()'s docblock.
+     */
+    public ?string $resumeEpisodeTitle = null;
+
     public function mount(int $integrationId, bool $guestMode = false, ?int $playlistAuthId = null): void
     {
         $this->integrationId = $integrationId;
@@ -207,11 +227,13 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
     }
 
     /**
-     * Resume a Continue Watching item directly — skips the detail slide-over and
-     * jumps straight to fetching/playing the stream (the video player's own resume
-     * prompt, driven by the saved position, picks up from where it left off). The
-     * season/episode is already known from the progress row, so the (often large)
-     * per-episode video list isn't needed here — skip building/storing it.
+     * Resume a Continue Watching item. Opens the source-picker modal INSTANTLY
+     * using only the fields already saved on the progress row itself — zero
+     * network calls — since fetching full Stremio meta (and, for a series, its
+     * whole episode list) before the modal could open was the cause of a large
+     * click-to-open delay. The actual stream lookup is kicked off afterwards by
+     * loadResumeStreams(), triggered client-side via wire:init once the modal
+     * is already visible.
      */
     public function resumeWatch(int $progressId): void
     {
@@ -228,22 +250,68 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
             return;
         }
 
-        $type = $progress->season_number ? 'series' : 'movie';
+        $this->detailType = $progress->season_number ? 'series' : 'movie';
+        $this->detailId = $progress->aio_item_id;
+        $this->detailSeasons = [];
+        $this->detailEpisodesBySeason = [];
+        $this->detailSelectedSeason = null;
+        $this->streamChoices = [];
+        $this->pendingWatchContext = null;
 
-        if (! $this->loadDetail($type, $progress->aio_item_id, includeEpisodes: false)) {
-            return;
-        }
+        $this->detailResult = [
+            'name' => $progress->title,
+            'poster' => $progress->thumbnail_url,
+            'background' => $progress->backdrop_url,
+            'imdbRating' => $progress->rating,
+            'releaseInfo' => $progress->year,
+            'description' => $progress->plot,
+        ];
 
-        $this->playStream($progress->season_number, $progress->episode_number);
+        $this->resumeSeason = $progress->season_number;
+        $this->resumeEpisode = $progress->episode_number;
+        $this->resumeEpisodeTitle = $progress->episode_title;
+        $this->streamsLoading = true;
+        $this->streamsFailed = false;
 
-        // playStream() derives episode_title/thumbnail_url/plot from the per-episode
-        // video list, which is skipped above — fall back to what was already saved
-        // on the progress row itself.
+        $this->showDetail = true;
+        $this->mountAction('showDetail');
+    }
+
+    /**
+     * Fires once, client-side, right after the resume modal opens (via wire:init
+     * in the Blade partial) — this is what actually looks up playable streams,
+     * deferred so it never blocks the modal from opening.
+     *
+     * Deliberately #[Renderless]: this call has no originating click for
+     * Filament's focus-trap to anchor to, and a normal (rendered) Livewire
+     * request re-diffs this component's ENTIRE DOM — including the catalog grid
+     * sitting behind the modal — which was enough on its own (independent of the
+     * earlier double-mountAction() bug) to tear down and reinitialize every lazy
+     * AioStreamsCatalogRow's x-intersect binding, forcing them all to load at
+     * once and jump-scrolling the page to wherever that landed. Renderless skips
+     * the re-render/morph entirely; the fetched streams are instead pushed to
+     * the client via a dispatched event and rendered by Alpine, isolated from
+     * the rest of the page. See aiostreams-detail.blade.php.
+     */
+    #[Renderless]
+    public function loadResumeStreams(): void
+    {
+        $this->playStream($this->resumeSeason, $this->resumeEpisode);
+
+        // playStream() derives episode_title from the per-episode video list,
+        // which resumeWatch() intentionally never fetches — fall back to what
+        // was already saved on the progress row.
         if ($this->pendingWatchContext) {
-            $this->pendingWatchContext['episode_title'] ??= $progress->episode_title;
-            $this->pendingWatchContext['thumbnail_url'] ??= $progress->thumbnail_url;
-            $this->pendingWatchContext['plot'] ??= $progress->plot;
+            $this->pendingWatchContext['episode_title'] ??= $this->resumeEpisodeTitle;
         }
+
+        $this->dispatch('aio-streams-loaded', failed: $this->streamsFailed, streams: $this->streamChoices);
+    }
+
+    #[Renderless]
+    public function retryLoadStreams(): void
+    {
+        $this->loadResumeStreams();
     }
 
     /**
@@ -251,7 +319,7 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
      * Shared by openDetail() (which additionally opens the slide-over) and
      * resumeWatch() (which plays immediately instead).
      */
-    private function loadDetail(string $type, string $id, bool $includeEpisodes = true): bool
+    private function loadDetail(string $type, string $id): bool
     {
         $integration = $this->integration;
         if (! $integration) {
@@ -274,8 +342,13 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
         $this->detailSelectedSeason = null;
         $this->streamChoices = [];
         $this->pendingWatchContext = null;
+        $this->resumeSeason = null;
+        $this->resumeEpisode = null;
+        $this->resumeEpisodeTitle = null;
+        $this->streamsLoading = false;
+        $this->streamsFailed = false;
 
-        if ($type === 'series' && ! empty($meta['videos']) && $includeEpisodes) {
+        if ($type === 'series' && ! empty($meta['videos'])) {
             Cache::put($this->episodeCacheKey($id), $meta['videos'], now()->addMinutes(10));
 
             $this->detailSeasons = collect($meta['videos'])
@@ -363,6 +436,14 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
         return Action::make('showDetail')
             ->slideOver()
             ->modalHeading(false)
+            // Filament's focus trap auto-focuses the modal's first focusable element
+            // when it opens, and the browser's default focus() scrolls that element
+            // into view. The modal is teleported to the end of <body> (after every
+            // catalog row), so if the trap activates before the teleported node's
+            // fixed positioning has taken effect, that scroll lands on the still
+            // in-flow node at the bottom of the page — force-loading every lazy
+            // catalog row along the way. Disabling autofocus removes the trigger.
+            ->modalAutofocus(false)
             ->modalContent(fn () => view('livewire.partials.aiostreams-detail', [
                 'detailResult' => $this->detailResult,
                 'detailType' => $this->detailType,
@@ -370,6 +451,11 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
                 'detailEpisodesBySeason' => $this->detailEpisodesBySeason,
                 'detailSelectedSeason' => $this->detailSelectedSeason,
                 'streamChoices' => $this->streamChoices,
+                'streamsLoading' => $this->streamsLoading,
+                'streamsFailed' => $this->streamsFailed,
+                'resumeSeason' => $this->resumeSeason,
+                'resumeEpisode' => $this->resumeEpisode,
+                'resumeEpisodeTitle' => $this->resumeEpisodeTitle,
             ]))
             ->modalSubmitAction(false)
             ->modalCancelAction(false);
@@ -387,6 +473,11 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
         $this->detailSelectedSeason = null;
         $this->streamChoices = [];
         $this->pendingWatchContext = null;
+        $this->resumeSeason = null;
+        $this->resumeEpisode = null;
+        $this->resumeEpisodeTitle = null;
+        $this->streamsLoading = false;
+        $this->streamsFailed = false;
         $this->unmountAction();
     }
 
@@ -401,8 +492,19 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
 
     public function playStream(?int $season = null, ?int $episode = null): void
     {
+        // Remembered unconditionally (even on failure) so retryLoadStreams() always
+        // knows what to re-fetch, regardless of whether this call came from a real
+        // click or from the resume flow's wire:init.
+        $this->resumeSeason = $season;
+        $this->resumeEpisode = $episode;
+        $this->streamsLoading = true;
+        $this->streamsFailed = false;
+
         $integration = $this->integration;
         if (! $integration || ! $this->detailResult || ! $this->detailType || ! $this->detailId) {
+            $this->streamsLoading = false;
+            $this->streamsFailed = true;
+
             return;
         }
 
@@ -418,6 +520,8 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
         try {
             $data = AIOStreamsService::make($integration)->fetchStreams($this->detailType, $streamLookupId);
         } catch (\Exception $e) {
+            $this->streamsLoading = false;
+            $this->streamsFailed = true;
             Notification::make()->danger()->title(__('Failed to load streams'))->body($e->getMessage())->send();
 
             return;
@@ -425,6 +529,8 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
 
         $streams = $data['streams'] ?? [];
         if (empty($streams)) {
+            $this->streamsLoading = false;
+            $this->streamsFailed = true;
             Notification::make()->warning()->title(__('No playable streams found'))->send();
 
             return;
@@ -435,9 +541,16 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
         // rather than a real playable source, so let the user confirm the choice.
         $this->streamChoices = $streams;
         $this->pendingWatchContext = $this->buildWatchContext($season, $episode, $episodeVideo);
+        $this->streamsLoading = false;
 
-        $this->showDetail = true;
-        $this->mountAction('showDetail');
+        // Deliberately NOT re-mounting 'showDetail' here. The modal is always
+        // already open by the time playStream() runs — via openDetail()'s picker,
+        // the movie Watch button, or wire:init on the resume flow — and
+        // mountAction() pushes onto Filament's mounted-actions stack
+        // unconditionally rather than checking if it's already mounted. Doing so
+        // anyway previously double-mounted the action; for the wire:init call
+        // (no click to anchor Filament's focus-trap to) that made the underlying
+        // page jump-scroll to the bottom, force-loading every lazy catalog row.
     }
 
     public function playChosenStream(int $index): void

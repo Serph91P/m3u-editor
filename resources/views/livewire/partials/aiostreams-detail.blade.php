@@ -12,6 +12,14 @@
                     <div class="absolute bottom-0 left-0 right-0 px-4 pb-3 pr-12">
                         <h2 class="text-white font-bold text-base leading-snug line-clamp-2">
                             {{ $detailResult['name'] ?? '' }}</h2>
+                        @if ($resumeEpisode)
+                            <p class="text-white/70 text-xs mt-0.5 truncate">
+                                {{ __('S:s E:e', ['s' => $resumeSeason, 'e' => $resumeEpisode]) }}
+                                @if ($resumeEpisodeTitle)
+                                    &middot; {{ $resumeEpisodeTitle }}
+                                @endif
+                            </p>
+                        @endif
                         <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1">
                             @if (!empty($detailResult['releaseInfo']))
                                 <span class="text-white/60 text-xs">{{ $detailResult['releaseInfo'] }}</span>
@@ -21,8 +29,18 @@
                 </div>
             @else
                 <div class="flex items-center px-4 py-3 border-b border-gray-200 dark:border-gray-700 pr-12">
-                    <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">
-                        {{ $detailResult['name'] ?? '' }}</h2>
+                    <div class="min-w-0">
+                        <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">
+                            {{ $detailResult['name'] ?? '' }}</h2>
+                        @if ($resumeEpisode)
+                            <p class="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {{ __('S:s E:e', ['s' => $resumeSeason, 'e' => $resumeEpisode]) }}
+                                @if ($resumeEpisodeTitle)
+                                    &middot; {{ $resumeEpisodeTitle }}
+                                @endif
+                            </p>
+                        @endif
+                    </div>
                 </div>
             @endif
         </div>
@@ -77,23 +95,68 @@
 
             <div class="px-4 space-y-4 pb-4">
 
-                {{-- ── Source picker (shown after choosing to watch, when multiple streams found) ── --}}
-                @if (!empty($streamChoices))
-                    <x-filament::section compact heading="{{ __('Choose a Source') }}" icon="heroicon-o-play">
-                        <div class="divide-y divide-gray-100 dark:divide-gray-800 max-h-72 overflow-y-auto">
-                            @foreach ($streamChoices as $index => $stream)
-                                <button type="button" wire:click="playChosenStream({{ $index }})"
-                                    wire:loading.attr="disabled"
-                                    class="w-full flex items-center gap-2 px-1 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors disabled:opacity-40">
-                                    <x-filament::icon icon="heroicon-o-play-circle"
-                                        class="w-5 h-5 flex-shrink-0 text-primary-500" />
-                                    <span class="flex-1 text-xs text-gray-800 dark:text-gray-200 break-words">
-                                        {{ $stream['name'] ?? ($stream['title'] ?? __('Source :n', ['n' => $index + 1])) }}
-                                    </span>
-                                </button>
-                            @endforeach
-                        </div>
-                    </x-filament::section>
+                {{-- ── Source picker (shown after choosing to watch, or while lazily loading a resumed item's streams) ──
+                     Deliberately Alpine-driven rather than Livewire-rendered: loadResumeStreams()/retryLoadStreams()
+                     are #[Renderless] (see AioStreamsBrowse.php) since re-rendering this component from a
+                     wire:init call — with no originating click for Filament's focus-trap to anchor to — was
+                     enough to disturb the whole page's DOM and force every lazy catalog row to reload. Instead,
+                     the fetched streams arrive via a dispatched 'aio-streams-loaded' event and Alpine renders
+                     them locally, never touching the rest of the page. --}}
+                @if ($streamsLoading || $streamsFailed || !empty($streamChoices))
+                    <div x-data="{
+                            loading: @js($streamsLoading),
+                            failed: @js($streamsFailed),
+                            streams: @js($streamChoices),
+                        }"
+                        x-init="$wire.on('aio-streams-loaded', (payload) => {
+                            loading = false;
+                            failed = payload.failed;
+                            streams = payload.streams;
+                        })">
+                        <x-filament::section compact heading="{{ __('Choose a Source') }}" icon="heroicon-o-play">
+                            <x-slot name="afterHeader">
+                                <x-filament::icon-button icon="heroicon-o-arrow-path" size="sm" color="gray"
+                                    :label="__('Refresh sources')" x-bind:class="loading ? 'animate-spin' : ''"
+                                    x-bind:disabled="loading"
+                                    x-on:click="loading = true; failed = false; $wire.retryLoadStreams()" />
+                            </x-slot>
+                            <div wire:init="loadResumeStreams" x-show="loading"
+                                class="flex items-center justify-center gap-2 py-4">
+                                <x-filament::loading-indicator class="h-5 w-5" />
+                                <span class="text-xs text-gray-500 dark:text-gray-400">{{ __('Loading sources...') }}</span>
+                            </div>
+                            <div x-show="!loading && failed" class="flex flex-col items-center justify-center gap-2 py-4">
+                                <span class="text-xs text-gray-500 dark:text-gray-400">{{ __('Failed to load sources') }}</span>
+                                <x-filament::button size="xs" color="gray"
+                                    x-on:click="loading = true; failed = false; $wire.retryLoadStreams()">
+                                    {{ __('Retry') }}
+                                </x-filament::button>
+                            </div>
+                            <div x-show="!loading && !failed && streams.length > 0"
+                                class="divide-y divide-gray-100 dark:divide-gray-800 max-h-72 overflow-y-auto">
+                                {{-- Stremio addons often pack file name, size, resolution, seeders/cache
+                                     status, etc. into a multi-line `title` (or `description`) field, with
+                                     `name` reserved for a short provider/quality label. Show both — `name`
+                                     as the primary line, `title`/`description` underneath with newlines
+                                     preserved via `whitespace-pre-line` — matching the M3U TV app's picker. --}}
+                                <template x-for="(stream, index) in streams" :key="index">
+                                    <button type="button" x-on:click="$wire.playChosenStream(index)"
+                                        class="w-full flex items-start gap-2 px-1 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors">
+                                        <x-filament::icon icon="heroicon-o-play-circle"
+                                            class="w-5 h-5 flex-shrink-0 text-primary-500 mt-0.5" />
+                                        <div class="flex-1 min-w-0">
+                                            <p class="text-xs font-semibold text-gray-800 dark:text-gray-200 whitespace-pre-line break-words"
+                                                x-text="stream.name || stream.title || stream.description || ('{{ __('Source') }} ' + (index + 1))">
+                                            </p>
+                                            <p x-show="stream.name && (stream.title || stream.description)"
+                                                class="text-[11px] text-gray-500 dark:text-gray-400 whitespace-pre-line break-words mt-0.5"
+                                                x-text="stream.title || stream.description"></p>
+                                        </div>
+                                    </button>
+                                </template>
+                            </div>
+                        </x-filament::section>
+                    </div>
                 @endif
 
                 @if (!empty($detailResult['cast']))
@@ -172,12 +235,12 @@
             </div>
         </div>
 
-        @if (!$isSeries)
+        @if (!$isSeries && ! $streamsLoading && ! $streamsFailed && empty($streamChoices))
             <div
                 class="flex-shrink-0 px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
                 <x-filament::button wire:click="playStream" wire:loading.attr="disabled" wire:target="playStream"
                     icon="heroicon-o-play" class="w-full">
-                    {{ __('Watch') }}
+                    {{ __('Get Sources') }}
                 </x-filament::button>
             </div>
         @endif

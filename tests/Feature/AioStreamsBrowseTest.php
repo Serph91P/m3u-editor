@@ -213,7 +213,7 @@ it('shows the source picker instead of auto-playing when only one stream is foun
         ]);
 });
 
-it('resumeWatch loads a continue-watching episode and opens the source picker', function () {
+it('resumeWatch opens the source picker instantly, with zero network calls, then lazily loads streams', function () {
     $playlist = Playlist::factory()->for($this->user)->create([
         'aiostreams_integration_id' => $this->integration->id,
     ]);
@@ -235,22 +235,30 @@ it('resumeWatch loads a continue-watching episode and opens the source picker', 
         'episode_number' => 3,
         'title' => 'Rick and Morty',
         'episode_title' => 'Anatomy Park',
+        'thumbnail_url' => 'https://x/rm-poster.jpg',
         'position_seconds' => 120,
         'duration_seconds' => 1200,
         'watch_count' => 1,
         'last_watched_at' => now(),
     ]);
 
+    // No */meta/series/tt2.json fake is registered — combined with
+    // Http::preventStrayRequests() in beforeEach(), this proves resumeWatch()
+    // itself makes zero network calls, since it opens the modal using only the
+    // progress row's own saved fields.
+    $component = Livewire::test(AioStreamsBrowse::class, ['integrationId' => $this->integration->id])
+        ->call('resumeWatch', $progress->id)
+        ->assertNotDispatched('openFloatingStream')
+        ->assertSet('showDetail', true)
+        ->assertSet('detailResult.name', 'Rick and Morty')
+        ->assertSet('detailResult.poster', 'https://x/rm-poster.jpg')
+        ->assertSet('detailEpisodesBySeason', [])
+        ->assertSet('streamsLoading', true)
+        ->assertSet('streamChoices', [])
+        ->assertSee(__('S:s E:e', ['s' => 1, 'e' => 3]))
+        ->assertSee('Anatomy Park');
+
     Http::fake([
-        '*/meta/series/tt2.json' => Http::response([
-            'meta' => [
-                'id' => 'tt2',
-                'name' => 'Rick and Morty',
-                'videos' => [
-                    ['season' => 1, 'episode' => 3, 'title' => 'Anatomy Park'],
-                ],
-            ],
-        ]),
         '*/stream/series/tt2:1:3.json' => Http::response([
             'streams' => [
                 ['url' => 'https://cdn.test/rm-s1e3.mp4', 'name' => '1080p'],
@@ -258,12 +266,8 @@ it('resumeWatch loads a continue-watching episode and opens the source picker', 
         ]),
     ]);
 
-    $component = Livewire::test(AioStreamsBrowse::class, ['integrationId' => $this->integration->id])
-        ->call('resumeWatch', $progress->id)
-        ->assertNotDispatched('openFloatingStream')
-        ->assertSet('showDetail', true)
-        ->assertSet('detailResult.name', 'Rick and Morty')
-        ->assertSet('detailEpisodesBySeason', [])
+    $component->call('loadResumeStreams')
+        ->assertSet('streamsLoading', false)
         ->assertSet('streamChoices', [
             ['url' => 'https://cdn.test/rm-s1e3.mp4', 'name' => '1080p'],
         ])
@@ -271,9 +275,68 @@ it('resumeWatch loads a continue-watching episode and opens the source picker', 
         ->assertSet('pendingWatchContext.episode_number', 3)
         ->assertSet('pendingWatchContext.episode_title', 'Anatomy Park');
 
-    // The (potentially large) per-episode video list must not be kept in detailResult
-    // for the resume flow — it's dropped before assignment, not just left unused.
+    // Regression: playStream() (called by loadResumeStreams() above) used to
+    // re-mount the already-open 'showDetail' action, and mountAction() pushes onto
+    // the stack unconditionally rather than checking if it's already mounted. That
+    // duplicate mount — reached via wire:init, with no real click to anchor Filament's
+    // focus-trap to — was what caused the underlying page to jump-scroll to the
+    // bottom, force-loading every lazy catalog row at once.
+    expect($component->get('mountedActions'))->toHaveCount(1);
+
+    // The (potentially large) per-episode video list is never fetched at all for
+    // the resume flow — detailResult stays built purely from the progress row.
     expect($component->get('detailResult'))->not->toHaveKey('videos');
+});
+
+it('retries a failed resume stream lookup, preserving season/episode', function () {
+    $playlist = Playlist::factory()->for($this->user)->create([
+        'aiostreams_integration_id' => $this->integration->id,
+    ]);
+
+    $viewer = PlaylistViewer::where('viewerable_type', $playlist->getMorphClass())
+        ->where('viewerable_id', $playlist->id)
+        ->where('is_admin', true)
+        ->firstOrFail();
+
+    $progress = ViewerWatchProgress::create([
+        'playlist_viewer_id' => $viewer->id,
+        'content_type' => 'aiostreams',
+        'aio_item_id' => 'tt2',
+        'aio_integration_id' => $this->integration->id,
+        'season_number' => 1,
+        'episode_number' => 3,
+        'title' => 'Rick and Morty',
+        'episode_title' => 'Anatomy Park',
+        'position_seconds' => 120,
+        'duration_seconds' => 1200,
+        'watch_count' => 1,
+        'last_watched_at' => now(),
+    ]);
+
+    Http::fake([
+        '*/stream/series/tt2:1:3.json' => Http::sequence()
+            ->push(null, 500)
+            ->push([
+                'streams' => [
+                    ['url' => 'https://cdn.test/rm-s1e3.mp4', 'name' => '1080p'],
+                ],
+            ]),
+    ]);
+
+    $component = Livewire::test(AioStreamsBrowse::class, ['integrationId' => $this->integration->id])
+        ->call('resumeWatch', $progress->id)
+        ->call('loadResumeStreams')
+        ->assertSet('streamsLoading', false)
+        ->assertSet('streamsFailed', true)
+        ->assertSet('streamChoices', []);
+
+    $component->call('retryLoadStreams')
+        ->assertSet('streamsFailed', false)
+        ->assertSet('streamChoices', [
+            ['url' => 'https://cdn.test/rm-s1e3.mp4', 'name' => '1080p'],
+        ]);
+
+    expect($component->get('mountedActions'))->toHaveCount(1);
 });
 
 it('shows a source picker when multiple streams are found', function () {
