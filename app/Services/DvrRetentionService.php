@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Casts\UtcDateTime;
 use App\Enums\DvrRecordingStatus;
 use App\Models\DvrRecording;
 use App\Models\DvrSetting;
@@ -162,7 +163,7 @@ class DvrRetentionService
      */
     private function enforceRetentionDays(DvrSetting $setting): void
     {
-        $cutoff = now()->subDays($setting->retention_days);
+        $cutoff = UtcDateTime::forQuery(now()->subDays($setting->retention_days));
 
         $old = DvrRecording::where('dvr_setting_id', $setting->id)
             ->where('status', DvrRecordingStatus::Completed->value)

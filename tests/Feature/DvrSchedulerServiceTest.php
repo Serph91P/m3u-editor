@@ -16,6 +16,7 @@
  * - Disabled rules are not processed
  */
 
+use App\Casts\UtcDateTime;
 use App\Enums\DvrMatchMode;
 use App\Enums\DvrRecordingStatus;
 use App\Enums\DvrRuleType;
@@ -779,9 +780,12 @@ it('all mode records every programme regardless of prior S/E recordings', functi
 
     $this->service->matchAndSchedule(30);
 
-    // All mode ignores S/E dedup — re-run is recorded
+    // All mode ignores S/E dedup — re-run is recorded.
+    // programme_start is stored via App\Casts\UtcDateTime, which always
+    // normalizes to an explicit-offset UTC string — a bare Carbon comparison
+    // value wouldn't textually match, so format it the same way.
     expect(DvrRecording::where('dvr_recording_rule_id', $rule->id)
-        ->where('programme_start', $rerun->start_time)
+        ->where('programme_start', UtcDateTime::forQuery($rerun->start_time))
         ->exists())->toBeTrue();
 });
 

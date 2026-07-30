@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Casts\UtcDateTime;
 use App\Enums\DvrMatchMode;
 use App\Enums\DvrRecordingStatus;
 use App\Enums\DvrRuleType;
@@ -391,7 +392,7 @@ class DvrSchedulerService
 
             // Check dedup — only block active recordings, not Cancelled/Failed.
             $exists = DvrRecording::where('series_key', $seriesKey)
-                ->where('programme_start', $rule->manual_start)
+                ->where('programme_start', UtcDateTime::forQuery($rule->manual_start))
                 ->whereIn('status', [
                     DvrRecordingStatus::Scheduled,
                     DvrRecordingStatus::Recording,
@@ -483,7 +484,7 @@ class DvrSchedulerService
             $normalizedTitle = SeriesKey::normalize($title) ?: null;
 
             $exists = DvrRecording::where('series_key', $seriesKey)
-                ->where('programme_start', $slotStart)
+                ->where('programme_start', UtcDateTime::forQuery($slotStart))
                 ->whereIn('status', [
                     DvrRecordingStatus::Scheduled,
                     DvrRecordingStatus::Recording,
@@ -603,7 +604,7 @@ class DvrSchedulerService
                     $q->where('programme_uid', $programmeUid)
                         ->orWhere(function (Builder $q) use ($programme): void {
                             $q->whereNull('programme_uid')
-                                ->where('programme_start', $programme->start_time)
+                                ->where('programme_start', UtcDateTime::forQuery($programme->start_time))
                                 ->where('epg_programme_data->epg_channel_id', $programme->epg_channel_id);
                         });
                 })
@@ -693,7 +694,7 @@ class DvrSchedulerService
      */
     private function triggerPendingRecordings(): void
     {
-        $now = now();
+        $now = UtcDateTime::forQuery(now());
 
         DvrRecording::scheduled()
             ->where('scheduled_end', '<=', $now)
@@ -751,7 +752,7 @@ class DvrSchedulerService
     private function stopExpiredRecordings(): void
     {
         $expired = DvrRecording::recording()
-            ->where('scheduled_end', '<=', now())
+            ->where('scheduled_end', '<=', UtcDateTime::forQuery(now()))
             ->get();
 
         foreach ($expired as $recording) {
@@ -844,13 +845,13 @@ class DvrSchedulerService
                 $q->where('programme_uid', $programmeUid)
                     ->orWhere(function (Builder $q) use ($programme): void {
                         $q->whereNull('programme_uid')
-                            ->where('programme_start', $programme->start_time)
+                            ->where('programme_start', UtcDateTime::forQuery($programme->start_time))
                             ->where('epg_programme_data->epg_channel_id', $programme->epg_channel_id);
                     });
             })
             ->where('status', DvrRecordingStatus::Failed)
             ->where('user_cancelled', false)
-            ->where('scheduled_end', '>', now())
+            ->where('scheduled_end', '>', UtcDateTime::forQuery(now()))
             ->where('attempt_count', '<', $maxAttempts);
 
         if ($seriesKey !== null) {
@@ -914,13 +915,13 @@ class DvrSchedulerService
                 $q->where('programme_uid', $programmeUid)
                     ->orWhere(function (Builder $q) use ($programme): void {
                         $q->whereNull('programme_uid')
-                            ->where('programme_start', $programme->start_time)
+                            ->where('programme_start', UtcDateTime::forQuery($programme->start_time))
                             ->where('epg_programme_data->epg_channel_id', $programme->epg_channel_id);
                     });
             })
             ->where('status', DvrRecordingStatus::Failed)
             ->where('user_cancelled', false)
-            ->where('scheduled_end', '>', now())
+            ->where('scheduled_end', '>', UtcDateTime::forQuery(now()))
             ->where('attempt_count', '>=', $maxAttempts);
 
         $seriesKey = SeriesKey::for($setting->id, $programme->title);
@@ -961,7 +962,7 @@ class DvrSchedulerService
                 $q->where('programme_uid', $programmeUid)
                     ->orWhere(function (Builder $q) use ($programme): void {
                         $q->whereNull('programme_uid')
-                            ->where('programme_start', $programme->start_time)
+                            ->where('programme_start', UtcDateTime::forQuery($programme->start_time))
                             ->where('epg_programme_data->epg_channel_id', $programme->epg_channel_id);
                     });
             })

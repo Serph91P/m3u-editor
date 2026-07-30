@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\UtcDateTime;
 use App\Enums\DvrMatchMode;
 use App\Enums\DvrRecordingStatus;
 use App\Enums\DvrRuleType;
@@ -34,8 +35,8 @@ class DvrRecordingRule extends Model
             'keep_last' => 'integer',
             'enabled' => 'boolean',
             'enable_comskip' => 'boolean',
-            'manual_start' => 'datetime',
-            'manual_end' => 'datetime',
+            'manual_start' => UtcDateTime::class,
+            'manual_end' => UtcDateTime::class,
         ];
     }
 

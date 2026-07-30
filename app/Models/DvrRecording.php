@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\UtcDateTime;
 use App\Enums\DvrRecordingStatus;
 use App\Enums\DvrRuleType;
 use App\Events\DvrRecordingStatusEvent;
@@ -32,15 +33,15 @@ class DvrRecording extends Model
             'attempt_count' => 'integer',
             'season' => 'integer',
             'episode' => 'integer',
-            'scheduled_start' => 'datetime',
-            'scheduled_end' => 'datetime',
-            'actual_start' => 'datetime',
-            'actual_end' => 'datetime',
+            'scheduled_start' => UtcDateTime::class,
+            'scheduled_end' => UtcDateTime::class,
+            'actual_start' => UtcDateTime::class,
+            'actual_end' => UtcDateTime::class,
             'duration_seconds' => 'integer',
             'file_size_bytes' => 'integer',
             'metadata' => 'array',
-            'programme_start' => 'datetime',
-            'programme_end' => 'datetime',
+            'programme_start' => UtcDateTime::class,
+            'programme_end' => UtcDateTime::class,
             'epg_programme_data' => 'array',
             'pid' => 'integer',
         ];
