@@ -41,8 +41,8 @@ class ProbeStreamsChunk implements ShouldQueue
 
     public function handle(): void
     {
-        $channels = $this->channelIds ? Channel::whereIn('id', $this->channelIds)->get() : collect();
-        $episodes = $this->episodeIds ? Episode::whereIn('id', $this->episodeIds)->get() : collect();
+        $channels = $this->channelIds ? Channel::whereIn('id', $this->channelIds)->eligibleForProbe()->get() : collect();
+        $episodes = $this->episodeIds ? Episode::whereIn('id', $this->episodeIds)->eligibleForProbe()->get() : collect();
 
         $probedCount = 0;
 

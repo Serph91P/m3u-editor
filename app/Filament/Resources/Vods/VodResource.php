@@ -1224,7 +1224,7 @@ class VodResource extends Resource implements CopilotResource
                     ->label(__('Enable Merge'))
                     ->action(function (Collection $records, array $data): void {
                         foreach ($records->chunk(100) as $chunk) {
-                            Channel::whereIn('id', $chunk->pluck('id'))->eligibleForMerge()->update(['can_merge' => true]);
+                            Channel::whereIn('id', $chunk->pluck('id'))->notAioManaged()->update(['can_merge' => true]);
                         }
                     })->after(function () {
                         Notification::make()
@@ -1365,7 +1365,7 @@ class VodResource extends Resource implements CopilotResource
                     ->label(__('Enable Probing'))
                     ->action(function (Collection $records): void {
                         foreach ($records->chunk(100) as $chunk) {
-                            Channel::whereIn('id', $chunk->pluck('id'))->eligibleForProbe()->update(['probe_enabled' => true]);
+                            Channel::whereIn('id', $chunk->pluck('id'))->notAioManaged()->update(['probe_enabled' => true]);
                         }
                     })->after(function () {
                         Notification::make()

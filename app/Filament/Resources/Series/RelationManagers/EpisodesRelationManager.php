@@ -220,7 +220,7 @@ class EpisodesRelationManager extends RelationManager
                     Actions\BulkAction::make('enable-probing')
                         ->label(__('Enable Probing'))
                         ->action(function (Collection $records): void {
-                            Episode::whereIn('id', $records->pluck('id'))->eligibleForProbe()->update(['probe_enabled' => true]);
+                            Episode::whereIn('id', $records->pluck('id'))->notAioManaged()->update(['probe_enabled' => true]);
                         })->after(function () {
                             Notification::make()
                                 ->success()

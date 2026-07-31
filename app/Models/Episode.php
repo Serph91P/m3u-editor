@@ -178,9 +178,18 @@ class Episode extends Model
     /**
      * AIOStreams-added episodes can't be probed.
      */
-    public function scopeEligibleForProbe(Builder $query): Builder
+    public function scopeNotAioManaged(Builder $query): Builder
     {
         return $query->whereNull('aio_item_id');
+    }
+
+    /**
+     * Episodes that should actually be probed right now: not AIOStreams-managed, and probing
+     * hasn't been opted out of.
+     */
+    public function scopeEligibleForProbe(Builder $query): Builder
+    {
+        return $query->notAioManaged()->where('probe_enabled', true);
     }
 
     public function getFloatingPlayerAttributes(?string $username = null, ?string $password = null): array

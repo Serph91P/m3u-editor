@@ -52,14 +52,13 @@ class ProbeChannelStreams implements ShouldQueue
     {
         $start = now();
 
-        $query = Channel::query();
+        $query = Channel::query()->eligibleForProbe();
 
         if ($this->channelIds) {
             $query->whereIn('id', $this->channelIds);
         } elseif ($this->playlistId) {
             $query->where('playlist_id', $this->playlistId)
-                ->where('is_vod', false)
-                ->where('probe_enabled', true);
+                ->where('is_vod', false);
 
             if (! $this->includeDisabled) {
                 $query->where('enabled', true);

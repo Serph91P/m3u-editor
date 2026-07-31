@@ -820,17 +820,27 @@ class Channel extends Model
     /**
      * AIOStreams-added channels manage their own internal failover chain and can't be merged.
      */
-    public function scopeEligibleForMerge(Builder $query): Builder
+    public function scopeNotAioManaged(Builder $query): Builder
     {
         return $query->whereNull('aio_integration_id');
     }
 
     /**
-     * AIOStreams-added channels can't be probed.
+     * Channels that should actually be merged right now: not AIOStreams-managed, and merging
+     * hasn't been opted out of.
+     */
+    public function scopeEligibleForMerge(Builder $query): Builder
+    {
+        return $query->notAioManaged()->where('can_merge', true);
+    }
+
+    /**
+     * Channels that should actually be probed right now: not AIOStreams-managed, and probing
+     * hasn't been opted out of.
      */
     public function scopeEligibleForProbe(Builder $query): Builder
     {
-        return $query->whereNull('aio_integration_id');
+        return $query->notAioManaged()->where('probe_enabled', true);
     }
 
     public function scopeHasMovieId(Builder $query): Builder

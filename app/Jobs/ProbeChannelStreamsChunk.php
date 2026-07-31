@@ -43,7 +43,7 @@ class ProbeChannelStreamsChunk implements ShouldQueue
      */
     public function handle(): void
     {
-        $channels = Channel::whereIn('id', $this->channelIds)->get();
+        $channels = Channel::whereIn('id', $this->channelIds)->eligibleForProbe()->get();
 
         foreach ($channels as $channel) {
             $stats = $this->withProviderThrottling(
