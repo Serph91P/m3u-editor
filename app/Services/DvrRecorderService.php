@@ -212,15 +212,26 @@ class DvrRecorderService
     }
 
     /**
-     * Cancel a recording - stops the proxy broadcast and marks as cancelled.
+     * Cancel a recording - stops the proxy broadcast (if any) and marks as cancelled.
      *
      * NOTE: We do NOT cleanup the proxy files here. The callback will fire when
      * FFmpeg actually stops, and post-processing will handle cleanup. This ensures
      * we don't delete segments that are still being written.
+     *
+     * A recording that had already started (proxy_network_id was set) has real
+     * footage worth keeping — the user may choose to keep this recording rather
+     * than discard it (see XtreamApiController::cancelDvrRecording / the TV app's
+     * "Keep recording" option), so it goes through the same stop → post-processing
+     * pipeline as a natural completion instead of being marked Cancelled directly.
+     * It ends up Completed (playable) like any other recording; user_cancelled and
+     * error_message are preserved through post-processing as a "stopped early" marker.
+     * A recording that never started (still Scheduled) has nothing to process, so
+     * it's marked Cancelled immediately as before.
      */
     public function cancel(DvrRecording $recording): void
     {
         $networkId = $recording->proxy_network_id;
+        $hadFootage = (bool) $networkId;
 
         if ($networkId) {
             $this->proxy->stopDvrBroadcast($networkId);
@@ -228,17 +239,7 @@ class DvrRecorderService
             // so we don't delete segments that are still being written
         }
 
-        $recording->update([
-            'status' => DvrRecordingStatus::Cancelled->value,
-            'actual_end' => now(),
-            'proxy_network_id' => null,
-            'error_message' => 'Cancelled by user',
-            'user_cancelled' => true,
-        ]);
-
-        $recording->notifyTv(__('Recording Cancelled'), 'warning');
-
-        // Delete "once" rules when the recording is cancelled - they're one-shot
+        // Delete "once" rules on cancel regardless of outcome below - they're one-shot.
         $rule = $recording->recordingRule;
         if ($rule && $rule->type === DvrRuleType::Once) {
             $rule->delete();
@@ -247,6 +248,50 @@ class DvrRecorderService
                 'recording_id' => $recording->id,
                 'rule_id' => $rule->id,
             ]);
+        }
+
+        if (! $hadFootage) {
+            $recording->update([
+                'status' => DvrRecordingStatus::Cancelled->value,
+                'actual_end' => now(),
+                'proxy_network_id' => null,
+                'error_message' => 'Cancelled by user',
+                'user_cancelled' => true,
+            ]);
+
+            $recording->notifyTv(__('Recording Cancelled'), 'warning');
+
+            return;
+        }
+
+        $recording->update([
+            'actual_end' => now(),
+            'error_message' => 'Cancelled by user',
+            'user_cancelled' => true,
+        ]);
+
+        $recording->notifyTv(__('Recording Cancelled'), 'warning');
+
+        $this->finalizeStop($recording);
+    }
+
+    /**
+     * Release a recording's proxy-side broadcast/segment files without running
+     * post-processing.
+     *
+     * PostProcessDvrRecording normally owns this cleanup (see
+     * DvrPostProcessorService), but that job may never get the chance to run
+     * on a recording that's about to be deleted - e.g. the TV app's "Delete
+     * recording" choice calls cancel_dvr_recording then delete_dvr_recording
+     * back-to-back, well before the (delayed/callback-triggered) job executes.
+     * Call this before deleting a recording that still has a proxy_network_id
+     * so those resources aren't leaked. Safe to call on a recording the job
+     * already cleaned up - proxy_network_id will already be null by then.
+     */
+    public function releaseProxyResources(DvrRecording $recording): void
+    {
+        if ($recording->proxy_network_id) {
+            $this->proxy->cleanupDvrBroadcast($recording->proxy_network_id);
         }
     }
 
