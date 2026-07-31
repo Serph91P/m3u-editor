@@ -529,7 +529,7 @@ class SeriesResource extends Resource implements CopilotResource
                     ->icon('heroicon-o-signal')
                     ->action(function ($record): void {
                         $episodeIds = Episode::where('series_id', $record->id)
-                            ->where('probe_enabled', true)
+                            ->eligibleForProbe()
                             ->pluck('id')
                             ->all();
                         if (! empty($episodeIds)) {
@@ -962,7 +962,7 @@ class SeriesResource extends Resource implements CopilotResource
                     ->action(function (Collection $records): void {
                         $seriesIds = $records->pluck('id')->all();
                         $episodeIds = Episode::whereIn('series_id', $seriesIds)
-                            ->where('probe_enabled', true)
+                            ->eligibleForProbe()
                             ->pluck('id')
                             ->all();
                         if (! empty($episodeIds)) {

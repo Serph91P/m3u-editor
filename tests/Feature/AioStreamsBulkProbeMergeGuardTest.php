@@ -6,14 +6,18 @@ use App\Filament\Resources\Series\Pages\ViewSeries;
 use App\Filament\Resources\Series\RelationManagers\EpisodesRelationManager;
 use App\Filament\Resources\Series\SeriesResource;
 use App\Filament\Resources\Vods\VodResource;
+use App\Jobs\ProbeStreamsChunk;
+use App\Jobs\ProbeStreamsComplete;
 use App\Models\Channel;
 use App\Models\Episode;
 use App\Models\MediaServerIntegration;
 use App\Models\Series;
 use App\Models\User;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
 use Filament\Schemas\Components\Component;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Bus;
 use Livewire\Livewire;
 
 beforeEach(function () {
@@ -147,6 +151,70 @@ it('does not let the Series list bulk "Enable Probing" action turn on probing fo
 
     expect($aioEpisode->fresh()->probe_enabled)->toBeFalse()
         ->and($normalEpisode->fresh()->probe_enabled)->toBeTrue();
+});
+
+it('excludes AIOStreams episodes from the Series list bulk "Probe Streams" action even if probe_enabled was somehow left true', function () {
+    Bus::fake();
+
+    $series = Series::factory()->create(['user_id' => $this->user->id]);
+    $aioEpisode = Episode::factory()->create([
+        'user_id' => $this->user->id,
+        'series_id' => $series->id,
+        'is_custom' => true,
+        'aio_item_id' => 'tt1:1:1',
+        // Simulate a bug/bypass upstream that left probing "enabled" on an AIO episode.
+        'probe_enabled' => true,
+    ]);
+    $normalEpisode = Episode::factory()->create([
+        'user_id' => $this->user->id,
+        'series_id' => $series->id,
+        'probe_enabled' => true,
+    ]);
+
+    findAndCallBulkAction(SeriesResource::getTableBulkActions(), 'probe-streams', new Collection([$series]));
+
+    Bus::assertChained([
+        fn (ProbeStreamsChunk $job) => $job->episodeIds === [$normalEpisode->id],
+        ProbeStreamsComplete::class,
+    ]);
+});
+
+it('excludes AIOStreams episodes from the Series "Probe Episode Streams" row action even if probe_enabled was somehow left true', function () {
+    Bus::fake();
+
+    $series = Series::factory()->create(['user_id' => $this->user->id]);
+    $aioEpisode = Episode::factory()->create([
+        'user_id' => $this->user->id,
+        'series_id' => $series->id,
+        'is_custom' => true,
+        'aio_item_id' => 'tt1:1:1',
+        'probe_enabled' => true,
+    ]);
+    $normalEpisode = Episode::factory()->create([
+        'user_id' => $this->user->id,
+        'series_id' => $series->id,
+        'probe_enabled' => true,
+    ]);
+
+    $actionClosure = null;
+    foreach (SeriesResource::getTableActions() as $item) {
+        if ($item instanceof ActionGroup) {
+            foreach ($item->getFlatActions() as $flat) {
+                if ($flat->getName() === 'probe') {
+                    $actionClosure = (new ReflectionProperty($flat, 'action'))->getValue($flat);
+                    break 2;
+                }
+            }
+        }
+    }
+
+    expect($actionClosure)->not->toBeNull();
+    app()->call($actionClosure, ['record' => $series]);
+
+    Bus::assertChained([
+        fn (ProbeStreamsChunk $job) => $job->episodeIds === [$normalEpisode->id],
+        ProbeStreamsComplete::class,
+    ]);
 });
 
 it('does not let the Channels list bulk "Enable Probing" action turn on probing for AIOStreams-added channels', function () {
