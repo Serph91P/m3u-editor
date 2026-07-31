@@ -6,6 +6,7 @@ use App\Events\TvNotificationEvent;
 use App\Jobs\SendPushNotificationRelay;
 use App\Models\PlaylistAuth;
 use App\Models\TvNotification;
+use App\Services\PushRelayService;
 use App\Settings\GeneralSettings;
 use Filament\Notifications\Notification as BaseNotification;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -66,16 +67,18 @@ class Notification extends BaseNotification
             metadata: $metadata,
         ));
 
-        SendPushNotificationRelay::dispatch(
-            $playlist->getMorphClass(),
-            $playlist->id,
-            $this->getTitle() ?? '',
-            $this->getBody(),
-            $playlistAuth?->id,
-            $record->id,
-            $metadata,
-            $adminOnly,
-        );
+        if (app(PushRelayService::class)->isEnabled()) {
+            SendPushNotificationRelay::dispatch(
+                $playlist->getMorphClass(),
+                $playlist->id,
+                $this->getTitle() ?? '',
+                $this->getBody(),
+                $playlistAuth?->id,
+                $record->id,
+                $metadata,
+                $adminOnly,
+            );
+        }
 
         return $this;
     }
