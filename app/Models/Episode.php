@@ -175,6 +175,14 @@ class Episode extends Model
         return $query->where('season_id', $seasonId);
     }
 
+    /**
+     * AIOStreams-added episodes can't be probed.
+     */
+    public function scopeEligibleForProbe(Builder $query): Builder
+    {
+        return $query->whereNull('aio_item_id');
+    }
+
     public function getFloatingPlayerAttributes(?string $username = null, ?string $password = null): array
     {
         $settings = app(GeneralSettings::class);

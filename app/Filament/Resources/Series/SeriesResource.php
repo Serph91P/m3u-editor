@@ -924,7 +924,7 @@ class SeriesResource extends Resource implements CopilotResource
                     ->label(__('Enable Probing'))
                     ->action(function (Collection $records): void {
                         $seriesIds = $records->pluck('id')->all();
-                        Episode::whereIn('series_id', $seriesIds)->update(['probe_enabled' => true]);
+                        Episode::whereIn('series_id', $seriesIds)->eligibleForProbe()->update(['probe_enabled' => true]);
                     })->after(function () {
                         Notification::make()
                             ->success()

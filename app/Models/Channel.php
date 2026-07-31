@@ -817,6 +817,22 @@ class Channel extends Model
             ->where('epg_map_enabled', true);
     }
 
+    /**
+     * AIOStreams-added channels manage their own internal failover chain and can't be merged.
+     */
+    public function scopeEligibleForMerge(Builder $query): Builder
+    {
+        return $query->whereNull('aio_integration_id');
+    }
+
+    /**
+     * AIOStreams-added channels can't be probed.
+     */
+    public function scopeEligibleForProbe(Builder $query): Builder
+    {
+        return $query->whereNull('aio_integration_id');
+    }
+
     public function scopeHasMovieId(Builder $query): Builder
     {
         $isPgsql = config('database.connections.'.config('database.default').'.driver') === 'pgsql';

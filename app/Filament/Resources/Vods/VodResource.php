@@ -1223,10 +1223,9 @@ class VodResource extends Resource implements CopilotResource
                 BulkAction::make('enable-merge')
                     ->label(__('Enable Merge'))
                     ->action(function (Collection $records, array $data): void {
-                        // AIOStreams-added VODs use their own internal failover mechanism and can't be merged.
-                        $records->whereNull('aio_integration_id')->each(fn ($channel) => $channel->update([
-                            'can_merge' => true,
-                        ]));
+                        foreach ($records->chunk(100) as $chunk) {
+                            Channel::whereIn('id', $chunk->pluck('id'))->eligibleForMerge()->update(['can_merge' => true]);
+                        }
                     })->after(function () {
                         Notification::make()
                             ->success()
@@ -1365,9 +1364,8 @@ class VodResource extends Resource implements CopilotResource
                 BulkAction::make('enable-probing')
                     ->label(__('Enable Probing'))
                     ->action(function (Collection $records): void {
-                        // AIOStreams-added VODs can't be probed (see the disabled column toggle).
-                        foreach ($records->whereNull('aio_integration_id')->chunk(100) as $chunk) {
-                            Channel::whereIn('id', $chunk->pluck('id'))->update(['probe_enabled' => true]);
+                        foreach ($records->chunk(100) as $chunk) {
+                            Channel::whereIn('id', $chunk->pluck('id'))->eligibleForProbe()->update(['probe_enabled' => true]);
                         }
                     })->after(function () {
                         Notification::make()

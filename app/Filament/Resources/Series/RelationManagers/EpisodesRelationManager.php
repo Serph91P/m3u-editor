@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Series\RelationManagers;
 use App\Filament\Tables\ProbeStatusColumn;
 use App\Jobs\ProbeStreamsChunk;
 use App\Jobs\ProbeStreamsComplete;
+use App\Models\Episode;
 use Filament\Actions;
 use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
@@ -219,10 +220,7 @@ class EpisodesRelationManager extends RelationManager
                     Actions\BulkAction::make('enable-probing')
                         ->label(__('Enable Probing'))
                         ->action(function (Collection $records): void {
-                            // AIOStreams-added episodes can't be probed (see the disabled column toggle).
-                            foreach ($records->whereNull('aio_item_id') as $record) {
-                                $record->update(['probe_enabled' => true]);
-                            }
+                            Episode::whereIn('id', $records->pluck('id'))->eligibleForProbe()->update(['probe_enabled' => true]);
                         })->after(function () {
                             Notification::make()
                                 ->success()
