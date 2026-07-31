@@ -234,6 +234,8 @@ class VodResource extends Resource implements CopilotResource
                 ->sortable(),
             ToggleColumn::make('can_merge')
                 ->label(__('Merge Enabled'))
+                ->disabled(fn (Channel $record): bool => (bool) $record->aio_integration_id)
+                ->tooltip(fn (Channel $record): ?string => $record->aio_integration_id ? __('AIOStreams-added VODs use their own internal failover mechanism and cannot be merged.') : null)
                 ->toggleable()
                 ->sortable(),
             TextColumn::make('failovers_count')
@@ -248,6 +250,8 @@ class VodResource extends Resource implements CopilotResource
                 ->color(fn ($record): string => $record->has_metadata ? 'success' : 'gray'),
             ToggleColumn::make('probe_enabled')
                 ->label(__('Probe Enabled'))
+                ->disabled(fn (Channel $record): bool => (bool) $record->aio_integration_id)
+                ->tooltip(fn (Channel $record): ?string => $record->aio_integration_id ? __('AIOStreams-added VODs cannot be probed.') : null)
                 ->toggleable()
                 ->sortable(),
             ProbeStatusColumn::make(),
@@ -1219,7 +1223,8 @@ class VodResource extends Resource implements CopilotResource
                 BulkAction::make('enable-merge')
                     ->label(__('Enable Merge'))
                     ->action(function (Collection $records, array $data): void {
-                        $records->each(fn ($channel) => $channel->update([
+                        // AIOStreams-added VODs use their own internal failover mechanism and can't be merged.
+                        $records->whereNull('aio_integration_id')->each(fn ($channel) => $channel->update([
                             'can_merge' => true,
                         ]));
                     })->after(function () {
@@ -1360,7 +1365,8 @@ class VodResource extends Resource implements CopilotResource
                 BulkAction::make('enable-probing')
                     ->label(__('Enable Probing'))
                     ->action(function (Collection $records): void {
-                        foreach ($records->chunk(100) as $chunk) {
+                        // AIOStreams-added VODs can't be probed (see the disabled column toggle).
+                        foreach ($records->whereNull('aio_integration_id')->chunk(100) as $chunk) {
                             Channel::whereIn('id', $chunk->pluck('id'))->update(['probe_enabled' => true]);
                         }
                     })->after(function () {
@@ -1543,7 +1549,10 @@ class VodResource extends Resource implements CopilotResource
                 ->default(true),
             Toggle::make('can_merge')
                 ->default(true)
-                ->helperText(__('Allow this channel to be merged during "Merge Same ID" jobs.')),
+                ->disabled(fn (?Channel $record): bool => (bool) $record?->aio_integration_id)
+                ->helperText(fn (?Channel $record): string => $record?->aio_integration_id
+                    ? __('AIOStreams-added VODs use their own internal failover mechanism and cannot be merged.')
+                    : __('Allow this channel to be merged during "Merge Same ID" jobs.')),
             Fieldset::make(__('Playlist Type (choose one)'))
                 ->schema([
                     Toggle::make('is_custom')
@@ -2123,6 +2132,10 @@ class VodResource extends Resource implements CopilotResource
                 ]),
 
             Fieldset::make(__('Failover Channels'))
+                // AIOStreams-added VODs manage their failover chain internally (ChannelFailover
+                // rows created by ResolveAioStreamsChannel from ranked stream candidates) — manual
+                // failover management here would conflict with that mechanism.
+                ->hidden(fn (?Channel $record): bool => (bool) $record?->aio_integration_id)
                 ->schema([
                     Repeater::make('failovers')
                         ->relationship()

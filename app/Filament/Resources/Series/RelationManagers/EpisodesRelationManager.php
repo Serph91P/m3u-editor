@@ -138,6 +138,8 @@ class EpisodesRelationManager extends RelationManager
 
                 ToggleColumn::make('probe_enabled')
                     ->label(__('Probe Enabled'))
+                    ->disabled(fn ($record): bool => (bool) $record->aio_item_id)
+                    ->tooltip(fn ($record): ?string => $record->aio_item_id ? __('AIOStreams-added episodes cannot be probed.') : null)
                     ->toggleable()
                     ->sortable(),
 
@@ -217,7 +219,8 @@ class EpisodesRelationManager extends RelationManager
                     Actions\BulkAction::make('enable-probing')
                         ->label(__('Enable Probing'))
                         ->action(function (Collection $records): void {
-                            foreach ($records as $record) {
+                            // AIOStreams-added episodes can't be probed (see the disabled column toggle).
+                            foreach ($records->whereNull('aio_item_id') as $record) {
                                 $record->update(['probe_enabled' => true]);
                             }
                         })->after(function () {
