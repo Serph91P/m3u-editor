@@ -8,7 +8,7 @@ use App\Models\Scopes\ExcludeAioFailoverClonesScope;
 use App\Services\AioStreamsQualityParser;
 use App\Services\AIOStreamsService;
 use App\Settings\GeneralSettings;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
+use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -19,8 +19,16 @@ use Illuminate\Support\Str;
  * the current best stream URLs for an AIOStreams-backed custom Episode,
  * storing the top candidate on the episode itself and the rest as an ordered
  * EpisodeFailover chain (already used for live playback failover today).
+ *
+ * Uses ShouldBeUniqueUntilProcessing rather than ShouldBeUnique: the
+ * empty-result retry below self-dispatches (with the same uniqueId) from
+ * INSIDE handle(). A plain ShouldBeUnique lock is held until the job
+ * finishes, so that self-redispatch could never acquire it — the retry
+ * would be silently dropped and the episode would stay 'pending' forever.
+ * UntilProcessing releases the lock as soon as this job starts running,
+ * before the retry dispatch happens.
  */
-class ResolveAioStreamsEpisode implements ShouldBeUnique, ShouldQueue
+class ResolveAioStreamsEpisode implements ShouldBeUniqueUntilProcessing, ShouldQueue
 {
     use Queueable;
 

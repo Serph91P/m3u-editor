@@ -105,6 +105,26 @@ it('deletes orphaned failover clone channels when the primary channel is deleted
     expect(Channel::withoutGlobalScopes()->whereIn('id', $failoverChannelIds)->count())->toBe(0);
 });
 
+it('actually retries through the real queue pipeline and reaches failed, despite the job\'s own unique lock', function () {
+    // Same rationale as the equivalent episode test: Bus::fake() never touches the
+    // real ShouldBeUnique lock, so it can't catch a self-redispatch that silently
+    // fails to enqueue because the currently-running job's own lock (same uniqueId)
+    // is still held. Forcing the real sync connection (config/queue.php hardcodes
+    // 'redis' as the default, ignoring QUEUE_CONNECTION) lets each dispatched job
+    // run immediately, so attempts 1 through 3 should cascade all the way to
+    // 'failed' with no retry silently dropped.
+    config(['queue.default' => 'sync']);
+
+    Http::fake([
+        'aiostreams.test/*' => Http::response(['streams' => []], 200),
+    ]);
+
+    ResolveAioStreamsChannel::dispatch($this->channel->id);
+
+    $this->channel->refresh();
+    expect($this->channel->aio_resolution_status)->toBe('failed');
+});
+
 it('retries with a delay when AIOStreams returns no results, and eventually marks failed', function () {
     Bus::fake();
 

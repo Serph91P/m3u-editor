@@ -125,7 +125,7 @@ it('gives up waiting and notifies with whatever is resolved after the polling ca
     Notification::assertSentTo(
         $this->user,
         DatabaseNotification::class,
-        fn ($notification) => $notification->toArray()['body'] === '2 movies fetched | 1 resolved | 0 failed'
+        fn ($notification) => $notification->toArray()['body'] === '2 movies fetched | 1 resolved | 0 failed | 1 still pending'
     );
 });
 

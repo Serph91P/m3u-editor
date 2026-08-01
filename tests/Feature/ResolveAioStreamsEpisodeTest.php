@@ -128,6 +128,31 @@ it('re-enables an episode that was disabled for being unaired once it resolves',
         ->and($this->episode->aio_resolution_status)->toBe('partial');
 });
 
+it('actually retries through the real queue pipeline and reaches failed, despite the job\'s own unique lock', function () {
+    // Bus::fake() replaces the dispatcher entirely and never touches the real
+    // ShouldBeUnique lock, so it can't catch this regression: the empty-result retry
+    // below self-dispatches (same uniqueId) from INSIDE handle(). Under plain
+    // ShouldBeUnique that lock is held for the whole handle() call, so the retry
+    // would silently fail to be queued — no exception, it just never happens, and
+    // the episode is stranded at 'pending' forever. ShouldBeUniqueUntilProcessing
+    // releases the lock before handle() runs (verified against CallQueuedHandler),
+    // so — forcing the real (non-faked) sync queue connection, which runs each
+    // dispatched job immediately — attempt 1 through 3 should cascade
+    // synchronously all the way to 'failed', proving no retry got dropped.
+    // (config/queue.php hardcodes 'redis' as the default, ignoring
+    // QUEUE_CONNECTION, so this has to be forced rather than relying on env.)
+    config(['queue.default' => 'sync']);
+
+    Http::fake([
+        'aiostreams.test/*' => Http::response(['streams' => []], 200),
+    ]);
+
+    ResolveAioStreamsEpisode::dispatch($this->episode->id);
+
+    $this->episode->refresh();
+    expect($this->episode->aio_resolution_status)->toBe('failed');
+});
+
 it('retries with a delay when AIOStreams returns no results, and eventually marks failed', function () {
     Bus::fake();
 

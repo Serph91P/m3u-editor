@@ -88,6 +88,13 @@ class NotifyAioStreamsResolutionComplete implements ShouldQueue
             'failed' => $failed,
         ]);
 
+        // Only reachable by hitting MAX_ATTEMPTS above with something still 'pending' —
+        // say so explicitly rather than letting it silently vanish from the count
+        // (resolved + failed wouldn't otherwise add up to total).
+        if ($stillPending > 0) {
+            $body .= ' | '.__(':count still pending', ['count' => $stillPending]);
+        }
+
         $notification = Notification::make()
             ->title(__('AIOStreams sync complete: :context', ['context' => $this->context]))
             ->body($body);
