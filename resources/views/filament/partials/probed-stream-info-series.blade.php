@@ -53,7 +53,8 @@
         if (count($unique) === 1) {
             return ['label' => $label, 'value' => $unique[0], 'mixed' => false];
         }
-        return ['label' => $label, 'value' => 'Mixed (' . count($unique) . ' variants)', 'mixed' => true];
+
+        return ['label' => $label, 'value' => 'Mixed ('.count($unique).' variants)', 'mixed' => true];
     };
 
     $rows = [];
@@ -68,12 +69,18 @@
 
 @if ($probedCount > 0)
     <div class="mb-6">
-        <x-filament::section icon="heroicon-o-cog-6-tooth" :heading="__('Probed Stream Info (Series Aggregate)')" :description="__(':probed of :total episodes probed. Mixed values mean episodes differ.', [
+        <x-filament::section
+            icon="heroicon-o-cog-6-tooth"
+            :heading="__('Probed Stream Info (Series Aggregate)')"
+            :description="__(':probed of :total episodes probed. Mixed values mean episodes differ.', [
             'probed' => $probedCount,
             'total' => $totalEpisodes,
-        ])" collapsible compact
-            collapsed>
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+        ])"
+            collapsible
+            compact
+            collapsed
+        >
+            <div class="grid grid-cols-2 gap-4 md:grid-cols-3">
                 @foreach ($rows as $row)
                     <div>
                         <span class="text-sm text-gray-500">{{ $row['label'] }}</span>

@@ -4,7 +4,7 @@
             <img
                 src="{{ $asset->preview_url }}"
                 alt="{{ $asset->name }}"
-                class="w-auto max-h-80 rounded-lg border border-gray-200 object-contain bg-white dark:border-gray-700 dark:bg-gray-900"
+                class="max-h-80 w-auto rounded-lg border border-gray-200 bg-white object-contain dark:border-gray-700 dark:bg-gray-900"
             />
         @else
             <div class="rounded-lg border border-dashed border-gray-300 p-6 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
@@ -32,7 +32,9 @@
         </div>
         <div>
             <dt class="font-medium text-gray-500 dark:text-gray-400">Size</dt>
-            <dd class="text-gray-900 dark:text-gray-100">{{ $asset->size_bytes ? number_format($asset->size_bytes / 1024, 2) . ' KB' : '—' }}</dd>
+            <dd class="text-gray-900 dark:text-gray-100">
+                {{ $asset->size_bytes ? number_format($asset->size_bytes / 1024, 2) . ' KB' : '—' }}
+            </dd>
         </div>
         <div>
             <dt class="font-medium text-gray-500 dark:text-gray-400">Modified</dt>
@@ -42,7 +44,7 @@
 
     <div>
         <h4 class="font-medium text-gray-900 dark:text-gray-100">Metadata</h4>
-        @if (!empty($metadata))
+        @if (! empty($metadata))
             <pre class="mt-2 max-h-80 overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100">{{ json_encode($metadata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) }}</pre>
         @else
             <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">No metadata found for this asset.</p>

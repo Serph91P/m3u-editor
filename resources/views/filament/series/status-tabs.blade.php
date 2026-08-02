@@ -12,8 +12,12 @@
 <div class="flex justify-center">
     <x-filament::tabs label="Status filter" class="w-auto">
         @foreach ($tabs as $key => $tab)
-            <x-filament::tabs.item :active="$current === $key" :badge="$tab['count']" :badge-color="$tab['color']"
-                wire:click="$set('statusFilter', '{{ $key }}')">
+            <x-filament::tabs.item
+                :active="$current === $key"
+                :badge="$tab['count']"
+                :badge-color="$tab['color']"
+                wire:click="$set('statusFilter', '{{ $key }}')"
+            >
                 {{ $tab['label'] }}
             </x-filament::tabs.item>
         @endforeach

@@ -1,6 +1,6 @@
 <x-filament-panels::page @class([
     'fi-resource-view-record-page',
-    'fi-resource-' . str_replace('/', '-', $this->getResource()::getSlug()),
+    'fi-resource-'.str_replace('/', '-', $this->getResource()::getSlug()),
 ])>
     {{-- Hero Backdrop Section --}}
     @php
@@ -10,7 +10,7 @@
             $backdrops = json_decode($backdrops, true) ?? [];
         }
         $backdropUrl = null;
-        if (!empty($backdrops) && is_array($backdrops)) {
+        if (! empty($backdrops) && is_array($backdrops)) {
             $backdropUrl = is_array($backdrops[0] ?? null) ? $backdrops[0]['url'] ?? null : $backdrops[0] ?? null;
         }
     @endphp
@@ -23,47 +23,49 @@
     @endphp
 
     @if ($backdropUrl)
-        <div class="relative -mt-4 mb-6 overflow-hidden rounded-xl" style="min-height: 400px;">
+        <div class="relative -mt-4 mb-6 overflow-hidden rounded-xl" style="min-height: 400px">
             {{-- Backdrop Image --}}
             <div class="absolute inset-0">
-                <img src="{{ $backdropUrl }}" alt="{{ $record->name }}" class="w-full h-full object-cover" />
+                <img src="{{ $backdropUrl }}" alt="{{ $record->name }}" class="h-full w-full object-cover" />
                 <div class="absolute inset-0 bg-gradient-to-r from-gray-900 via-gray-900/80 to-transparent"></div>
                 <div class="absolute inset-0 bg-gradient-to-t from-gray-900 via-transparent to-transparent"></div>
             </div>
 
             {{-- Content Overlay --}}
-            <div class="relative z-10 p-8 flex flex-col md:flex-row gap-8">
+            <div class="relative z-10 flex flex-col gap-8 p-8 md:flex-row">
                 {{-- Poster --}}
                 <div class="flex-shrink-0">
                     @php
                         $coverUrl = \App\Facades\LogoFacade::getSeriesLogoUrl($record);
                     @endphp
                     @if ($coverUrl)
-                        <img src="{{ $coverUrl }}" alt="{{ $record->name }}"
-                            class="w-48 h-72 object-cover rounded-lg shadow-2xl ring-1 ring-white/20" />
+                        <img
+                            src="{{ $coverUrl }}"
+                            alt="{{ $record->name }}"
+                            class="h-72 w-48 rounded-lg object-cover shadow-2xl ring-1 ring-white/20"
+                        />
                     @else
-                        <div class="w-48 h-72 bg-gray-800 rounded-lg shadow-2xl flex items-center justify-center">
-                            <x-heroicon-o-film class="w-16 h-16 text-gray-600" />
+                        <div class="flex h-72 w-48 items-center justify-center rounded-lg bg-gray-800 shadow-2xl">
+                            <x-heroicon-o-film class="h-16 w-16 text-gray-600" />
                         </div>
                     @endif
                 </div>
 
                 {{-- Info --}}
-                <div class="flex-1 text-white space-y-4">
+                <div class="flex-1 space-y-4 text-white">
                     <h1 class="text-4xl font-bold">{{ $record->name }}</h1>
 
                     {{-- Metadata Badges --}}
-                    <div class="flex flex-wrap gap-2 items-center text-sm">
+                    <div class="flex flex-wrap items-center gap-2 text-sm">
                         @if ($record->release_date)
-                            <span class="px-3 py-1 bg-white/10 rounded-full">{{ $record->release_date }}</span>
+                            <span class="rounded-full bg-white/10 px-3 py-1">{{ $record->release_date }}</span>
                         @endif
                         @if ($record->genre)
-                            <span class="px-3 py-1 bg-white/10 rounded-full">{{ $record->genre }}</span>
+                            <span class="rounded-full bg-white/10 px-3 py-1">{{ $record->genre }}</span>
                         @endif
                         @if ($record->rating)
-                            <span
-                                class="px-3 py-1 bg-yellow-500/20 text-yellow-300 rounded-full flex items-center gap-1">
-                                <x-heroicon-s-star class="w-4 h-4" />
+                            <span class="flex items-center gap-1 rounded-full bg-yellow-500/20 px-3 py-1 text-yellow-300">
+                                <x-heroicon-s-star class="h-4 w-4" />
                                 {{ $record->rating }}
                             </span>
                         @endif
@@ -72,44 +74,50 @@
                             $episodesCount = $record->episodes()->count();
                         @endphp
                         @if ($seasonsCount > 0)
-                            <span class="px-3 py-1 bg-white/10 rounded-full">{{ $seasonsCount }}
-                                {{ Str::plural('Season', $seasonsCount) }}</span>
+                            <span class="rounded-full bg-white/10 px-3 py-1">{{ $seasonsCount }} {{ Str::plural('Season', $seasonsCount) }}</span>
                         @endif
                         @if ($episodesCount > 0)
-                            <span class="px-3 py-1 bg-white/10 rounded-full">{{ $episodesCount }}
-                                {{ Str::plural('Episode', $episodesCount) }}</span>
+                            <span class="rounded-full bg-white/10 px-3 py-1">{{ $episodesCount }} {{ Str::plural('Episode', $episodesCount) }}</span>
                         @endif
 
                         {{-- Status Badge --}}
-                        <span
-                            class="px-3 py-1 rounded-full {{ $record->enabled ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300' }}">
+                        <span class="px-3 py-1 rounded-full {{ $record->enabled ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300' }}">
                             {{ $record->enabled ? 'Enabled' : 'Disabled' }}
                         </span>
                     </div>
 
                     {{-- Plot --}}
                     @if ($record->plot)
-                        <p class="text-gray-300 max-w-2xl leading-relaxed">{{ Str::limit($record->plot, 500) }}</p>
+                        <p class="max-w-2xl leading-relaxed text-gray-300">{{ Str::limit($record->plot, 500) }}</p>
                     @endif
 
                     {{-- External IDs --}}
                     @if ($record->tmdb_id || $record->tvdb_id || $record->imdb_id)
                         <div class="flex gap-3 pt-2">
                             @if ($record->tmdb_id)
-                                <a href="https://www.themoviedb.org/tv/{{ $record->tmdb_id }}" target="_blank"
-                                    class="px-3 py-1 bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 rounded text-xs transition-colors">
+                                <a
+                                    href="https://www.themoviedb.org/tv/{{ $record->tmdb_id }}"
+                                    target="_blank"
+                                    class="rounded bg-blue-600/30 px-3 py-1 text-xs text-blue-300 transition-colors hover:bg-blue-600/50"
+                                >
                                     TMDB: {{ $record->tmdb_id }}
                                 </a>
                             @endif
                             @if ($record->tvdb_id)
-                                <a href="https://thetvdb.com/?tab=series&id={{ $record->tvdb_id }}" target="_blank"
-                                    class="px-3 py-1 bg-green-600/30 hover:bg-green-600/50 text-green-300 rounded text-xs transition-colors">
+                                <a
+                                    href="https://thetvdb.com/?tab=series&id={{ $record->tvdb_id }}"
+                                    target="_blank"
+                                    class="rounded bg-green-600/30 px-3 py-1 text-xs text-green-300 transition-colors hover:bg-green-600/50"
+                                >
                                     TVDB: {{ $record->tvdb_id }}
                                 </a>
                             @endif
                             @if ($record->imdb_id)
-                                <a href="https://www.imdb.com/title/{{ $record->imdb_id }}" target="_blank"
-                                    class="px-3 py-1 bg-yellow-600/30 hover:bg-yellow-600/50 text-yellow-300 rounded text-xs transition-colors">
+                                <a
+                                    href="https://www.imdb.com/title/{{ $record->imdb_id }}"
+                                    target="_blank"
+                                    class="rounded bg-yellow-600/30 px-3 py-1 text-xs text-yellow-300 transition-colors hover:bg-yellow-600/50"
+                                >
                                     {{ $record->imdb_id }}
                                 </a>
                             @endif
@@ -119,9 +127,12 @@
                     {{-- YouTube Trailer --}}
                     @if ($record->youtube_trailer)
                         <div class="pt-2">
-                            <a href="https://www.youtube.com/watch?v={{ $record->youtube_trailer }}" target="_blank"
-                                class="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
-                                <x-heroicon-s-play class="w-5 h-5" />
+                            <a
+                                href="https://www.youtube.com/watch?v={{ $record->youtube_trailer }}"
+                                target="_blank"
+                                class="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-white transition-colors hover:bg-red-700"
+                            >
+                                <x-heroicon-s-play class="h-5 w-5" />
                                 Watch Trailer
                             </a>
                         </div>
@@ -129,14 +140,18 @@
 
                     {{-- Cast & Director --}}
                     @if ($record->director || $record->cast)
-                        <div class="pt-4 border-t border-white/10 space-y-2">
+                        <div class="space-y-2 border-t border-white/10 pt-4">
                             @if ($record->director)
-                                <p class="text-sm"><span class="text-gray-400">Director:</span> <span
-                                        class="text-white">{{ $record->director }}</span></p>
+                                <p class="text-sm">
+                                    <span class="text-gray-400">Director:</span>
+                                    <span class="text-white">{{ $record->director }}</span>
+                                </p>
                             @endif
                             @if ($record->cast)
-                                <p class="text-sm"><span class="text-gray-400">Cast:</span> <span
-                                        class="text-white">{{ Str::limit($record->cast, 200) }}</span></p>
+                                <p class="text-sm">
+                                    <span class="text-gray-400">Cast:</span>
+                                    <span class="text-white">{{ Str::limit($record->cast, 200) }}</span>
+                                </p>
                             @endif
                         </div>
                     @endif
@@ -145,42 +160,42 @@
         </div>
     @else
         {{-- Fallback without backdrop --}}
-        <div class="mb-6 p-6 bg-gray-100 dark:bg-gray-800 rounded-xl">
-            <div class="flex flex-col md:flex-row gap-6">
+        <div class="mb-6 rounded-xl bg-gray-100 p-6 dark:bg-gray-800">
+            <div class="flex flex-col gap-6 md:flex-row">
                 {{-- Poster --}}
                 <div class="flex-shrink-0">
                     @php
                         $coverUrl = \App\Facades\LogoFacade::getSeriesLogoUrl($record);
                     @endphp
                     @if ($coverUrl)
-                        <img src="{{ $coverUrl }}" alt="{{ $record->name }}"
-                            class="w-40 h-60 object-cover rounded-lg shadow-lg" />
+                        <img
+                            src="{{ $coverUrl }}"
+                            alt="{{ $record->name }}"
+                            class="h-60 w-40 rounded-lg object-cover shadow-lg"
+                        />
                     @else
-                        <div class="w-40 h-60 bg-gray-300 dark:bg-gray-700 rounded-lg flex items-center justify-center">
-                            <x-heroicon-o-film class="w-12 h-12 text-gray-400" />
+                        <div class="flex h-60 w-40 items-center justify-center rounded-lg bg-gray-300 dark:bg-gray-700">
+                            <x-heroicon-o-film class="h-12 w-12 text-gray-400" />
                         </div>
                     @endif
                 </div>
 
                 {{-- Info --}}
                 <div class="flex-1 space-y-3">
-                    <div class="flex flex-wrap gap-2 items-center text-sm">
+                    <div class="flex flex-wrap items-center gap-2 text-sm">
                         @if ($record->release_date)
-                            <span
-                                class="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded">{{ $record->release_date }}</span>
+                            <span class="rounded bg-gray-200 px-2 py-1 dark:bg-gray-700">{{ $record->release_date }}</span>
                         @endif
                         @if ($record->genre)
-                            <span class="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded">{{ $record->genre }}</span>
+                            <span class="rounded bg-gray-200 px-2 py-1 dark:bg-gray-700">{{ $record->genre }}</span>
                         @endif
                         @if ($record->rating)
-                            <span
-                                class="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded flex items-center gap-1">
-                                <x-heroicon-s-star class="w-3 h-3" />
+                            <span class="flex items-center gap-1 rounded bg-yellow-100 px-2 py-1 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300">
+                                <x-heroicon-s-star class="h-3 w-3" />
                                 {{ $record->rating }}
                             </span>
                         @endif
-                        <span
-                            class="px-2 py-1 rounded {{ $record->enabled ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' }}">
+                        <span class="px-2 py-1 rounded {{ $record->enabled ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' }}">
                             {{ $record->enabled ? 'Enabled' : 'Disabled' }}
                         </span>
                     </div>
@@ -190,7 +205,7 @@
                     @endif
 
                     @if ($record->director || $record->cast)
-                        <div class="text-sm space-y-1">
+                        <div class="space-y-1 text-sm">
                             @if ($record->director)
                                 <p><span class="text-gray-500">Director:</span> {{ $record->director }}</p>
                             @endif
@@ -220,127 +235,127 @@
     @endphp
     @if ($episodesBySeason->isNotEmpty())
         <div class="mb-6">
-            <h3 class="text-lg font-semibold mb-4 flex items-center gap-2">
-                <x-heroicon-o-rectangle-stack class="w-5 h-5" />
+            <h3 class="mb-4 flex items-center gap-2 text-lg font-semibold">
+                <x-heroicon-o-rectangle-stack class="h-5 w-5" />
                 Seasons
             </h3>
-            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
                 @foreach ($episodesBySeason as $seasonNumber => $episodes)
                     @php
                         $season = $seasonsLookup->get($seasonNumber);
                         $cover = $season?->cover_big ?? $season?->cover;
-                        $seasonName = $season?->name ?? 'Season ' . str_pad($seasonNumber, 2, '0', STR_PAD_LEFT);
+                        $seasonName = $season?->name ?? 'Season '.str_pad($seasonNumber, 2, '0', STR_PAD_LEFT);
                         $totalEpisodes = $episodes->count();
                         $enabledEpisodes = $episodes->where('enabled', true)->count();
                     @endphp
                     <x-filament::modal width="5xl">
                         <x-slot name="trigger">
-                            <div
-                                class="w-60 h-full cursor-pointer group bg-white dark:bg-gray-800 rounded-lg shadow-sm ring-1 ring-gray-200 dark:ring-gray-700 overflow-hidden hover:ring-primary-500 dark:hover:ring-primary-500 transition-all">
+                            <div class="group hover:ring-primary-500 dark:hover:ring-primary-500 h-full w-60 cursor-pointer overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-gray-200 transition-all dark:bg-gray-800 dark:ring-gray-700">
                                 @if ($cover)
                                     <div class="aspect-[2/3] overflow-hidden">
-                                        <img src="{{ $cover }}" alt="{{ $seasonName }}"
-                                            class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                        <img
+                                            src="{{ $cover }}"
+                                            alt="{{ $seasonName }}"
+                                            class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                        />
                                     </div>
                                 @else
-                                    <div
-                                        class="aspect-[2/3] bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
-                                        <x-heroicon-o-tv class="w-8 h-8 text-gray-400" />
+                                    <div class="flex aspect-[2/3] items-center justify-center bg-gray-100 dark:bg-gray-700">
+                                        <x-heroicon-o-tv class="h-8 w-8 text-gray-400" />
                                     </div>
                                 @endif
                                 <div class="p-3">
-                                    <div class="font-medium text-sm truncate">{{ $seasonName }}</div>
+                                    <div class="truncate text-sm font-medium">{{ $seasonName }}</div>
                                     <div class="text-xs text-gray-500 dark:text-gray-400">
                                         {{ $enabledEpisodes }}/{{ $totalEpisodes }} episodes
                                     </div>
                                     @if ($totalEpisodes > 0)
-                                        <div class="mt-2 h-1 bg-gray-200 dark:bg-gray-600 rounded-full overflow-hidden">
-                                            <div class="h-full bg-primary-500 rounded-full"
-                                                style="width: {{ ($enabledEpisodes / $totalEpisodes) * 100 }}%"></div>
+                                        <div class="mt-2 h-1 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-600">
+                                            <div
+                                                class="bg-primary-500 h-full rounded-full"
+                                                style="width: {{ ($enabledEpisodes / $totalEpisodes) * 100 }}%"
+                                            ></div>
                                         </div>
                                     @endif
                                 </div>
                             </div>
                         </x-slot>
 
-                        <x-slot name="heading">
-                            {{ $seasonName }}
-                        </x-slot>
+                        <x-slot name="heading">{{ $seasonName }}</x-slot>
 
-                        <x-slot name="description">
-                            {{ $enabledEpisodes }}/{{ $totalEpisodes }} episodes enabled
-                        </x-slot>
+                        <x-slot name="description">{{ $enabledEpisodes }}/{{ $totalEpisodes }} episodes enabled</x-slot>
 
                         {{-- Episodes list --}}
-                        <div
-                            class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-h-[60vh] overflow-y-auto p-1">
+                        <div class="grid max-h-[60vh] grid-cols-1 gap-4 overflow-y-auto p-1 sm:grid-cols-2 lg:grid-cols-3">
                             @foreach ($episodes as $episode)
                                 @php
                                     $episodeCover = \App\Facades\LogoFacade::getEpisodeLogoUrl($episode);
                                     $info = $episode->info ?? [];
                                 @endphp
-                                <div
-                                    class="bg-white dark:bg-gray-800 rounded-lg shadow-sm ring-1 ring-gray-200 dark:ring-gray-700 flex flex-col {{ !$episode->enabled ? 'opacity-50' : '' }}">
+                                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm ring-1 ring-gray-200 dark:ring-gray-700 flex flex-col {{ !$episode->enabled ? 'opacity-50' : '' }}">
                                     {{-- Episode Thumbnail --}}
                                     <div class="relative aspect-video overflow-hidden rounded-t-lg bg-gray-100 dark:bg-gray-700">
                                         @if ($episodeCover)
-                                            <img src="{{ $episodeCover }}" alt="{{ $episode->title }}"
-                                                class="w-full h-full object-cover" />
+                                            <img
+                                                src="{{ $episodeCover }}"
+                                                alt="{{ $episode->title }}"
+                                                class="h-full w-full object-cover"
+                                            />
                                         @else
-                                            <div class="w-full h-full flex items-center justify-center">
-                                                <x-heroicon-o-film class="w-8 h-8 text-gray-400" />
+                                            <div class="flex h-full w-full items-center justify-center">
+                                                <x-heroicon-o-film class="h-8 w-8 text-gray-400" />
                                             </div>
                                         @endif
 
                                         {{-- Play Button Overlay --}}
                                         @if ($episode->enabled)
-                                            <button type="button"
+                                            <button
+                                                type="button"
                                                 wire:click="$dispatch('openFloatingStream', {{ json_encode($episode->getFloatingPlayerAttributes($username, $password)) }})"
-                                                class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity cursor-pointer">
-                                                <div
-                                                    class="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
-                                                    <x-heroicon-s-play class="w-6 h-6 text-gray-900 ml-1" />
+                                                class="absolute inset-0 flex cursor-pointer items-center justify-center bg-black/40 opacity-0 transition-opacity hover:opacity-100"
+                                            >
+                                                <div class="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 shadow-lg">
+                                                    <x-heroicon-s-play class="ml-1 h-6 w-6 text-gray-900" />
                                                 </div>
                                             </button>
                                         @endif
 
                                         {{-- Episode Number Badge --}}
-                                        <div
-                                            class="absolute top-2 left-2 px-2 py-1 bg-black/70 text-white text-xs rounded">
+                                        <div class="absolute top-2 left-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
                                             E{{ str_pad($episode->episode_num, 2, '0', STR_PAD_LEFT) }}
                                         </div>
 
                                         {{-- Duration Badge --}}
-                                        @if (!empty($info['duration']))
-                                            <div
-                                                class="absolute bottom-2 right-2 px-2 py-1 bg-black/70 text-white text-xs rounded">
+                                        @if (! empty($info['duration']))
+                                            <div class="absolute right-2 bottom-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
                                                 {{ $info['duration'] }}
                                             </div>
                                         @endif
                                     </div>
 
                                     {{-- Episode Info --}}
-                                    <div class="p-3 space-y-1">
-                                        <div class="font-medium text-sm truncate" title="{{ $episode->title }}">
+                                    <div class="space-y-1 p-3">
+                                        <div class="truncate text-sm font-medium" title="{{ $episode->title }}">
                                             {{ $episode->title }}
                                         </div>
 
-                                        @if (!empty($info['plot']))
-                                            <p class="text-xs text-gray-500 dark:text-gray-400 line-clamp-2"
-                                                title="{{ $info['plot'] }}">
+                                        @if (! empty($info['plot']))
+                                            <p
+                                                class="line-clamp-2 text-xs text-gray-500 dark:text-gray-400"
+                                                title="{{ $info['plot'] }}"
+                                            >
                                                 {{ $info['plot'] }}
                                             </p>
                                         @endif
 
                                         <div class="flex items-center gap-2 pt-1">
-                                            @if (!empty($info['rating']))
-                                                <span
-                                                    class="inline-flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
-                                                    <x-heroicon-s-star class="w-3 h-3" />
+                                            @if (! empty($info['rating']))
+                                                <span class="inline-flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400">
+                                                    <x-heroicon-s-star class="h-3 w-3" />
                                                     {{ $info['rating'] }}
                                                 </span>
                                             @endif
-                                            @if (!empty($info['release_date']))
+                                            @if (! empty($info['release_date']))
                                                 <span class="text-xs text-gray-500 dark:text-gray-400">
                                                     {{ $info['release_date'] }}
                                                 </span>
@@ -358,11 +373,10 @@
                                                 $epAudio = \App\Services\StreamStatsService::detectAudio($epStats);
                                                 $badges = array_filter([$epQuality, $epHdr, $epVideo, $epAudio]);
                                             @endphp
-                                            @if (!empty($badges))
+                                            @if (! empty($badges))
                                                 <div class="flex flex-wrap gap-1 pt-1">
                                                     @foreach ($badges as $badge)
-                                                        <span
-                                                            class="inline-block text-[10px] px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-700">
+                                                        <span class="inline-block rounded bg-gray-200 px-1.5 py-0.5 text-[10px] dark:bg-gray-700">
                                                             {{ $badge }}
                                                         </span>
                                                     @endforeach

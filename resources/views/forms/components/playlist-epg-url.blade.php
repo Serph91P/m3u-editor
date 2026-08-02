@@ -5,35 +5,23 @@
     @php($epgZippedUrl = $urls['epg_zip'])
     @php($epgCacheModalId = 'epg-url-modal-' . $record->getKey())
     <div x-data="{ state: $wire.$entangle('{{ $getStatePath() }}') }">
-        <div class="flex gap-2 items-center justify-start mb-4">
+        <div class="mb-4 flex items-center justify-start gap-2">
             <x-filament::input.wrapper>
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$epgUrl" />
                 </x-slot>
-                <x-filament::input
-                    type="text"
-                    :value="$epgUrl"
-                    readonly
-                />
-                <x-slot name="suffix">
-                    .xml
-                </x-slot>
+                <x-filament::input type="text" :value="$epgUrl" readonly />
+                <x-slot name="suffix">.xml</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$record->name" body="EPG URL" :text="$epgUrl" />
         </div>
-        <div class="flex gap-2 items-center justify-start">
+        <div class="flex items-center justify-start gap-2">
             <x-filament::input.wrapper>
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$epgZippedUrl" />
                 </x-slot>
-                <x-filament::input
-                    type="text"
-                    :value="$epgZippedUrl"
-                    readonly
-                />
-                <x-slot name="suffix">
-                    .xml.gz
-                </x-slot>
+                <x-filament::input type="text" :value="$epgZippedUrl" readonly />
+                <x-slot name="suffix">.xml.gz</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$record->name" body="EPG URL (compressed)" :text="$epgZippedUrl" />
         </div>
@@ -46,14 +34,12 @@
             </x-filament::button>
         </x-slot>
 
-        <x-slot name="heading">
-            Clear Playlist EPG File Cache
-        </x-slot>
+        <x-slot name="heading">Clear Playlist EPG File Cache</x-slot>
 
         Clear the EPG file cache for this playlist? It will be automatically regenerated on the next download.
 
         <x-slot name="footer">
-            <div class="grid grid-cols-2 gap-2 w-full">
+            <div class="grid w-full grid-cols-2 gap-2">
                 <x-filament::button
                     wire:click="$dispatch('close-modal', { id: '{{ $epgCacheModalId }}' })"
                     label="Cancel"

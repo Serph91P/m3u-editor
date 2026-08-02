@@ -6,9 +6,7 @@
 <x-filament-widgets::widget>
     @if ($rules->isNotEmpty())
         <x-filament::section>
-            <x-slot name="heading">
-                {{ __('Scheduled Series') }}
-            </x-slot>
+            <x-slot name="heading">{{ __('Scheduled Series') }}</x-slot>
 
             <x-slot name="description">
                 {{ __('These series rules will record matching episodes as they air. Individual recordings appear here once scheduled (within 30 minutes of the episode start time).') }}
@@ -29,15 +27,12 @@
                                 @else
                                     {{ __('Any channel') }}
                                 @endif
-                                &middot;
-                                {{ __('P:') }}{{ $rule->priority }}
+                                &middot; {{ __('P:') }}{{ $rule->priority }}
                             </p>
                         </div>
 
                         <div class="flex shrink-0 items-center gap-2">
-                            <x-filament::badge color="info">
-                                {{ __('Series') }}
-                            </x-filament::badge>
+                            <x-filament::badge color="info"> {{ __('Series') }} </x-filament::badge>
                         </div>
                     </div>
                 @endforeach

@@ -16,10 +16,12 @@
     $clamped = min(max((int) $progress, 0), 100);
 @endphp
 
-<div class="flex flex-col gap-1 w-full px-2" @if($poll) wire:poll.{{ $poll }} @endif>
+<div class="flex w-full flex-col gap-1 px-2" @if ($poll) wire:poll.{{ $poll }} @endif>
     <div class="relative h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-        <div class="h-full rounded-full transition-[width] duration-300"
-            style="width: {{ $clamped }}%; background-color: {{ $barColor }}"></div>
+        <div
+            class="h-full rounded-full transition-[width] duration-300"
+            style="width: {{ $clamped }}%; background-color: {{ $barColor }}"
+        ></div>
     </div>
     <span class="text-xs text-gray-500 dark:text-gray-400">{{ $clamped }}%</span>
 </div>

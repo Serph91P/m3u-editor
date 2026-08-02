@@ -21,7 +21,7 @@
 
     $resolution = $stats['resolution'] ?? null;
     if (! $resolution && ($stats['width'] ?? null) && ($stats['height'] ?? null)) {
-        $resolution = $stats['width'] . 'x' . $stats['height'];
+        $resolution = $stats['width'].'x'.$stats['height'];
     }
 
     $quality = $hasStats ? StreamStatsService::detectQuality($stats) : '';
@@ -38,22 +38,22 @@
     }
 
     $fields = [
-        'Detected Quality'  => $quality,
-        'Detected Video'    => $videoCodec,
-        'Detected Audio'    => $audioCodec,
-        'Detected HDR'      => $hdr ?: ($hasStats ? 'SDR' : ''),
-        'Resolution'        => $resolution,
-        'Video Profile'     => $stats['video_profile'] ?? null,
-        'Pixel Format'      => $stats['pix_fmt'] ?? null,
-        'Bit Depth'         => isset($stats['bit_depth']) && $stats['bit_depth'] ? $stats['bit_depth'] . '-bit' : null,
-        'Color Transfer'    => $stats['color_transfer'] ?? null,
-        'Color Space'       => $stats['color_space'] ?? null,
-        'Color Primaries'   => $stats['color_primaries'] ?? null,
-        'Color Range'       => $stats['color_range'] ?? null,
-        'Codec Tag'         => $stats['codec_tag_string'] ?? null,
-        'Audio Channels'    => $stats['audio_channels'] ?? null,
-        'Audio Profile'     => $stats['audio_profile'] ?? null,
-        'Bitrate'           => $bitrateMbps !== null ? $bitrateMbps . ' Mbps' : null,
+        'Detected Quality' => $quality,
+        'Detected Video' => $videoCodec,
+        'Detected Audio' => $audioCodec,
+        'Detected HDR' => $hdr ?: ($hasStats ? 'SDR' : ''),
+        'Resolution' => $resolution,
+        'Video Profile' => $stats['video_profile'] ?? null,
+        'Pixel Format' => $stats['pix_fmt'] ?? null,
+        'Bit Depth' => isset($stats['bit_depth']) && $stats['bit_depth'] ? $stats['bit_depth'].'-bit' : null,
+        'Color Transfer' => $stats['color_transfer'] ?? null,
+        'Color Space' => $stats['color_space'] ?? null,
+        'Color Primaries' => $stats['color_primaries'] ?? null,
+        'Color Range' => $stats['color_range'] ?? null,
+        'Codec Tag' => $stats['codec_tag_string'] ?? null,
+        'Audio Channels' => $stats['audio_channels'] ?? null,
+        'Audio Profile' => $stats['audio_profile'] ?? null,
+        'Bitrate' => $bitrateMbps !== null ? $bitrateMbps.' Mbps' : null,
     ];
 
     $sideData = $stats['side_data_list'] ?? null;
@@ -72,7 +72,7 @@
 @endphp
 
 @if ($hasStats)
-    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mt-2">
+    <div class="mt-2 grid grid-cols-2 gap-4 md:grid-cols-3">
         @foreach ($fields as $label => $value)
             @if ($value !== null && $value !== '')
                 <div>
@@ -86,9 +86,9 @@
     @if (! empty($sideDataLabels))
         <div class="mt-3">
             <span class="text-sm text-gray-500">Side Data</span>
-            <div class="flex flex-wrap gap-1 mt-1">
+            <div class="mt-1 flex flex-wrap gap-1">
                 @foreach (array_unique($sideDataLabels) as $label)
-                    <span class="inline-block text-xs px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-700">
+                    <span class="inline-block rounded bg-gray-200 px-2 py-0.5 text-xs dark:bg-gray-700">
                         {{ $label }}
                     </span>
                 @endforeach

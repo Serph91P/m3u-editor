@@ -7,7 +7,7 @@
                 id="vod-search"
                 wire:model.live.debounce.300ms="search"
                 type="search"
-                class="mt-1 block w-full rounded-lg border-gray-300 bg-white text-gray-950 shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-white/10 dark:bg-white/5 dark:text-white dark:focus:border-primary-500 sm:text-sm"
+                class="focus:border-primary-500 focus:ring-primary-500 dark:focus:border-primary-500 mt-1 block w-full rounded-lg border-gray-300 bg-white text-gray-950 shadow-sm sm:text-sm dark:border-white/10 dark:bg-white/5 dark:text-white"
                 placeholder="Movie title..."
             />
         </div>
@@ -17,10 +17,10 @@
             <select
                 id="vod-genre"
                 wire:model.live="genreFilter"
-                class="mt-1 block w-full rounded-lg border-gray-300 bg-white text-gray-950 shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-white/10 dark:bg-gray-800 dark:text-white dark:[&>option]:bg-gray-800 dark:[&>option]:text-white sm:text-sm"
+                class="focus:border-primary-500 focus:ring-primary-500 dark:[&>option]:bg-gray-800 dark:[&>option]:text-white mt-1 block w-full rounded-lg border-gray-300 bg-white text-gray-950 shadow-sm sm:text-sm dark:border-white/10 dark:bg-gray-800 dark:text-white"
             >
                 <option value="">All Genres</option>
-                @foreach($this->genreOptions as $genre)
+                @foreach ($this->genreOptions as $genre)
                     <option value="{{ $genre }}">{{ $genre }}</option>
                 @endforeach
             </select>
@@ -31,7 +31,7 @@
             <select
                 id="vod-perPage"
                 wire:model.live="perPage"
-                class="mt-1 block w-full rounded-lg border-gray-300 bg-white text-gray-950 shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-white/10 dark:bg-gray-800 dark:text-white dark:[&>option]:bg-gray-800 dark:[&>option]:text-white sm:text-sm"
+                class="focus:border-primary-500 focus:ring-primary-500 dark:[&>option]:bg-gray-800 dark:[&>option]:text-white mt-1 block w-full rounded-lg border-gray-300 bg-white text-gray-950 shadow-sm sm:text-sm dark:border-white/10 dark:bg-gray-800 dark:text-white"
             >
                 <option value="10">10</option>
                 <option value="25">25</option>
@@ -49,15 +49,18 @@
                         <input
                             type="checkbox"
                             wire:click="toggleSelectAllOnPage"
-                            class="rounded border-gray-300 text-primary-600 shadow-sm focus:ring-primary-500 dark:border-white/10 dark:bg-white/5 dark:checked:bg-primary-500"
+                            class="text-primary-600 focus:ring-primary-500 dark:checked:bg-primary-500 rounded border-gray-300 shadow-sm dark:border-white/10 dark:bg-white/5"
                             aria-label="Select all on page"
                         />
                     </th>
-                    <th wire:click="sortBy('name')" class="cursor-pointer px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    <th
+                        wire:click="sortBy('name')"
+                        class="cursor-pointer px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    >
                         <span class="inline-flex items-center gap-1">
                             Title
-                            @if($sortBy === 'name')
-                                @if($sortDirection === 'asc')
+                            @if ($sortBy === 'name')
+                                @if ($sortDirection === 'asc')
                                     <x-heroicon-m-chevron-up class="h-4 w-4" />
                                 @else
                                     <x-heroicon-m-chevron-down class="h-4 w-4" />
@@ -65,11 +68,14 @@
                             @endif
                         </span>
                     </th>
-                    <th wire:click="sortBy('genre')" class="cursor-pointer px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    <th
+                        wire:click="sortBy('genre')"
+                        class="cursor-pointer px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    >
                         <span class="inline-flex items-center gap-1">
                             Genre
-                            @if($sortBy === 'genre')
-                                @if($sortDirection === 'asc')
+                            @if ($sortBy === 'genre')
+                                @if ($sortDirection === 'asc')
                                     <x-heroicon-m-chevron-up class="h-4 w-4" />
                                 @else
                                     <x-heroicon-m-chevron-down class="h-4 w-4" />
@@ -77,11 +83,14 @@
                             @endif
                         </span>
                     </th>
-                    <th wire:click="sortBy('rating')" class="w-20 cursor-pointer px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    <th
+                        wire:click="sortBy('rating')"
+                        class="w-20 cursor-pointer px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    >
                         <span class="inline-flex items-center gap-1">
                             Rating
-                            @if($sortBy === 'rating')
-                                @if($sortDirection === 'asc')
+                            @if ($sortBy === 'rating')
+                                @if ($sortDirection === 'asc')
                                     <x-heroicon-m-chevron-up class="h-4 w-4" />
                                 @else
                                     <x-heroicon-m-chevron-down class="h-4 w-4" />
@@ -89,11 +98,14 @@
                             @endif
                         </span>
                     </th>
-                    <th wire:click="sortBy('mpaa')" class="w-20 cursor-pointer px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    <th
+                        wire:click="sortBy('mpaa')"
+                        class="w-20 cursor-pointer px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    >
                         <span class="inline-flex items-center gap-1">
                             MPAA
-                            @if($sortBy === 'mpaa')
-                                @if($sortDirection === 'asc')
+                            @if ($sortBy === 'mpaa')
+                                @if ($sortDirection === 'asc')
                                     <x-heroicon-m-chevron-up class="h-4 w-4" />
                                 @else
                                     <x-heroicon-m-chevron-down class="h-4 w-4" />
@@ -101,11 +113,14 @@
                             @endif
                         </span>
                     </th>
-                    <th wire:click="sortBy('runtime')" class="w-24 cursor-pointer px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                    <th
+                        wire:click="sortBy('runtime')"
+                        class="w-24 cursor-pointer px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                    >
                         <span class="inline-flex items-center gap-1">
                             Runtime
-                            @if($sortBy === 'runtime')
-                                @if($sortDirection === 'asc')
+                            @if ($sortBy === 'runtime')
+                                @if ($sortDirection === 'asc')
                                     <x-heroicon-m-chevron-up class="h-4 w-4" />
                                 @else
                                     <x-heroicon-m-chevron-down class="h-4 w-4" />
@@ -116,7 +131,7 @@
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-200 bg-white dark:divide-white/5 dark:bg-gray-900">
-                @forelse($vods as $vod)
+                @forelse ($vods as $vod)
                     @php
                         $info = $vod->info ?? [];
                         $rating = $info['rating'] ?? null;
@@ -130,19 +145,22 @@
                                 type="checkbox"
                                 wire:model.live="selected"
                                 value="{{ $vod->id }}"
-                                class="rounded border-gray-300 text-primary-600 shadow-sm focus:ring-primary-500 dark:border-white/10 dark:bg-white/5 dark:checked:bg-primary-500"
+                                class="text-primary-600 focus:ring-primary-500 dark:checked:bg-primary-500 rounded border-gray-300 shadow-sm dark:border-white/10 dark:bg-white/5"
                             />
                         </td>
                         <td class="px-4 py-3 text-sm text-gray-950 dark:text-white">{{ $vod->name }}</td>
                         <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                            @if($genre)
-                                <span class="max-w-[200px] truncate block" title="{{ $genre }}">{{ Str::limit($genre, 30) }}</span>
+                            @if ($genre)
+                                <span
+                                    class="block max-w-[200px] truncate"
+                                    title="{{ $genre }}"
+                                >{{ Str::limit($genre, 30) }}</span>
                             @else
                                 —
                             @endif
                         </td>
                         <td class="px-4 py-3 text-sm">
-                            @if($rating)
+                            @if ($rating)
                                 <span class="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
                                     <x-heroicon-m-star class="h-4 w-4" />
                                     {{ number_format((float) $rating, 1) }}
@@ -152,8 +170,8 @@
                             @endif
                         </td>
                         <td class="px-4 py-3 text-sm">
-                            @if($mpaa)
-                                <span class="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-inset ring-gray-500/10 dark:bg-white/10 dark:text-gray-200 dark:ring-white/10">
+                            @if ($mpaa)
+                                <span class="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 ring-1 ring-gray-500/10 ring-inset dark:bg-white/10 dark:text-gray-200 dark:ring-white/10">
                                     {{ $mpaa }}
                                 </span>
                             @else
@@ -161,7 +179,7 @@
                             @endif
                         </td>
                         <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                            @if($durationSecs)
+                            @if ($durationSecs)
                                 @php
                                     $hours = floor($durationSecs / 3600);
                                     $minutes = floor(($durationSecs % 3600) / 60);
@@ -195,7 +213,7 @@
             <button
                 wire:click="addSelected"
                 type="button"
-                class="inline-flex items-center gap-2 rounded-lg bg-success-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition duration-75 hover:bg-success-500 focus:outline-none focus:ring-2 focus:ring-success-500 focus:ring-offset-2 dark:bg-success-500 dark:hover:bg-success-400 dark:focus:ring-offset-gray-900"
+                class="bg-success-600 hover:bg-success-500 focus:ring-success-500 dark:bg-success-500 dark:hover:bg-success-400 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition duration-75 focus:ring-2 focus:ring-offset-2 focus:outline-none dark:focus:ring-offset-gray-900"
             >
                 <x-heroicon-m-plus class="h-4 w-4" />
                 Add Selected ({{ count($selected) }})

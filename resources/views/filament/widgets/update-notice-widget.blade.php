@@ -8,13 +8,17 @@
             </div>
 
             <div class="flex-1">
-                <div class="flex-1 flex items-start gap-x-2">
-                    <h2 class="grid text-base font-semibold leading-6 text-gray-950 dark:text-white">
+                <div class="flex flex-1 items-start gap-x-2">
+                    <h2 class="grid text-base leading-6 font-semibold text-gray-950 dark:text-white">
                         v{{ $versionData['version'] }}
                     </h2>
                     @if ($versionData['branch'])
-                        <x-filament::badge x-tooltip="'Commit: {{ $versionData['commit'] }}'" class="cursor-pointer"
-                            size="sm" color="primary">
+                        <x-filament::badge
+                            x-tooltip="'Commit: {{ $versionData['commit'] }}'"
+                            class="cursor-pointer"
+                            size="sm"
+                            color="primary"
+                        >
                             {{ $versionData['branch'] }}
                         </x-filament::badge>
                     @endif
@@ -23,8 +27,8 @@
                 @if ($versionData['updateAvailable'])
                     <div>
                         <div class="flex items-center gap-x-1">
-                            <x-heroicon-o-exclamation-triangle class="w-4 h-4 text-danger" />
-                            <p class="font-bold text-sm text-gray-700 dark:text-gray-200">
+                            <x-heroicon-o-exclamation-triangle class="text-danger h-4 w-4" />
+                            <p class="text-sm font-bold text-gray-700 dark:text-gray-200">
                                 {{ __('A new version is available') }}
                             </p>
                         </div>
@@ -35,10 +39,8 @@
                 @else
                     <div>
                         <div class="flex items-center gap-x-1">
-                            <x-heroicon-o-check-circle class="w-4 h-4 text-success" />
-                            <p class="font-bold text-sm text-gray-700 dark:text-gray-200">
-                                {{ __('Up to date') }}
-                            </p>
+                            <x-heroicon-o-check-circle class="text-success h-4 w-4" />
+                            <p class="text-sm font-bold text-gray-700 dark:text-gray-200">{{ __('Up to date') }}</p>
                         </div>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
                             {{ __('You are using the latest version') }}
@@ -48,16 +50,25 @@
             </div>
 
             <div class="flex flex-col items-end gap-y-1">
-                <x-filament::button color="{{ $versionData['updateAvailable'] ? 'danger' : 'gray' }}" tag="a"
+                <x-filament::button
+                    color="{{ $versionData['updateAvailable'] ? 'danger' : 'gray' }}"
+                    tag="a"
                     href="https://github.com/{{ $versionData['repo'] }}/releases"
                     icon="heroicon-m-arrow-top-right-on-square"
-                    icon-alias="panels::widgets.filament-info.open-documentation-button" rel="noopener noreferrer"
-                    target="_blank">
+                    icon-alias="panels::widgets.filament-info.open-documentation-button"
+                    rel="noopener noreferrer"
+                    target="_blank"
+                >
                     {{ __('Releases') }}
                 </x-filament::button>
                 @if (auth()->user()->canViewReleaseLogs())
-                    <x-filament::button class="mt-2" color="gray" icon="heroicon-o-list-bullet" tag="a"
-                        href="{{ \App\Filament\Pages\ReleaseLogs::getUrl() }}">
+                    <x-filament::button
+                        class="mt-2"
+                        color="gray"
+                        icon="heroicon-o-list-bullet"
+                        tag="a"
+                        href="{{ \App\Filament\Pages\ReleaseLogs::getUrl() }}"
+                    >
                         {{ __('Release logs') }}
                     </x-filament::button>
                 @endif

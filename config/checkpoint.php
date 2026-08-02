@@ -72,6 +72,8 @@ return [
             'phpstan/phpdoc-parser',
             'pestphp/pest',
             'rector/rector',
+            // dev-only, first-party Laravel tool; 1.30.x needed for Blade formatting support
+            'laravel/pint',
             // ── Application-specific packages ────────────────────────────────
             'dedoc/scramble',
             'stechstudio/filament-impersonate',

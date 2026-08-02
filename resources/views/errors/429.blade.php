@@ -8,6 +8,6 @@
 @endsection
 
 @section('sub_message')
-    The system is currently at its maximum capacity for this channel or playlist.
-    Please wait a short while before trying again. If the problem persists, please contact support.
+    The system is currently at its maximum capacity for this channel or playlist. Please wait a short while before
+    trying again. If the problem persists, please contact support.
 @endsection

@@ -48,6 +48,20 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install safe-chain (npm supply-chain protection)
+        run: |
+          npm install -g @aikidosec/safe-chain
+          safe-chain setup --ci
+
+      - name: Install npm dependencies (protected by safe-chain)
+        run: npm ci
+
       - name: Check code style with Pint
         run: vendor/bin/pint --test
 

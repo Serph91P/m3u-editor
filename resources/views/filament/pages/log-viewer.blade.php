@@ -43,16 +43,15 @@
     @endphp
 
     {{-- ── Controls bar ─────────────────────────────────────────────────── --}}
-    <div class="flex flex-wrap items-end gap-3 mb-4">
-
+    <div class="mb-4 flex flex-wrap items-end gap-3">
         {{-- File selector --}}
-        <div class="flex flex-col gap-1 min-w-48">
+        <div class="flex min-w-48 flex-col gap-1">
             <label class="fi-fo-field-wrp-label inline-flex items-center gap-x-3">
-                <span class="text-sm font-medium leading-6 text-gray-950 dark:text-white">Log file</span>
+                <span class="text-sm leading-6 font-medium text-gray-950 dark:text-white">Log file</span>
             </label>
             <x-filament::input.wrapper>
                 <x-filament::input.select wire:model.live="selectedFile">
-                    @forelse($logFiles as $name => $path)
+                    @forelse ($logFiles as $name => $path)
                         <option value="{{ $name }}">{{ $name }}</option>
                     @empty
                         <option value="">No log files found</option>
@@ -64,11 +63,11 @@
         {{-- Level filter --}}
         <div class="flex flex-col gap-1">
             <label class="fi-fo-field-wrp-label inline-flex items-center gap-x-3">
-                <span class="text-sm font-medium leading-6 text-gray-950 dark:text-white">Level</span>
+                <span class="text-sm leading-6 font-medium text-gray-950 dark:text-white">Level</span>
             </label>
             <x-filament::input.wrapper>
                 <x-filament::input.select wire:model.live="levelFilter">
-                    @foreach($levels as $lvl)
+                    @foreach ($levels as $lvl)
                         <option value="{{ $lvl === 'all' ? 'all' : $lvl }}">
                             {{ $lvl === 'all' ? 'All levels' : $lvl }}
                         </option>
@@ -78,24 +77,27 @@
         </div>
 
         {{-- Search --}}
-        <div class="flex flex-col gap-1 flex-1 min-w-48">
+        <div class="flex min-w-48 flex-1 flex-col gap-1">
             <label class="fi-fo-field-wrp-label inline-flex items-center gap-x-3">
-                <span class="text-sm font-medium leading-6 text-gray-950 dark:text-white">Search</span>
+                <span class="text-sm leading-6 font-medium text-gray-950 dark:text-white">Search</span>
             </label>
             <x-filament::input.wrapper prefix-icon="heroicon-o-magnifying-glass">
-                <x-filament::input type="text" wire:model.live.debounce.300ms="search"
-                    placeholder="Filter log entries…" />
+                <x-filament::input
+                    type="text"
+                    wire:model.live.debounce.300ms="search"
+                    placeholder="Filter log entries…"
+                />
             </x-filament::input.wrapper>
         </div>
 
         {{-- Per-page --}}
         <div class="flex flex-col gap-1">
             <label class="fi-fo-field-wrp-label inline-flex items-center gap-x-3">
-                <span class="text-sm font-medium leading-6 text-gray-950 dark:text-white">Per page</span>
+                <span class="text-sm leading-6 font-medium text-gray-950 dark:text-white">Per page</span>
             </label>
             <x-filament::input.wrapper>
                 <x-filament::input.select wire:model.live="perPage">
-                    @foreach([25, 50, 100, 250] as $n)
+                    @foreach ([25, 50, 100, 250] as $n)
                         <option value="{{ $n }}">{{ $n }}</option>
                     @endforeach
                 </x-filament::input.select>
@@ -103,101 +105,95 @@
         </div>
 
         {{-- Stats --}}
-        <div class="ml-auto text-sm text-gray-500 dark:text-gray-400 self-end pb-2 whitespace-nowrap">
+        <div class="ml-auto self-end pb-2 text-sm whitespace-nowrap text-gray-500 dark:text-gray-400">
             {{ number_format($total) }} {{ Str::plural('entry', $total) }}
         </div>
-
     </div>
 
     {{-- ── Log entries ──────────────────────────────────────────────────── --}}
-    <div
-        class="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-sm">
-
-        @if(empty($logFiles))
+    <div class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900">
+        @if (empty($logFiles))
             <div class="py-16 text-center text-gray-400 dark:text-gray-600">
-                <x-heroicon-o-document-text class="w-12 h-12 mx-auto mb-3 opacity-40" />
+                <x-heroicon-o-document-text class="mx-auto mb-3 h-12 w-12 opacity-40" />
                 <p class="text-sm">No log files found in the configured log directory.</p>
             </div>
 
-        @elseif(empty($entries))
+        @elseif (empty($entries))
             <div class="py-16 text-center text-gray-400 dark:text-gray-600">
-                <x-heroicon-o-funnel class="w-12 h-12 mx-auto mb-3 opacity-40" />
+                <x-heroicon-o-funnel class="mx-auto mb-3 h-12 w-12 opacity-40" />
                 <p class="text-sm">No entries match your filters.</p>
             </div>
 
         @else
             <div class="divide-y divide-gray-100 dark:divide-gray-800">
-                @foreach($entries as $i => $entry)
+                @foreach ($entries as $i => $entry)
                     @php
                         $level = $entry['level'];
                         $bg = $levelBg[$level] ?? 'bg-gray-50 dark:bg-gray-900';
                         $badge = $levelBadge[$level] ?? 'bg-gray-200 text-gray-700';
                         $tc = $levelColor[$level] ?? 'text-gray-600';
-                        $hasDetail = !empty($entry['context']) || !empty($entry['stack']);
+                        $hasDetail = ! empty($entry['context']) || ! empty($entry['stack']);
                     @endphp
 
                     <div wire:key="entry-{{ $i }}" x-data="{ open: false }" class="{{ $bg }}">
                         {{-- Summary row --}}
-                        <div class="flex items-start gap-3 px-4 py-3 {{ $hasDetail ? 'cursor-pointer hover:brightness-95 dark:hover:brightness-110' : '' }}"
-                            @if($hasDetail) x-on:click="open = !open" @endif>
+                        <div
+                            class="flex items-start gap-3 px-4 py-3 {{ $hasDetail ? 'cursor-pointer hover:brightness-95 dark:hover:brightness-110' : '' }}"
+                            @if ($hasDetail) x-on:click="open = ! open" @endif
+                        >
                             {{-- Expand chevron --}}
-                            <div class="flex-shrink-0 mt-0.5 w-4">
-                                @if($hasDetail)
-                                    <x-heroicon-m-chevron-right class="w-4 h-4 text-gray-400 transition-transform duration-150"
-                                        x-bind:class="{ 'rotate-90': open }" />
+                            <div class="mt-0.5 w-4 flex-shrink-0">
+                                @if ($hasDetail)
+                                    <x-heroicon-m-chevron-right
+                                        class="h-4 w-4 text-gray-400 transition-transform duration-150"
+                                        x-bind:class="{ 'rotate-90': open }"
+                                    />
                                 @endif
                             </div>
 
                             {{-- Level badge --}}
                             <span
                                 class="flex-shrink-0 mt-0.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase {{ $badge }}"
-                                style="min-width:6rem;justify-content:center">
+                                style="min-width: 6rem; justify-content: center"
+                            >
                                 {{ $level }}
                             </span>
 
                             {{-- Date --}}
-                            <span
-                                class="flex-shrink-0 font-mono text-xs text-gray-400 dark:text-gray-500 mt-0.5 whitespace-nowrap">
+                            <span class="mt-0.5 flex-shrink-0 font-mono text-xs whitespace-nowrap text-gray-400 dark:text-gray-500">
                                 {{ $entry['date'] }}
                             </span>
 
                             {{-- Env badge --}}
-                            <span
-                                class="flex-shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 font-mono">
+                            <span class="mt-0.5 flex-shrink-0 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[10px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">
                                 {{ $entry['env'] }}
                             </span>
 
                             {{-- Message --}}
-                            <span class="flex-1 text-sm {{ $tc }} break-all">
-                                {{ $entry['message'] }}
-                            </span>
+                            <span class="flex-1 text-sm {{ $tc }} break-all"> {{ $entry['message'] }} </span>
                         </div>
 
                         {{-- Detail panel (context + stack trace) --}}
-                        @if($hasDetail)
+                        @if ($hasDetail)
                             <div x-show="open" x-collapse class="border-t border-gray-200 dark:border-gray-700">
-                                <div class="px-4 py-3 space-y-3">
-
-                                    @if(!empty($entry['context']))
+                                <div class="space-y-3 px-4 py-3">
+                                    @if (! empty($entry['context']))
                                         <div>
-                                            <p
-                                                class="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1">
-                                                Context</p>
-                                            <pre
-                                                class="text-xs font-mono bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all text-gray-700 dark:text-gray-300">{{ $entry['context'] }}</pre>
+                                            <p class="mb-1 text-[10px] font-semibold tracking-wider text-gray-400 uppercase dark:text-gray-500">
+                                                Context
+                                            </p>
+                                            <pre class="overflow-x-auto rounded border border-gray-200 bg-gray-50 p-3 font-mono text-xs break-all whitespace-pre-wrap text-gray-700 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-300">{{ $entry['context'] }}</pre>
                                         </div>
                                     @endif
 
-                                    @if(!empty($entry['stack']))
+                                    @if (! empty($entry['stack']))
                                         <div>
-                                            <p
-                                                class="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1">
-                                                Stack trace</p>
-                                            <pre
-                                                class="text-xs font-mono bg-gray-950 border border-gray-800 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all text-green-300">{{ $entry['stack'] }}</pre>
+                                            <p class="mb-1 text-[10px] font-semibold tracking-wider text-gray-400 uppercase dark:text-gray-500">
+                                                Stack trace
+                                            </p>
+                                            <pre class="overflow-x-auto rounded border border-gray-800 bg-gray-950 p-3 font-mono text-xs break-all whitespace-pre-wrap text-green-300">{{ $entry['stack'] }}</pre>
                                         </div>
                                     @endif
-
                                 </div>
                             </div>
                         @endif
@@ -208,22 +204,32 @@
     </div>
 
     {{-- ── Pagination ───────────────────────────────────────────────────── --}}
-    @if($pages > 1)
+    @if ($pages > 1)
         <div class="mt-4 flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
             <span>Page {{ $page }} of {{ $pages }}</span>
 
             <div class="flex gap-2">
-                <x-filament::button size="sm" color="gray" wire:click="prevPage" :disabled="$page <= 1"
-                    icon="heroicon-o-chevron-left">
+                <x-filament::button
+                    size="sm"
+                    color="gray"
+                    wire:click="prevPage"
+                    :disabled="$page <= 1"
+                    icon="heroicon-o-chevron-left"
+                >
                     Previous
                 </x-filament::button>
 
-                <x-filament::button size="sm" color="gray" wire:click="nextPage({{ $pages }})" :disabled="$page >= $pages"
-                    icon="heroicon-o-chevron-right" icon-position="after">
+                <x-filament::button
+                    size="sm"
+                    color="gray"
+                    wire:click="nextPage({{ $pages }})"
+                    :disabled="$page >= $pages"
+                    icon="heroicon-o-chevron-right"
+                    icon-position="after"
+                >
                     Next
                 </x-filament::button>
             </div>
         </div>
     @endif
-
 </x-filament-panels::page>
