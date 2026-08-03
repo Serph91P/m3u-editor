@@ -596,6 +596,27 @@ class M3uProxyService
     }
 
     /**
+     * Stop streams for a single client's channel/episode, swallowing and logging any
+     * failure. Callers are expected to have already verified the caller is allowed to
+     * stop this stream (e.g. it belongs to their playlist, or an ownership policy check)
+     * before calling this — this only wraps the "stop and don't let a proxy hiccup
+     * surface as a 500" behavior shared by every player-facing stop-stream endpoint.
+     */
+    public static function stopStreamSafely(string $field, string $id, ?string $clientId, string $logMessage = 'Failed to stop player stream'): void
+    {
+        try {
+            self::stopStreamsByMetadata($field, $id, force: false, clientId: $clientId);
+        } catch (Exception $e) {
+            Log::warning($logMessage, [
+                'field' => $field,
+                'id' => $id,
+                'exception_class' => $e::class,
+                'exception_code' => $e->getCode(),
+            ]);
+        }
+    }
+
+    /**
      * Stop all streams for a specific playlist, optionally excluding a channel ID.
      *
      * This is used when switching channels on a connection-limited playlist
@@ -3333,7 +3354,7 @@ class M3uProxyService
         // Build the failover resolver path
         if (! empty($this->failoverResolverUrl)) {
             // Use the configured failover resolver URL
-            return "$this->failoverResolverUrl/api/m3u-proxy/failover-resolver";
+            return $this->withCallbackToken("$this->failoverResolverUrl/api/m3u-proxy/failover-resolver");
         }
 
         // If here, return null
@@ -3349,11 +3370,25 @@ class M3uProxyService
     {
         if (! empty($this->failoverResolverUrl)) {
             // Use the configured failover resolver URL
-            return "$this->failoverResolverUrl/api/m3u-proxy/broadcast/callback";
+            return $this->withCallbackToken("$this->failoverResolverUrl/api/m3u-proxy/broadcast/callback");
         }
 
         // Build the broadcast callback path
-        return ProxyFacade::getBaseUrl().'/api/m3u-proxy/broadcast/callback';
+        return $this->withCallbackToken(ProxyFacade::getBaseUrl().'/api/m3u-proxy/broadcast/callback');
+    }
+
+    /**
+     * Get the DVR broadcast callback URL for m3u-proxy to send recording-lifecycle events.
+     *
+     * @return string|null The DVR callback endpoint URL, or null if not configured
+     */
+    public function getDvrCallbackUrl(): ?string
+    {
+        if (! empty($this->failoverResolverUrl)) {
+            return $this->withCallbackToken("$this->failoverResolverUrl/api/dvr/callback");
+        }
+
+        return $this->withCallbackToken(ProxyFacade::getBaseUrl().'/api/dvr/callback');
     }
 
     /**
@@ -3365,11 +3400,28 @@ class M3uProxyService
     {
         if (! empty($this->failoverResolverUrl)) {
             // Use the configured failover resolver URL
-            return "$this->failoverResolverUrl/api/m3u-proxy/webhooks";
+            return $this->withCallbackToken("$this->failoverResolverUrl/api/m3u-proxy/webhooks");
         }
 
         // Return null if not configured, as webhooks are optional and may not be needed if the resolver URL is not set
         return null;
+    }
+
+    /**
+     * Append the shared proxy API token as a query parameter so VerifyM3uProxyCallback
+     * can authenticate requests the proxy sends back to these URLs. The proxy's outbound
+     * HTTP clients for these callbacks don't attach custom headers, so the token has to
+     * travel embedded in the URL itself, which the editor fully controls.
+     */
+    private function withCallbackToken(string $url): string
+    {
+        if (empty($this->apiToken)) {
+            return $url;
+        }
+
+        $separator = str_contains($url, '?') ? '&' : '?';
+
+        return $url.$separator.'api_token='.rawurlencode($this->apiToken);
     }
 
     /**
@@ -3404,6 +3456,7 @@ class M3uProxyService
             'dvr_mode' => true,
             'hls_list_size' => 0,
             'output_dir' => config('proxy.broadcast_temp_dir'),
+            'callback_url' => $this->getDvrCallbackUrl(),
             'metadata' => [
                 'type' => 'dvr',
                 'recording_id' => $recording->uuid,
