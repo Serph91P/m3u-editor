@@ -777,8 +777,10 @@ class MediaServerProxyController extends Controller
     /**
      * Cache key an AIOStreams live proxy token resolves to. Scoped by integration
      * so a token can't be replayed against a different integration's namespace.
+     * Public: M3uProxyService::resolveMediaServerUpstreamUrl() also needs this key
+     * to look up the same cache entry when resolving a "live" proxy URL server-side.
      */
-    protected static function aioStreamsLiveCacheKey(int $integrationId, string $token): string
+    public static function aioStreamsLiveCacheKey(int $integrationId, string $token): string
     {
         return "aiostreams-live-proxy:{$integrationId}:{$token}";
     }

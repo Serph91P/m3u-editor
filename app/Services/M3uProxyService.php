@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\DvrRecordingStatus;
 use App\Facades\PlaylistFacade;
 use App\Facades\ProxyFacade;
+use App\Http\Controllers\MediaServerProxyController;
 use App\Jobs\ResolveAioStreamsChannel;
 use App\Jobs\ResolveAioStreamsEpisode;
 use App\Models\Channel;
@@ -18,6 +19,7 @@ use App\Models\Network;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
+use App\Models\Scopes\ExcludeAioFailoverClonesScope;
 use App\Models\StreamProfile;
 use App\Settings\GeneralSettings;
 use Exception;
@@ -1601,8 +1603,9 @@ class M3uProxyService
             ? $remainingFailovers->isNotEmpty()
             : $remainingFailovers->map(function ($failoverEpisode) {
                 $failoverPlaylist = $failoverEpisode->getEffectivePlaylist();
+                $failoverUrl = $failoverPlaylist ? PlaylistUrlService::getEpisodeUrl($failoverEpisode, $failoverPlaylist) : null;
 
-                return $failoverPlaylist ? PlaylistUrlService::getEpisodeUrl($failoverEpisode, $failoverPlaylist) : null;
+                return $this->resolveMediaServerUpstreamUrl($failoverUrl)['url'] ?? $failoverUrl;
             })
                 ->filter()
                 ->values()
@@ -1684,6 +1687,18 @@ class M3uProxyService
 
             // Transform URL using selected profile
             $url = $selectedProfile->transformEpisodeUrl($episode);
+        }
+
+        // Media-server-backed episodes (Plex/Emby/Jellyfin/WebDAV/AIOStreams) store our own
+        // API-key-hiding proxy URL as their episode URL, since that URL is also handed directly
+        // to external clients when the proxy is disabled. When we ARE going through the proxy,
+        // resolve it to the real upstream URL here (server-side, never exposed to the client) so
+        // the Python proxy fetches the media server directly instead of looping back through this
+        // app's PHP-FPM curl relay for the full duration of playback. Done after the profile
+        // transform above, since that can replace $url with a different provider URL.
+        if ($resolved = $this->resolveMediaServerUpstreamUrl($url)) {
+            $url = $resolved['url'];
+            $headers = array_merge($headers, $resolved['headers']);
         }
 
         // Use appropriate endpoint based on whether transcoding profile is provided
@@ -2573,12 +2588,13 @@ class M3uProxyService
 
     /**
      * If the given URL points at one of this app's own API-key-hiding media-server proxy
-     * routes (MediaServerProxyController's `/media-server/*` or `/webdav-media/*`), resolve
-     * it to the real upstream URL (and any auth headers it needs) so the m3u-proxy service
-     * fetches Plex/Emby/Jellyfin/WebDAV directly instead of looping back through this app's
-     * PHP curl relay for the full duration of playback. Never expose the resolved URL to an
-     * external client — it's only safe to use here because the proxy's fetch is server-side.
-     * Local media has no HTTP source and is intentionally left unresolved.
+     * routes (MediaServerProxyController's `/media-server/*`, `/webdav-media/*`, or
+     * `/aiostreams-media/*`), resolve it to the real upstream URL (and any auth headers it
+     * needs) so the m3u-proxy service fetches Plex/Emby/Jellyfin/WebDAV/AIOStreams directly
+     * instead of looping back through this app's PHP curl relay for the full duration of
+     * playback. Never expose the resolved URL to an external client — it's only safe to use
+     * here because the proxy's fetch is server-side. Local media has no HTTP source and is
+     * intentionally left unresolved.
      *
      * @return array{url: string, headers: array<int, array{header: string, value: string}>}|null
      */
@@ -2589,6 +2605,35 @@ class M3uProxyService
         }
 
         $path = parse_url($url, PHP_URL_PATH) ?? '';
+
+        if (preg_match('#/aiostreams-media/(\d+)/(channel|episode|live)/([^/]+)/stream$#', $path, $matches)) {
+            $integration = MediaServerIntegration::find((int) $matches[1]);
+            if (! $integration || ! $integration->enabled || $integration->type !== 'aiostreams') {
+                return null;
+            }
+
+            $resolvedUrl = match ($matches[2]) {
+                'channel' => Channel::withoutGlobalScope(ExcludeAioFailoverClonesScope::class)
+                    ->where('id', (int) $matches[3])
+                    ->where('aio_integration_id', $integration->id)
+                    ->first()?->movie_data['aiostreams']['resolved_url'] ?? null,
+                'episode' => Episode::withoutGlobalScope(ExcludeAioFailoverClonesScope::class)
+                    ->where('id', (int) $matches[3])
+                    ->whereHas('series', fn ($query) => $query->where('aio_integration_id', $integration->id))
+                    ->first()?->info['aiostreams']['resolved_url'] ?? null,
+                'live' => Cache::get(MediaServerProxyController::aioStreamsLiveCacheKey($integration->id, $matches[3])),
+            };
+
+            if (
+                ! is_string($resolvedUrl)
+                || ! filter_var($resolvedUrl, FILTER_VALIDATE_URL)
+                || ! in_array(parse_url($resolvedUrl, PHP_URL_SCHEME), ['http', 'https'], true)
+            ) {
+                return null;
+            }
+
+            return ['url' => $resolvedUrl, 'headers' => []];
+        }
 
         if (preg_match('#/media-server/(\d+)/stream/([^/.]+)\.([a-zA-Z0-9]+)$#', $path, $matches)) {
             $integration = MediaServerIntegration::find((int) $matches[1]);

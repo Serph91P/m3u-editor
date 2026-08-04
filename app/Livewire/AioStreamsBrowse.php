@@ -690,6 +690,31 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
             return;
         }
 
+        // Never let a raw resolved URL (often carrying the debrid account's own auth
+        // token) reach $streamChoices — it's a public Livewire property, so anything
+        // stored on it is serialized into the wire snapshot embedded in the page and
+        // into the 'aio-streams-loaded' dispatch, both visible to the browser well
+        // before the user picks a source. Proxy every candidate up front, the same
+        // way AIOStreamsProxyController::stream() does for the Xtream-style catalog
+        // endpoint. The original extension is captured now (from the raw URL) since
+        // the proxy route itself carries no file extension.
+        $rawUrlsByIndex = [];
+        foreach ($streams as $index => $stream) {
+            if (is_string($stream['url'] ?? null) && $stream['url'] !== '') {
+                $rawUrlsByIndex[$index] = $stream['url'];
+            }
+        }
+        $proxiedUrlsByIndex = MediaServerProxyController::generateAioStreamsLiveProxyUrls($this->integrationId, $rawUrlsByIndex);
+        foreach ($streams as $index => &$stream) {
+            if (isset($proxiedUrlsByIndex[$index])) {
+                $stream['format'] = pathinfo(parse_url($stream['url'], PHP_URL_PATH) ?? '', PATHINFO_EXTENSION) ?: 'mp4';
+                $stream['url'] = $proxiedUrlsByIndex[$index];
+            } else {
+                unset($stream['url']);
+            }
+        }
+        unset($stream);
+
         // Always show the source picker rather than auto-playing a lone result — a
         // single "stream" is frequently a trailer/error placeholder from the addon
         // rather than a real playable source, so let the user confirm the choice.
@@ -1090,22 +1115,18 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
 
     private function dispatchPlay(array $stream, array $context): void
     {
-        $url = $stream['url'] ?? null;
-        if (! $url) {
+        // $stream['url'] is already a proxied URL and 'format' the extension
+        // captured from the raw one — see playStream(), which proxies the whole
+        // batch before it's ever stored on $streamChoices (a public property, so
+        // whatever's in it reaches the browser before a source is even chosen).
+        $proxiedUrl = $stream['url'] ?? null;
+        if (! $proxiedUrl) {
             Notification::make()->danger()->title(__('This source has no playable URL'))->send();
 
             return;
         }
 
-        // Extension is derived from the raw upstream URL before it's hidden
-        // behind the proxy below.
-        $format = pathinfo(parse_url($url, PHP_URL_PATH) ?? '', PATHINFO_EXTENSION) ?: 'mp4';
-
-        // Never hand the raw resolved URL (often carrying the debrid account's own
-        // auth token) to the browser. There's no durable Channel/Episode row for an
-        // ad-hoc preview, so this goes through the short-lived cache-token "live"
-        // proxy rather than the DB-backed one used for synced channels/episodes.
-        $proxiedUrl = MediaServerProxyController::generateAioStreamsLiveProxyUrl($this->integrationId, $url);
+        $format = $stream['format'] ?? 'mp4';
 
         $title = $context['title'] ?? __('Unknown');
         $displayTitle = $title;
