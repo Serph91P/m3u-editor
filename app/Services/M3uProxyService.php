@@ -2692,6 +2692,9 @@ class M3uProxyService
         if ($format === 'hls' || $format === 'm3u8') {
             // HLS format: /hls/{stream_id}/playlist.m3u8
             $url = $baseUrl.'/hls/'.$streamId.'/playlist.m3u8';
+        } elseif ($format === 'mpd' || $format === 'dash') {
+            // DASH format: /dash/{stream_id}/manifest.mpd
+            $url = $baseUrl.'/dash/'.$streamId.'/manifest.mpd';
         } else {
             // Direct stream format: /stream/{stream_id}
             $url = $baseUrl.'/stream/'.$streamId;
