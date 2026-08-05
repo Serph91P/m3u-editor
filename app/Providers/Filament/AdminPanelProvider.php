@@ -61,6 +61,7 @@ use App\Filament\Widgets\UpdateNoticeWidget;
 use App\Http\Middleware\DashboardMiddleware;
 // use App\Filament\Widgets\PayPalDonateWidget;
 use App\Http\Middleware\SeedLocaleFromUser;
+use App\Http\Middleware\SyncTableColumnPreferences;
 use App\Settings\GeneralSettings;
 use App\Support\CopilotProvider;
 use CraftForge\FilamentLanguageSwitcher\FilamentLanguageSwitcherPlugin;
@@ -344,6 +345,7 @@ class AdminPanelProvider extends PanelProvider
                 DisableBladeIconComponents::class,
                 DispatchServingFilamentEvent::class,
                 SeedLocaleFromUser::class, // Seeds session from DB locale (runs before plugin's SetLocale)
+                SyncTableColumnPreferences::class, // Bridges Filament's table column manager session state to the DB, per user
             ])
             ->authMiddleware([
                 Authenticate::class,
