@@ -43,10 +43,9 @@ it('is true', function () {
 
 ### Running Tests
 
-- Run minimal tests with filter before finalizing: `composer test:fast -- --filter=testName`.
-- Run all tests: `composer test:fast`.
-- Run file: `composer test:fast -- tests/Feature/ExampleTest.php`.
-- `composer test:fast` runs Pest's Test Impact Analysis (`--tia --parallel`) — only affected tests actually execute, the rest replay from a cached graph fetched from CI. Falls back to a normal full run if no baseline is available.
+- Run minimal tests with filter before finalizing: `vendor/bin/pest --filter=testName`.
+- Run a specific file: `vendor/bin/pest tests/Feature/ExampleTest.php`.
+- **Never run the entire suite** (bare `vendor/bin/pest` / `php artisan test` with no filter or path) unless the user explicitly asks for a full run — it's slow and wastes usage when run repeatedly.
 
 ## Assertions
 
