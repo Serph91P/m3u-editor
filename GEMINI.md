@@ -128,7 +128,7 @@ This project has domain-specific skills available in `**/skills/**`. You MUST ac
 # Test Enforcement
 
 - Every change must be programmatically tested. Write a new test or update an existing test, then run the affected tests to make sure they pass.
-- Run the minimum number of tests needed to ensure code quality and speed. Use `php artisan test --compact` with a specific filename or filter.
+- Run the minimum number of tests needed to ensure code quality and speed. Use `composer test:fast -- --filter=testName` (or a specific filename) with Pest's Test Impact Analysis to run just the affected tests fast.
 
 === laravel/core rules ===
 
@@ -173,7 +173,7 @@ This project has domain-specific skills available in `**/skills/**`. You MUST ac
 
 - This project uses Pest for testing. Create tests: `php artisan make:test --pest {name}`.
 - The `{name}` argument should not include the test suite directory. Use `php artisan make:test --pest SomeFeatureTest` instead of `php artisan make:test --pest Feature/SomeFeatureTest`.
-- Run tests: `php artisan test --compact` or filter: `php artisan test --compact --filter=testName`.
+- Run tests: `composer test:fast` or filter: `composer test:fast -- --filter=testName`.
 - Do NOT delete tests without approval.
 
 === filament/filament rules ===
@@ -413,3 +413,13 @@ livewire(ListUsers::class)
   - `$view`: `protected string` (not `protected static string`) on `Page` and `Widget` classes
 
 </laravel-boost-guidelines>
+
+<!--
+The section below is NOT managed by Laravel Boost. `php artisan boost:update` only
+rewrites content inside <laravel-boost-guidelines>...</laravel-boost-guidelines> above
+(see vendor/laravel/boost/src/Install/GuidelineWriter.php), so this survives updates.
+-->
+
+## Testing (project-specific, not covered by Boost)
+
+Use `composer test:fast` instead of `php artisan test` / `vendor/bin/pest` directly. It runs Pest 5's Test Impact Analysis (`--tia --parallel`), replaying unaffected tests from a cached graph instead of re-running the whole suite — the graph is rebuilt on every push to `main` by `.github/workflows/tia-baseline.yml` and fetched automatically via the GitHub CLI, so this needs no local Xdebug/PCOV setup. Filter with `composer test:fast -- --filter=testName`. If no baseline is available yet (e.g. `gh` isn't installed/authenticated), it falls back to a normal full run automatically — never blocks testing.

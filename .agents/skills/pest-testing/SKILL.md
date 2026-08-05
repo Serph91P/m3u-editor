@@ -43,9 +43,10 @@ it('is true', function () {
 
 ### Running Tests
 
-- Run minimal tests with filter before finalizing: `php artisan test --compact --filter=testName`.
-- Run all tests: `php artisan test --compact`.
-- Run file: `php artisan test --compact tests/Feature/ExampleTest.php`.
+- Run minimal tests with filter before finalizing: `composer test:fast -- --filter=testName`.
+- Run all tests: `composer test:fast`.
+- Run file: `composer test:fast -- tests/Feature/ExampleTest.php`.
+- `composer test:fast` runs Pest's Test Impact Analysis (`--tia --parallel`) — only affected tests actually execute, the rest replay from a cached graph fetched from CI. Falls back to a normal full run if no baseline is available.
 
 ## Assertions
 
