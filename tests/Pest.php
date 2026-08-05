@@ -21,6 +21,24 @@ pest()->extend(TestCase::class)
 
 /*
 |--------------------------------------------------------------------------
+| Test Impact Analysis
+|--------------------------------------------------------------------------
+|
+| Enables Pest's Tia engine on local invocations only (never in CI, so CI
+| always runs the full suite as the source of truth). "baselined()" opts
+| into fetching the shared dependency graph recorded by the
+| .github/workflows/tia-baseline.yml workflow via the GitHub CLI, so a
+| developer's first local run doesn't need PCOV/Xdebug installed — only
+| the machine that records the baseline does.
+|
+*/
+
+pest()->tia()
+    ->locally()
+    ->baselined();
+
+/*
+|--------------------------------------------------------------------------
 | Expectations
 |--------------------------------------------------------------------------
 |

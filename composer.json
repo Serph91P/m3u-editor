@@ -93,6 +93,12 @@
             "composer audit --format=summary",
             "npm audit --audit-level=high",
             "php artisan checkpoint:scan"
+        ],
+        "test:fast": [
+            "bash scripts/test-fast.sh"
+        ],
+        "test:tia-rebuild": [
+            "bash scripts/test-tia.sh"
         ]
     },
     "extra": {
