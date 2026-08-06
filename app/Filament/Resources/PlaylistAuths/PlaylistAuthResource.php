@@ -4,6 +4,7 @@ namespace App\Filament\Resources\PlaylistAuths;
 
 use App\Filament\Actions\GeneratePasswordAction;
 use App\Filament\Concerns\HasCopilotSupport;
+use App\Filament\Resources\DvrRecordings\DvrRecordingResource;
 use App\Filament\Resources\PlaylistAuthResource\Pages;
 use App\Filament\Resources\PlaylistAuthResource\RelationManagers;
 use App\Filament\Resources\PlaylistAuths\Pages\ListPlaylistAuths;
@@ -103,6 +104,24 @@ class PlaylistAuthResource extends Resource implements CopilotResource
                 TextColumn::make('assigned_model_name')
                     ->label(__('Assigned To'))
                     ->toggleable(),
+                TextColumn::make('dvr_recordings_count')
+                    ->label(__('Recordings'))
+                    ->counts('dvrRecordings')
+                    ->toggleable(),
+                TextColumn::make('storage_used_bytes')
+                    ->label(__('DVR Storage'))
+                    ->toggleable()
+                    ->formatStateUsing(function (PlaylistAuth $record): string {
+                        if (! $record->dvr_enabled) {
+                            return '—';
+                        }
+                        $used = DvrRecordingResource::formatFileSize($record->storage_used_bytes);
+                        if ($record->dvr_storage_quota_gb === null) {
+                            return "{$used} / Unlimited";
+                        }
+
+                        return "{$used} / {$record->dvr_storage_quota_gb} GB";
+                    }),
                 ToggleColumn::make('enabled')
                     ->toggleable()
                     ->tooltip(__('Toggle auth status'))

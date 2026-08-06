@@ -63,6 +63,7 @@ class XtreamApiController extends Controller
     private const DVR_ACTIONS = [
         'get_dvr_recordings',
         'get_dvr_recording',
+        'get_dvr_storage',
         'schedule_dvr',
         'create_dvr_series_rule',
         'cancel_dvr_recording',
@@ -2031,6 +2032,7 @@ class XtreamApiController extends Controller
             return match ($action) {
                 'get_dvr_recordings' => $this->getDvrRecordings($request, $dvrPlaylist, $username, $password, $playlistAuth),
                 'get_dvr_recording' => $this->getDvrRecording($request, $dvrPlaylist, $username, $password, $playlistAuth),
+                'get_dvr_storage' => $this->getDvrStorage($dvrPlaylist, $playlistAuth),
                 'schedule_dvr' => $this->scheduleDvr($request, $dvrPlaylist, $playlistAuth),
                 'create_dvr_series_rule' => $this->createDvrSeriesRule($request, $dvrPlaylist, $playlistAuth),
                 'cancel_dvr_recording' => $this->cancelDvrRecording($request, $dvrPlaylist, $playlistAuth),
@@ -3272,6 +3274,59 @@ class XtreamApiController extends Controller
     }
 
     /**
+     * Get the current user/guest's DVR storage usage against their quota.
+     *
+     * A guest (PlaylistAuth) only ever sees their own usage, scoped to their own
+     * recordings, regardless of whether they have an explicit quota configured —
+     * guests never see account-wide totals. The account owner sees the whole
+     * DVR setting's usage against its global quota.
+     */
+    private function getDvrStorage($playlist, ?PlaylistAuth $playlistAuth): \Illuminate\Http\JsonResponse
+    {
+        if ($playlistAuth) {
+            $usedBytes = $playlistAuth->storage_used_bytes;
+            $quotaBytes = $playlistAuth->dvr_storage_quota_gb !== null
+                ? $playlistAuth->dvr_storage_quota_gb * 1024 ** 3
+                : null;
+
+            return response()->json([
+                'used_bytes' => $usedBytes,
+                'quota_bytes' => $quotaBytes,
+                'percent_used' => $quotaBytes !== null
+                    ? ($quotaBytes > 0 ? min(100, round($usedBytes / $quotaBytes * 100, 1)) : 100)
+                    : null,
+                'recording_count' => $playlistAuth->dvrRecordings()->count(),
+                'scope' => 'guest',
+            ]);
+        }
+
+        $dvrSetting = $playlist->dvrSetting;
+
+        if (! $dvrSetting) {
+            return response()->json([
+                'used_bytes' => 0,
+                'quota_bytes' => null,
+                'percent_used' => null,
+                'recording_count' => 0,
+                'scope' => 'account',
+            ]);
+        }
+
+        $usedBytes = $dvrSetting->storage_used_bytes;
+        $quotaBytes = $dvrSetting->global_disk_quota_gb > 0
+            ? $dvrSetting->global_disk_quota_gb * 1024 ** 3
+            : null;
+
+        return response()->json([
+            'used_bytes' => $usedBytes,
+            'quota_bytes' => $quotaBytes,
+            'percent_used' => $quotaBytes ? min(100, round($usedBytes / $quotaBytes * 100, 1)) : null,
+            'recording_count' => $dvrSetting->recordings()->count(),
+            'scope' => 'account',
+        ]);
+    }
+
+    /**
      * Schedule a one-shot DVR recording rule from the TV app.
      */
     private function scheduleDvr(Request $request, $playlist, ?PlaylistAuth $playlistAuth): \Illuminate\Http\JsonResponse
@@ -3289,6 +3344,10 @@ class XtreamApiController extends Controller
 
         if (! $dvrSetting) {
             return response()->json(['error' => 'DVR is not enabled for this playlist'], 422);
+        }
+
+        if ($playlistAuth?->hasReachedConcurrentLimit()) {
+            return response()->json(['error' => 'Concurrent recording limit reached'], 422);
         }
 
         $channel = $playlist->channels()->where('channels.id', $channelId)->first();
