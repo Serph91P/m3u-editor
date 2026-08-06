@@ -29,7 +29,7 @@ class ListPushDeviceTokens extends ListRecords
     public function getSubheading(): string|Htmlable|null
     {
         return $this->activeTab === 'pairing'
-            ? __('Enter the code shown on your TV, or scan its QR code with your phone, then choose which credential to sign it in with.')
+            ? __('Enter the code shown on M3U TV, or scan its QR code with your phone, then choose which credential to sign it in with.')
             : __('Mobile devices registered to receive push notifications through the relay. Devices are added automatically when the app registers for push, and pruned automatically after :days days without a check-in.', ['days' => config('services.push_relay.stale_days', 60)]);
     }
 
@@ -66,7 +66,7 @@ class ListPushDeviceTokens extends ListRecords
                     Section::make(__('Pair a Device'))
                         ->icon('heroicon-o-device-phone-mobile')
                         ->compact()
-                        ->description(__('Enter the code shown on your TV, or scan its QR code with your phone, then choose which credential to sign it in with.'))
+                        ->description(__('Enter the code shown on M3U TV, or scan its QR code with your phone, then choose which credential to sign it in with.'))
                         ->schema([
                             TextInput::make('user_code')
                                 ->label(__('Device Code'))
@@ -79,7 +79,7 @@ class ListPushDeviceTokens extends ListRecords
                                 ->required()
                                 ->searchable()
                                 ->options(fn (): array => PlaylistAuth::where('user_id', auth()->id())->pluck('name', 'id')->all())
-                                ->helperText(__('The TV will sign in using this credential\'s username and password.')),
+                                ->helperText(__('M3U TV will sign in using this credential\'s username and password.')),
                         ]),
                         SchemaActions::make([
                                 Action::make('approve')
