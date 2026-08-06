@@ -3,6 +3,7 @@
 use App\Models\DeviceAuthorization;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
@@ -64,4 +65,15 @@ it('hands back the assigned credential once and consumes the code', function () 
     // A repeat poll with the same device_code must never re-serve credentials.
     $second = $this->postJson('/api/device/token', ['device_code' => $deviceAuth->device_code]);
     $second->assertOk()->assertJson(['status' => 'pending']);
+});
+
+it('returns 404 for polling when device pairing is disabled', function () {
+    $deviceAuth = DeviceAuthorization::factory()->create();
+
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->device_pairing_enabled = false;
+    $settings->app_output_enabled = true;
+    app()->instance(GeneralSettings::class, $settings);
+
+    $this->postJson('/api/device/token', ['device_code' => $deviceAuth->device_code])->assertNotFound();
 });

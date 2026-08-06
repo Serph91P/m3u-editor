@@ -122,6 +122,7 @@ class AdminPanelProvider extends PanelProvider
             'copilot_quick_actions' => [],
             'copilot_url' => null,
             'push_relay_enabled' => true,
+            'device_pairing_enabled' => true,
         ];
         try {
             $envShowWan = config('dev.show_wan_details', false);
@@ -143,6 +144,7 @@ class AdminPanelProvider extends PanelProvider
                 'copilot_quick_actions' => $userPreferences->copilot_quick_actions ?? $settings['copilot_quick_actions'],
                 'copilot_url' => $userPreferences->copilot_url ?? $settings['copilot_url'],
                 'push_relay_enabled' => $userPreferences->push_relay_enabled ?? $settings['push_relay_enabled'],
+                'device_pairing_enabled' => $userPreferences->device_pairing_enabled ?? $settings['device_pairing_enabled'],
             ];
         } catch (Exception $e) {
             // Ignore
@@ -195,7 +197,7 @@ class AdminPanelProvider extends PanelProvider
                                 ->icon('heroicon-s-shield-check')
                                 ->items([
                                     ...(config('auth.auto_login') ? [] : UserResource::getNavigationItems()),
-                                    ...($settings['push_relay_enabled'] ? PushDeviceTokenResource::getNavigationItems() : []),
+                                    ...(($settings['push_relay_enabled'] || $settings['device_pairing_enabled']) ? PushDeviceTokenResource::getNavigationItems() : []),
                                     ...Preferences::getNavigationItems(),
                                 ]),
                         ] : []),

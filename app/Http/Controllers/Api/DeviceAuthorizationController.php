@@ -23,6 +23,8 @@ class DeviceAuthorizationController extends Controller
      */
     public function requestCode(Request $request): JsonResponse
     {
+        abort_unless(PushDeviceTokenResource::isDevicePairingEnabled(), 404);
+
         $deviceAuth = DeviceAuthorization::create([
             'device_code' => DeviceCodeGeneratorService::generateDeviceCode(),
             'user_code' => DeviceCodeGeneratorService::generateUserCode(),
@@ -53,6 +55,8 @@ class DeviceAuthorizationController extends Controller
      */
     public function poll(Request $request): JsonResponse
     {
+        abort_unless(PushDeviceTokenResource::isDevicePairingEnabled(), 404);
+
         $data = $request->validate([
             'device_code' => ['required', 'string'],
         ]);

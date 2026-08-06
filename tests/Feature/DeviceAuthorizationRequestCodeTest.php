@@ -1,8 +1,17 @@
 <?php
 
+use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
+
+function mockDevicePairingSettings(bool $pairingEnabled = true, bool $outputEnabled = true): void
+{
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->device_pairing_enabled = $pairingEnabled;
+    $settings->app_output_enabled = $outputEnabled;
+    app()->instance(GeneralSettings::class, $settings);
+}
 
 it('issues a device_code/user_code pair with expiry and verification uri', function () {
     $response = $this->postJson('/api/device/code');
@@ -42,4 +51,16 @@ it('applies throttle middleware to the device token poll route', function () {
 
     expect($route)->not->toBeNull();
     expect($route->middleware())->toContain('throttle:60,1');
+});
+
+it('returns 404 when device pairing is disabled', function () {
+    mockDevicePairingSettings(pairingEnabled: false);
+
+    $this->postJson('/api/device/code')->assertNotFound();
+});
+
+it('returns 404 when enhanced output is disabled, even if device pairing is enabled', function () {
+    mockDevicePairingSettings(pairingEnabled: true, outputEnabled: false);
+
+    $this->postJson('/api/device/code')->assertNotFound();
 });

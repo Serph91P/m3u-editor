@@ -5,6 +5,7 @@ use App\Filament\Resources\PushDeviceTokens\PushDeviceTokenResource;
 use App\Models\DeviceAuthorization;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 
@@ -94,4 +95,60 @@ it('rejects approval when the posted playlist_auth_id does not belong to the adm
         'id' => $deviceAuth->id,
         'status' => 'pending',
     ]);
+});
+
+it('hides the pairing tab when device pairing is disabled', function () {
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->device_pairing_enabled = false;
+    $settings->app_output_enabled = true;
+    app()->instance(GeneralSettings::class, $settings);
+
+    $component = Livewire::test(ListPushDeviceTokens::class);
+
+    expect($component->instance()->getTabs())->not->toHaveKey('pairing');
+});
+
+it('falls back to the devices tab when pairing is requested but disabled', function () {
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->device_pairing_enabled = false;
+    $settings->app_output_enabled = true;
+    app()->instance(GeneralSettings::class, $settings);
+
+    $component = Livewire::test(ListPushDeviceTokens::class, ['activeTab' => 'pairing']);
+
+    expect($component->instance()->activeTab)->toBe('devices');
+});
+
+it('hides the devices tab when push relay is disabled', function () {
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->push_relay_enabled = false;
+    app()->instance(GeneralSettings::class, $settings);
+
+    $component = Livewire::test(ListPushDeviceTokens::class);
+
+    expect($component->instance()->getTabs())->not->toHaveKey('devices')
+        ->and($component->instance()->activeTab)->toBe('pairing');
+});
+
+it('denies access and hides the nav item when both push relay and device pairing are disabled', function () {
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->push_relay_enabled = false;
+    $settings->device_pairing_enabled = false;
+    $settings->app_output_enabled = true;
+    app()->instance(GeneralSettings::class, $settings);
+
+    expect(PushDeviceTokenResource::canAccess())->toBeFalse();
+    expect(PushDeviceTokenResource::shouldRegisterNavigation())->toBeFalse();
 });

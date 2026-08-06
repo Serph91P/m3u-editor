@@ -42,6 +42,12 @@ class ListPushDeviceTokens extends ListRecords
     {
         parent::mount();
 
+        $tabs = $this->getTabs();
+
+        if ($this->activeTab === null || ! array_key_exists($this->activeTab, $tabs)) {
+            $this->activeTab = array_key_first($tabs);
+        }
+
         $code = (string) request()->query('code', '');
         $this->data = [
             'user_code' => strtoupper(trim($code)),
@@ -51,10 +57,17 @@ class ListPushDeviceTokens extends ListRecords
 
     public function getTabs(): array
     {
-        return [
-            'devices' => Tab::make(__('Devices')),
-            'pairing' => Tab::make(__('Device Pairing')),
-        ];
+        $tabs = [];
+
+        if (PushDeviceTokenResource::isPushRelayEnabled()) {
+            $tabs['devices'] = Tab::make(__('Devices'));
+        }
+
+        if (PushDeviceTokenResource::isDevicePairingEnabled()) {
+            $tabs['pairing'] = Tab::make(__('Device Pairing'));
+        }
+
+        return $tabs;
     }
 
     public function content(Schema $schema): Schema
@@ -81,11 +94,11 @@ class ListPushDeviceTokens extends ListRecords
                                 ->options(fn (): array => PlaylistAuth::where('user_id', auth()->id())->pluck('name', 'id')->all())
                                 ->helperText(__('M3U TV will sign in using this credential\'s username and password.')),
                         ]),
-                        SchemaActions::make([
-                                Action::make('approve')
-                                    ->label(__('Pair Device'))
-                                    ->action(fn () => $this->approve()),
-                            ]),
+                    SchemaActions::make([
+                        Action::make('approve')
+                            ->label(__('Pair Device'))
+                            ->action(fn () => $this->approve()),
+                    ]),
 
                 ])
                 ->statePath('data');
@@ -99,6 +112,10 @@ class ListPushDeviceTokens extends ListRecords
 
     public function approve(): void
     {
+        if (! PushDeviceTokenResource::isDevicePairingEnabled()) {
+            return;
+        }
+
         $rateLimitKey = 'device-pairing-attempts:'.auth()->id();
 
         if (RateLimiter::tooManyAttempts($rateLimitKey, 10)) {
