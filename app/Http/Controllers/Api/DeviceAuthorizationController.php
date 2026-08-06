@@ -37,10 +37,7 @@ class DeviceAuthorizationController extends Controller
         return response()->json([
             'device_code' => $deviceAuth->device_code,
             'user_code' => $deviceAuth->user_code,
-            'verification_uri' => PushDeviceTokenResource::getUrl('index', [
-                'tab' => 'pairing',
-                'code' => $deviceAuth->user_code,
-            ]),
+            'verification_uri' => route('device-pairing.vanity', ['code' => $deviceAuth->user_code]),
             'interval' => $deviceAuth->interval_seconds,
             'expires_in' => now()->diffInSeconds($deviceAuth->expires_at),
         ]);

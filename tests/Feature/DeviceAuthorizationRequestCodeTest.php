@@ -28,7 +28,7 @@ it('issues a device_code/user_code pair with expiry and verification uri', funct
 
     expect($body['user_code'])->toMatch('/^[A-Z0-9]{4}-[A-Z0-9]{4}$/');
     expect(strlen($body['device_code']))->toBe(64);
-    expect($body['verification_uri'])->toContain('code='.$body['user_code']);
+    expect($body['verification_uri'])->toContain('/pdt?code='.$body['user_code']);
     expect($body['interval'])->toBe(5);
     expect($body['expires_in'])->toBeGreaterThan(0);
 
@@ -63,4 +63,19 @@ it('returns 404 when enhanced output is disabled, even if device pairing is enab
     mockDevicePairingSettings(pairingEnabled: true, outputEnabled: false);
 
     $this->postJson('/api/device/code')->assertNotFound();
+});
+
+it('the /pdt vanity URL redirects to the pairing tab and forwards the code', function () {
+    $this->get('/pdt?code=XKQP-9F3T')
+        ->assertRedirect()
+        ->assertRedirectContains('tab=pairing')
+        ->assertRedirectContains('code=XKQP-9F3T');
+});
+
+it('the /pdt vanity URL redirects without a code param when none is given', function () {
+    $this->get('/pdt')
+        ->assertRedirect()
+        ->assertRedirectContains('tab=pairing');
+
+    expect($this->get('/pdt')->headers->get('Location'))->not->toContain('code=');
 });
