@@ -33,9 +33,9 @@ class DvrStorageOverviewWidget extends Widget
                     'user' => $setting->user,
                     'recording_count' => $setting->recordings_count,
                     'used_bytes' => $usedBytes,
-                    'used_formatted' => DvrRecordingResource::formatFileSize($usedBytes),
+                    'used_formatted' => $usedBytes > 0 ? DvrRecordingResource::formatFileSize($usedBytes) : 'N/A',
                     'quota_bytes' => $quotaBytes,
-                    'quota_formatted' => $quotaBytes ? DvrRecordingResource::formatFileSize($quotaBytes) : __('Unlimited'),
+                    'quota_formatted' => $quotaBytes ? DvrRecordingResource::formatFileSize($quotaBytes) : '∞',
                     'percent' => $quotaBytes ? min(100, round($usedBytes / $quotaBytes * 100, 1)) : null,
                 ];
             });

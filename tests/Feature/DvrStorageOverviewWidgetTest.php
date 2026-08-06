@@ -98,6 +98,52 @@ it('returns null percent when quota is zero', function () {
     expect($rows->first()['quota_bytes'])->toBeNull();
 });
 
+it('formats unlimited quota as the infinity symbol', function () {
+    $user = User::factory()->create(['permissions' => ['use_dvr']]);
+    $playlist = Playlist::factory()->for($user)->create();
+    $dvrSetting = DvrSetting::factory()
+        ->for($user)
+        ->for($playlist)
+        ->enabled()
+        ->create(['global_disk_quota_gb' => 0]);
+
+    DvrRecording::factory()
+        ->for($user)
+        ->for($dvrSetting)
+        ->create(['file_size_bytes' => 1073741824]);
+
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $widget = app(DvrStorageOverviewWidget::class);
+    $row = invade($widget)->getViewData()['rows']->first();
+
+    expect($row['quota_formatted'])->toBe('∞');
+});
+
+it('formats zero usage as N/A instead of an em dash', function () {
+    $user = User::factory()->create(['permissions' => ['use_dvr']]);
+    $playlist = Playlist::factory()->for($user)->create();
+    $dvrSetting = DvrSetting::factory()
+        ->for($user)
+        ->for($playlist)
+        ->enabled()
+        ->create(['global_disk_quota_gb' => 10]);
+
+    DvrRecording::factory()
+        ->for($user)
+        ->for($dvrSetting)
+        ->create(['file_size_bytes' => null]);
+
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $widget = app(DvrStorageOverviewWidget::class);
+    $row = invade($widget)->getViewData()['rows']->first();
+
+    expect($row['used_formatted'])->toBe('N/A');
+});
+
 it('loads storage totals without an N+1 query per user', function () {
     foreach (range(1, 3) as $i) {
         $user = User::factory()->create(['permissions' => ['use_dvr']]);

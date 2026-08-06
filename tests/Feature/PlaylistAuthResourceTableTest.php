@@ -86,10 +86,10 @@ it('shows unlimited storage when no quota is set', function () {
     Livewire::test(ListPlaylistAuths::class)
         ->assertOk()
         ->loadTable()
-        ->assertTableColumnFormattedStateSet('storage_used_bytes', '500.0 MB / Unlimited', $auth);
+        ->assertTableColumnFormattedStateSet('storage_used_bytes', '500.0 MB / ∞', $auth);
 });
 
-it('shows em dash for dvr storage when dvr is disabled', function () {
+it('shows N/A for dvr storage when dvr is disabled', function () {
     $auth = PlaylistAuth::factory()->for($this->user)->create([
         'name' => 'No DVR Guest',
         'dvr_enabled' => false,
@@ -98,5 +98,25 @@ it('shows em dash for dvr storage when dvr is disabled', function () {
     Livewire::test(ListPlaylistAuths::class)
         ->assertOk()
         ->loadTable()
-        ->assertTableColumnFormattedStateSet('storage_used_bytes', '—', $auth);
+        ->assertTableColumnFormattedStateSet('storage_used_bytes', 'N/A', $auth);
+});
+
+it('shows N/A for used storage when dvr is enabled but no recordings have usage yet', function () {
+    $auth = PlaylistAuth::factory()->for($this->user)->create([
+        'name' => 'No Usage Guest',
+        'dvr_enabled' => true,
+        'dvr_storage_quota_gb' => 10,
+    ]);
+
+    Livewire::test(ListPlaylistAuths::class)
+        ->assertOk()
+        ->loadTable()
+        ->assertTableColumnFormattedStateSet('storage_used_bytes', 'N/A / 10 GB', $auth);
+});
+
+it('renders the recording count as a badge', function () {
+    Livewire::test(ListPlaylistAuths::class)
+        ->assertOk()
+        ->loadTable()
+        ->assertTableColumnExists('dvr_recordings_count', fn ($column) => $column->isBadge());
 });

@@ -6,6 +6,26 @@
                     <x-filament::icon icon="heroicon-s-circle-stack" class="h-5 w-5 text-gray-400 dark:text-gray-500" />
                     {{ __('DVR Storage') }}
                 </h2>
+
+                <div class="inline-flex items-center gap-2">
+                    <x-filament::button
+                        color="gray"
+                        tag="a"
+                        href="{{ \App\Filament\Resources\PlaylistAuths\PlaylistAuthResource::getUrl() }}"
+                        icon="heroicon-m-arrow-top-right-on-square"
+                    >
+                        {{ __('Manage Auth') }}
+                    </x-filament::button>
+
+                    <x-filament::button
+                        color="gray"
+                        tag="a"
+                        href="{{ \App\Filament\Resources\DvrRecordings\DvrRecordingResource::getUrl() }}"
+                        icon="heroicon-m-arrow-top-right-on-square"
+                    >
+                        {{ __('Manage Recordings') }}
+                    </x-filament::button>
+                </div>
             </div>
 
             @if ($rows->isNotEmpty())
@@ -34,10 +54,12 @@
                             @foreach ($rows as $row)
                                 <tr>
                                     <td class="px-3 py-2.5 text-gray-950 dark:text-white">
-                                        {{ $row['user']?->name ?? '—' }}
+                                        {{ $row['user']?->name ?? 'N/A' }}
                                     </td>
-                                    <td class="px-3 py-2.5 text-right text-gray-950 tabular-nums dark:text-white">
-                                        {{ number_format($row['recording_count']) }}
+                                    <td class="px-3 py-2.5 text-right tabular-nums">
+                                        <x-filament::badge color="gray">
+                                            {{ number_format($row['recording_count']) }}
+                                        </x-filament::badge>
                                     </td>
                                     <td class="px-3 py-2.5 text-right text-gray-950 tabular-nums dark:text-white">
                                         {{ $row['used_formatted'] }}
@@ -57,7 +79,7 @@
                                                 {{ $row['percent'] }}%
                                             </x-filament::badge>
                                         @else
-                                            <span class="text-gray-400 dark:text-gray-500">—</span>
+                                            <span class="text-gray-400 dark:text-gray-500">N/A</span>
                                         @endif
                                     </td>
                                 </tr>
