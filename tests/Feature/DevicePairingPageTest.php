@@ -47,6 +47,48 @@ it('approves a pending code and assigns the chosen credential', function () {
     ]);
 });
 
+it('approves a code typed lowercase and without the dash', function () {
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $playlistAuth = PlaylistAuth::factory()->for($admin)->create();
+    $deviceAuth = DeviceAuthorization::factory()->create(['user_code' => 'XKQP-9F3T']);
+
+    Livewire::test(ListPushDeviceTokens::class, ['activeTab' => 'pairing'])
+        ->fillForm([
+            'user_code' => 'xkqp9f3t',
+            'playlist_auth_id' => $playlistAuth->id,
+        ], 'content')
+        ->call('approve');
+
+    $this->assertDatabaseHas('device_authorizations', [
+        'id' => $deviceAuth->id,
+        'status' => 'approved',
+        'playlist_auth_id' => $playlistAuth->id,
+    ]);
+});
+
+it('approves a code typed with extra whitespace around the dash', function () {
+    $admin = User::factory()->admin()->create();
+    $this->actingAs($admin);
+
+    $playlistAuth = PlaylistAuth::factory()->for($admin)->create();
+    $deviceAuth = DeviceAuthorization::factory()->create(['user_code' => 'XKQP-9F3T']);
+
+    Livewire::test(ListPushDeviceTokens::class, ['activeTab' => 'pairing'])
+        ->fillForm([
+            'user_code' => ' xkqp 9f3t ',
+            'playlist_auth_id' => $playlistAuth->id,
+        ], 'content')
+        ->call('approve');
+
+    $this->assertDatabaseHas('device_authorizations', [
+        'id' => $deviceAuth->id,
+        'status' => 'approved',
+        'playlist_auth_id' => $playlistAuth->id,
+    ]);
+});
+
 it('shows a generic error for an unknown or expired code', function () {
     $admin = User::factory()->admin()->create();
     $this->actingAs($admin);

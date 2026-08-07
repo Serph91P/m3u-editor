@@ -50,7 +50,7 @@ class ListPushDeviceTokens extends ListRecords
 
         $code = (string) request()->query('code', '');
         $this->data = [
-            'user_code' => strtoupper(trim($code)),
+            'user_code' => self::normalizeUserCode($code),
             'playlist_auth_id' => null,
         ];
     }
@@ -70,6 +70,22 @@ class ListPushDeviceTokens extends ListRecords
         return $tabs;
     }
 
+    /**
+     * Uppercases and re-inserts the dash so "xkqp9f3t", "xkqp 9f3t", and
+     * "XKQP-9F3T" all normalize to the same stored format — only the 8
+     * alphanumeric characters are actually meaningful to the user.
+     */
+    private static function normalizeUserCode(?string $state): string
+    {
+        $normalized = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $state) ?? '');
+
+        if (strlen($normalized) === 8) {
+            $normalized = substr($normalized, 0, 4).'-'.substr($normalized, 4);
+        }
+
+        return $normalized;
+    }
+
     public function content(Schema $schema): Schema
     {
         if ($this->activeTab === 'pairing') {
@@ -84,9 +100,8 @@ class ListPushDeviceTokens extends ListRecords
                             TextInput::make('user_code')
                                 ->label(__('Device Code'))
                                 ->required()
-                                ->maxLength(9)
-                                ->placeholder('XXXX-XXXX')
-                                ->dehydrateStateUsing(fn (?string $state): string => strtoupper(trim((string) $state))),
+                                ->maxLength(12)
+                                ->placeholder('XXXX-XXXX'),
                             Select::make('playlist_auth_id')
                                 ->label(__('Grant Access As'))
                                 ->required()
@@ -129,8 +144,9 @@ class ListPushDeviceTokens extends ListRecords
         }
 
         $data = $this->data;
+        $userCode = self::normalizeUserCode($data['user_code'] ?? null);
 
-        $deviceAuth = DeviceAuthorization::where('user_code', $data['user_code'] ?? '')
+        $deviceAuth = DeviceAuthorization::where('user_code', $userCode)
             ->where('status', 'pending')
             ->first();
 
