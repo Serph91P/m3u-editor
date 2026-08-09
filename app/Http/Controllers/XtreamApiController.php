@@ -1078,8 +1078,8 @@ class XtreamApiController extends Controller
                     }
                     $backdropPaths = array_filter($backdropPaths);
                     if ($playlist->enable_logo_proxy) {
-                        $cover = LogoProxyController::generateProxyUrl($cover);
-                        $backdropPaths = array_map(fn ($path) => LogoProxyController::generateProxyUrl($path), $backdropPaths);
+                        $cover = $this->proxyImageUrl($cover);
+                        $backdropPaths = array_map(fn ($path) => $this->proxyImageUrl($path), $backdropPaths);
                     }
 
                     echo json_encode([
@@ -1155,8 +1155,8 @@ class XtreamApiController extends Controller
             }
             $backdropPaths = array_filter($backdropPaths);
             if ($playlist->enable_logo_proxy) {
-                $cover = LogoProxyController::generateProxyUrl($cover);
-                $backdropPaths = array_map(fn ($path) => LogoProxyController::generateProxyUrl($path), $backdropPaths);
+                $cover = $this->proxyImageUrl($cover);
+                $backdropPaths = array_map(fn ($path) => $this->proxyImageUrl($path), $backdropPaths);
             }
 
             $now = Carbon::now();
@@ -1188,13 +1188,13 @@ class XtreamApiController extends Controller
                 foreach ($seriesItem->seasons as $season) {
                     $seasonNumber = $season->season_number;
                     $seasonCover = $playlist->enable_logo_proxy && ($season->cover ?? false)
-                        ? LogoProxyController::generateProxyUrl($season->cover)
+                        ? $this->proxyImageUrl($season->cover)
                         : $season->cover;
                     $tmdbCover = $playlist->enable_logo_proxy && ($seriesItem->metadata['cover_tmdb'] ?? false)
-                        ? LogoProxyController::generateProxyUrl($seriesItem->metadata['cover_tmdb'])
+                        ? $this->proxyImageUrl($seriesItem->metadata['cover_tmdb'])
                         : ($seriesItem->metadata['cover_tmdb'] ?? null);
                     $coverBig = $playlist->enable_logo_proxy && ($season->cover_big ?? false)
-                        ? LogoProxyController::generateProxyUrl($season->cover_big)
+                        ? $this->proxyImageUrl($season->cover_big)
                         : ($season->cover_big ?? null);
                     $seasons[] = [
                         'name' => $season->metadata['name'] ?? "Season {$seasonNumber}",
@@ -1215,12 +1215,12 @@ class XtreamApiController extends Controller
                             $containerExtension = $episode->container_extension ?? 'mp4';
                             if ($episode->info['movie_image'] ?? false) {
                                 $movieImage = $playlist->enable_logo_proxy
-                                    ? LogoProxyController::generateProxyUrl($episode->info['movie_image'])
+                                    ? $this->proxyImageUrl($episode->info['movie_image'])
                                     : $episode->info['movie_image'];
                             }
                             if ($episode->info['cover_big'] ?? false) {
                                 $movieImage = $playlist->enable_logo_proxy
-                                    ? LogoProxyController::generateProxyUrl($episode->info['cover_big'])
+                                    ? $this->proxyImageUrl($episode->info['cover_big'])
                                     : $episode->info['cover_big'];
                             }
 
@@ -1629,9 +1629,9 @@ class XtreamApiController extends Controller
             }
             $backdropPaths = array_filter($backdropPaths);
             if ($playlist->enable_logo_proxy) {
-                $cover = LogoProxyController::generateProxyUrl($cover);
-                $movieImage = LogoProxyController::generateProxyUrl($movieImage);
-                $backdropPaths = array_map(fn ($path) => LogoProxyController::generateProxyUrl($path), $backdropPaths);
+                $cover = $this->proxyImageUrl($cover);
+                $movieImage = $this->proxyImageUrl($movieImage);
+                $backdropPaths = array_map(fn ($path) => $this->proxyImageUrl($path), $backdropPaths);
             }
 
             // Fill in missing info fields with channel data
@@ -2723,7 +2723,7 @@ class XtreamApiController extends Controller
                     $backdrop = $this->extractFirstUrl($backdropPath);
                 }
                 if ($backdrop && ($playlist->enable_logo_proxy ?? false)) {
-                    $backdrop = LogoProxyController::generateProxyUrl($backdrop);
+                    $backdrop = $this->proxyImageUrl($backdrop);
                 }
 
                 $data['title'] = $series?->name ?? $episode?->title ?? null;
@@ -2744,7 +2744,7 @@ class XtreamApiController extends Controller
                 }
                 $backdropPaths = array_filter($backdropPaths);
                 if ($playlist->enable_logo_proxy ?? false) {
-                    $backdropPaths = array_map(fn ($path) => LogoProxyController::generateProxyUrl($path), $backdropPaths);
+                    $backdropPaths = array_map(fn ($path) => $this->proxyImageUrl($path), $backdropPaths);
                 }
 
                 $data['title'] = $channel?->title ?? $channel?->name ?? null;
@@ -3020,6 +3020,20 @@ class XtreamApiController extends Controller
             ->get(self::FAVORITE_COLUMNS);
 
         return response()->json($favorites);
+    }
+
+    /**
+     * Wrap an image URL in the logo proxy, unless it's already an app-hosted URL
+     * (e.g. a media server image proxied at sync time), in which case it's returned
+     * untouched to avoid double-proxying it through the logo proxy's own fetch.
+     */
+    private function proxyImageUrl(?string $url): ?string
+    {
+        if (! $url || ! filter_var($url, FILTER_VALIDATE_URL) || str_starts_with($url, url('/'))) {
+            return $url;
+        }
+
+        return LogoProxyController::generateProxyUrl($url);
     }
 
     /**
