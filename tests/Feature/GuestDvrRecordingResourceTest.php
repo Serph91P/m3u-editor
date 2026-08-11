@@ -207,6 +207,24 @@ it('navigation badge is null when the guest has no active recordings but others 
     expect(GuestDvrRecordingResource::getNavigationBadge())->toBeNull();
 });
 
+it('navigation badge is null when the guest session credentials do not resolve to a PlaylistAuth or the owner', function () {
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null, 'status' => DvrRecordingStatus::Scheduled]);
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    request()->attributes->set('playlist_uuid', $this->playlist->uuid);
+    $prefix = base64_encode($this->playlist->uuid).'_';
+    session()->put("{$prefix}guest_auth_username", 'stale-username');
+    session()->put("{$prefix}guest_auth_password", 'stale-password');
+
+    expect(GuestDvrRecordingResource::getNavigationBadge())->toBeNull();
+});
+
 // --- Cancel action authorization guard ---
 
 /*

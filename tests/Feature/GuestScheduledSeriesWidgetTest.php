@@ -93,3 +93,25 @@ it('excludes owner-created series rules (null playlist_auth_id)', function () {
 
     expect($ids)->toBe([$ownRule->id]);
 });
+
+it('returns no series rules when the guest session credentials do not resolve to a PlaylistAuth or the owner', function () {
+    DvrRecordingRule::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create([
+            'type' => DvrRuleType::Series,
+            'series_title' => 'Owner Show',
+            'enabled' => true,
+            'playlist_auth_id' => null,
+        ]);
+
+    request()->attributes->set('playlist_uuid', $this->playlist->uuid);
+    $prefix = base64_encode($this->playlist->uuid).'_';
+    session()->put("{$prefix}guest_auth_username", 'stale-username');
+    session()->put("{$prefix}guest_auth_password", 'stale-password');
+
+    $widget = new GuestScheduledSeriesWidget;
+    $ids = $widget->getSeriesRules()->pluck('id')->all();
+
+    expect($ids)->toBe([]);
+});

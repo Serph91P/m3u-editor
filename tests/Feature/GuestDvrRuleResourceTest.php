@@ -249,6 +249,22 @@ it('excludes owner-created rules (null playlist_auth_id) from the list query', f
     expect($ids)->toBe([$ownRule->id]);
 });
 
+it('returns no rules when the guest session credentials do not resolve to a PlaylistAuth or the owner', function () {
+    DvrRecordingRule::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null]);
+
+    request()->attributes->set('playlist_uuid', $this->playlist->uuid);
+    $prefix = base64_encode($this->playlist->uuid).'_';
+    session()->put("{$prefix}guest_auth_username", 'stale-username');
+    session()->put("{$prefix}guest_auth_password", 'stale-password');
+
+    $ids = GuestDvrRuleResource::getEloquentQuery()->pluck('id')->all();
+
+    expect($ids)->toBe([]);
+});
+
 // --- create action null guard ---
 
 it('create action guard blocks when DvrSetting does not exist', function () {
