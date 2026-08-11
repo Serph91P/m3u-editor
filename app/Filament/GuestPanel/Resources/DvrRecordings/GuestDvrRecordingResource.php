@@ -57,9 +57,14 @@ class GuestDvrRecordingResource extends Resource
             return false;
         }
 
-        // Guests may only play their own recordings. Owner-created recordings
-        // (null playlist_auth_id) are never a guest's to play.
-        return $auth !== null && $record->playlist_auth_id === $auth->id;
+        if ($auth !== null) {
+            // Guests may only play their own recordings.
+            return $record->playlist_auth_id === $auth->id;
+        }
+
+        // The playlist owner (no PlaylistAuth record) may play their own
+        // recordings — the ones with a null playlist_auth_id.
+        return static::isOwnerAuth() && $record->playlist_auth_id === null;
     }
 
     /**
@@ -79,8 +84,14 @@ class GuestDvrRecordingResource extends Resource
             return false;
         }
 
-        // Guests can only cancel recordings they created.
-        return $auth !== null && $record->playlist_auth_id === $auth->id;
+        if ($auth !== null) {
+            // Guests can only cancel recordings they created.
+            return $record->playlist_auth_id === $auth->id;
+        }
+
+        // The playlist owner (no PlaylistAuth record) may cancel their own
+        // recordings — the ones with a null playlist_auth_id.
+        return static::isOwnerAuth() && $record->playlist_auth_id === null;
     }
 
     public static function getNavigationLabel(): string

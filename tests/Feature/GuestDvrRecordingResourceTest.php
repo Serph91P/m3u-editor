@@ -27,6 +27,20 @@ function setGuestDvrRecordingContext(Playlist $playlist, PlaylistAuth $auth): vo
     session()->put("{$prefix}guest_auth_password", $auth->password);
 }
 
+/**
+ * Set up the "owner_auth" fallback session: username = the playlist owner's
+ * m3u-editor User::$name, password = the playlist UUID. There is no
+ * PlaylistAuth record for this login (PlaylistService::authenticate() Method 2).
+ */
+function setOwnerAuthContext(Playlist $playlist, User $user): void
+{
+    request()->attributes->set('playlist_uuid', $playlist->uuid);
+
+    $prefix = base64_encode($playlist->uuid).'_';
+    session()->put("{$prefix}guest_auth_username", $user->name);
+    session()->put("{$prefix}guest_auth_password", $playlist->uuid);
+}
+
 beforeEach(function () {
     Queue::fake();
     config()->set('dvr.dvr_enabled', true);
