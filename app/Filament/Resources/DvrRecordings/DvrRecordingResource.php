@@ -351,6 +351,13 @@ class DvrRecordingResource extends Resource
                                 ->title(__('Comskip reprocessing queued'))
                                 ->send();
                         }),
+                    Action::make('download')
+                        ->label(__('Download'))
+                        ->icon('heroicon-o-arrow-down-tray')
+                        ->color('gray')
+                        ->visible(fn (DvrRecording $record): bool => $record->hasFilePath())
+                        ->url(fn (DvrRecording $record): string => route('dvr-recordings.download', $record))
+                        ->openUrlInNewTab(),
                     DeleteAction::make()
                         ->modalDescription(__('Are you sure you want to delete this recording? The file on disk and any linked VOD entry will also be removed.')),
                 ])->button()->hiddenLabel()->size('sm'),

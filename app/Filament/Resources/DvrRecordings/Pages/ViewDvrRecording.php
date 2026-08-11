@@ -57,6 +57,13 @@ class ViewDvrRecording extends ViewRecord
                         ->title(__('Recording cancellation queued'))
                         ->send();
                 }),
+            Action::make('download')
+                ->label(__('Download'))
+                ->icon('heroicon-o-arrow-down-tray')
+                ->color('gray')
+                ->visible(fn (): bool => $this->record->hasFilePath())
+                ->url(fn (): string => route('dvr-recordings.download', $this->record))
+                ->openUrlInNewTab(),
             DeleteAction::make()
                 ->modalDescription(__('Are you sure you want to delete this recording? The file on disk and any linked VOD entry will also be removed.'))
                 ->successRedirectUrl(DvrRecordingResource::getUrl('index')),

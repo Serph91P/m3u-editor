@@ -74,7 +74,7 @@ class DvrStreamController extends Controller
             abort(404, 'DVR setting not found');
         }
 
-        $disk = $setting->storage_disk ?: config('dvr.storage_disk');
+        $disk = $recording->resolveStorageDisk();
 
         if (! Storage::disk($disk)->exists($recording->file_path)) {
             abort(404, 'Recording file not found on disk');
@@ -82,7 +82,7 @@ class DvrStreamController extends Controller
 
         $fullPath = Storage::disk($disk)->path($recording->file_path);
         $fileSize = filesize($fullPath);
-        $mimeType = $this->resolveMimeType($recording->file_path);
+        $mimeType = $recording->resolveMimeType();
 
         $range = $request->header('Range');
 
@@ -254,8 +254,7 @@ class DvrStreamController extends Controller
             return response()->json([]);
         }
 
-        $setting = $recording->dvrSetting;
-        $disk = $setting?->storage_disk ?: config('dvr.storage_disk');
+        $disk = $recording->resolveStorageDisk();
 
         $edlPath = pathinfo($recording->file_path, PATHINFO_DIRNAME)
             .'/'.pathinfo($recording->file_path, PATHINFO_FILENAME).'.edl';
@@ -330,17 +329,5 @@ class DvrStreamController extends Controller
         }
 
         return [null, null, false];
-    }
-
-    /**
-     * Resolve MIME type from the recording file extension.
-     */
-    private function resolveMimeType(string $filePath): string
-    {
-        return match (strtolower(pathinfo($filePath, PATHINFO_EXTENSION))) {
-            'mp4' => 'video/mp4',
-            'mkv' => 'video/x-matroska',
-            default => 'video/mp2t',
-        };
     }
 }
