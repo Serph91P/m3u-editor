@@ -37,6 +37,7 @@ use App\Services\DvrRecorderService;
 use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
+use App\Services\VodFileNameService;
 use App\Settings\GeneralSettings;
 use App\Support\SeriesKey;
 use Carbon\Carbon;
@@ -904,8 +905,9 @@ class XtreamApiController extends Controller
             }
 
             $cursor = $channelsQuery->cursor();
+            $vodFileNameService = app(VodFileNameService::class);
 
-            return response()->stream(function () use ($cursor, $playlist, $baseUrl, $isCustomPlaylist) {
+            return response()->stream(function () use ($cursor, $playlist, $baseUrl, $isCustomPlaylist, $vodFileNameService) {
                 $num = 0;
                 $idChannelBy = $playlist->id_channel_by;
                 $channelNumber = $playlist->auto_channel_increment ? $playlist->channel_start - 1 : 0;
@@ -953,7 +955,7 @@ class XtreamApiController extends Controller
                         'num' => $vodChannelNo,
                         'name' => $channel->title_custom ?? $channel->title,
                         'title' => $channel->title_custom ?? $channel->title,
-                        'year' => $channel->year ?? '',
+                        'year' => $vodFileNameService->resolveMovieYearAsInt($channel),
                         'stream_type' => 'movie',
                         'stream_id' => $channel->id,
                         'stream_icon' => $streamIcon,
@@ -1672,7 +1674,7 @@ class XtreamApiController extends Controller
                 'stream_id' => $channel->id,
                 'name' => $movieData['name'] ?? $channel->name,
                 'title' => $movieData['title'] ?? $channel->name,
-                'year' => $movieData['year'] ?? $channel->year,
+                'year' => app(VodFileNameService::class)->resolveMovieYearAsInt($channel),
                 'added' => $movieData['added'] ?? (string) ($channel->created_at ? $channel->created_at->timestamp : time()),
                 'category_id' => (string) ($channel->group_id ?? ''),
                 'category_ids' => ($channel->group_id ? [(int) $channel->group_id] : []),
