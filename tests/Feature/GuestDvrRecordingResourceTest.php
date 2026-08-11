@@ -32,7 +32,7 @@ function setGuestDvrRecordingContext(Playlist $playlist, PlaylistAuth $auth): vo
  * m3u-editor User::$name, password = the playlist UUID. There is no
  * PlaylistAuth record for this login (PlaylistService::authenticate() Method 2).
  */
-function setOwnerAuthContext(Playlist $playlist, User $user): void
+function setOwnerAuthRecordingContext(Playlist $playlist, User $user): void
 {
     request()->attributes->set('playlist_uuid', $playlist->uuid);
 
@@ -338,4 +338,88 @@ it('guestCanPlay REFUSES when the DvrSetting has no resolvable owner', function 
         ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Completed]);
 
     expect(GuestDvrRecordingResource::guestCanPlay($record, $this->guestA))->toBeFalse();
+});
+
+// --- Owner (owner_auth) access ---
+//
+// The playlist owner can log into the guest panel with no PlaylistAuth
+// record at all — username = their m3u-editor User::$name, password = the
+// playlist UUID (PlaylistService::authenticate()'s "owner_auth" fallback).
+// They have no dvr_enabled flag of their own, so access is gated by the
+// playlist-level DvrSetting::$enabled instead, and they own recordings with
+// a null playlist_auth_id — the ones scheduled from the main admin panel.
+
+it('grants access to the owner via owner_auth when the playlist-level DvrSetting is enabled', function () {
+    setOwnerAuthRecordingContext($this->playlist, $this->user);
+
+    expect(GuestDvrRecordingResource::canAccess())->toBeTrue();
+});
+
+it('denies access to the owner via owner_auth when the playlist-level DvrSetting is disabled', function () {
+    $this->dvrSetting->update(['enabled' => false]);
+    setOwnerAuthRecordingContext($this->playlist, $this->user);
+
+    expect(GuestDvrRecordingResource::canAccess())->toBeFalse();
+});
+
+it('scopes the owner\'s list query to their own (null playlist_auth_id) recordings only', function () {
+    $ownerRecording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null]);
+
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id]);
+
+    setOwnerAuthRecordingContext($this->playlist, $this->user);
+
+    $ids = GuestDvrRecordingResource::getEloquentQuery()->pluck('id')->all();
+
+    expect($ids)->toBe([$ownerRecording->id]);
+});
+
+it('guestCanCancel allows the owner (owner_auth) to cancel their own recording', function () {
+    setOwnerAuthRecordingContext($this->playlist, $this->user);
+
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null, 'status' => DvrRecordingStatus::Scheduled]);
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, null))->toBeTrue();
+});
+
+it('guestCanCancel REFUSES the owner (owner_auth) for a guest-owned recording', function () {
+    setOwnerAuthRecordingContext($this->playlist, $this->user);
+
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, null))->toBeFalse();
+});
+
+it('guestCanPlay allows the owner (owner_auth) to play their own Completed recording', function () {
+    setOwnerAuthRecordingContext($this->playlist, $this->user);
+
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null, 'status' => DvrRecordingStatus::Completed]);
+
+    expect(GuestDvrRecordingResource::guestCanPlay($recording, null))->toBeTrue();
+});
+
+it('guestCanCancel REFUSES anyone (including a resolvable owner_auth match) when the session is still guest A\'s', function () {
+    // Session is guest A's (set in beforeEach) — a null $auth passed explicitly
+    // must not fall back to owner recognition just because it's null.
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null, 'status' => DvrRecordingStatus::Scheduled]);
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, null))->toBeFalse();
 });
