@@ -88,16 +88,16 @@ it('reports unlimited account quota when global_disk_quota_gb is zero', function
     ]);
 });
 
-it('reports the zeroed contract shape when DVR is not configured for the account', function () {
+it('rejects the request when DVR is not configured for the account', function () {
+    // Regression for #1388: every DVR action — including get_dvr_storage —
+    // must pass the same capability gate used to decide whether the DVR
+    // feature is advertised at all. No DvrSetting row means DVR was never
+    // configured for this playlist, which the gate treats the same as DVR
+    // being disabled, so this now 403s uniformly with every other DVR action
+    // instead of silently returning a zeroed usage shape.
     $response = $this->getJson(dvrStorageUrl($this->user->name, $this->playlist->uuid));
 
-    $response->assertOk()->assertExactJson([
-        'used_bytes' => 0,
-        'quota_bytes' => null,
-        'percent_used' => null,
-        'recording_count' => 0,
-        'scope' => 'account',
-    ]);
+    $response->assertStatus(403)->assertJson(['error' => 'DVR access denied']);
 });
 
 it('reports guest-scoped usage against the guest own quota', function () {
