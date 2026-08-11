@@ -160,6 +160,37 @@ it('excludes owner-created recordings (null playlist_auth_id) from the list quer
     expect($ids)->toBe([$ownRecording->id]);
 });
 
+// --- Navigation badge count ---
+
+it('navigation badge only counts the current guest\'s own active recordings', function () {
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    // Another guest's active recording, and an owner-created one — neither
+    // should count toward guest A's badge.
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestB->id, 'status' => DvrRecordingStatus::Recording]);
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null, 'status' => DvrRecordingStatus::Scheduled]);
+
+    expect(GuestDvrRecordingResource::getNavigationBadge())->toBe('1');
+});
+
+it('navigation badge is null when the guest has no active recordings but others on the playlist do', function () {
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestB->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    expect(GuestDvrRecordingResource::getNavigationBadge())->toBeNull();
+});
+
 // --- Cancel action authorization guard ---
 
 /*

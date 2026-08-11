@@ -129,12 +129,10 @@ class GuestDvrRecordingResource extends Resource
             return null;
         }
 
-        $dvrSetting = static::getDvrSetting();
-        if (! $dvrSetting) {
-            return null;
-        }
-
-        $count = $dvrSetting->recordings()
+        // Reuse getEloquentQuery() rather than querying dvrSetting->recordings()
+        // directly, so the badge count gets the same playlist_auth_id
+        // ownership scoping as the list itself.
+        $count = static::getEloquentQuery()
             ->whereIn('status', [DvrRecordingStatus::Scheduled, DvrRecordingStatus::Recording])
             ->count();
 
