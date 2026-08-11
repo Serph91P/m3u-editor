@@ -455,7 +455,7 @@ class StreamFileSettingResource extends Resource implements CopilotResource
                             ->hiddenLabel()
                             ->columnSpanFull()
                             ->visible(fn (Get $get): bool => (bool) $get('trash_guide_naming_enabled'))
-                            ->content(__('Note: Quality, video codec, audio and HDR placeholders require stream probing. Channels/episodes that have not been probed will fall back to manual values from the playlist source — some placeholders may render empty.')),
+                            ->content(__('Note: Quality, video codec, audio and HDR placeholders require stream probing. Channels/episodes that have not been probed will fall back to manual values from the playlist source - some placeholders may render empty.')),
                         ToggleButtons::make('trash_movie_components')
                             ->label(__('Movie extra components'))
                             ->helperText(__('Appended to the standard filename. Title/Year/TMDB/Group come from "Filename metadata" above.'))

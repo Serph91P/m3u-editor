@@ -118,11 +118,14 @@ class Series extends Model
             }
 
             $candidate = $seasonInfo['season_number'] ?? $seasonInfo['season'] ?? null;
-            if ($candidate !== null) {
-                $hasExplicitSeasonNumber = true;
-                if ((int) $candidate === $target) {
-                    return $seasonInfo;
-                }
+            if ($candidate === null) {
+                continue;
+            }
+
+            $hasExplicitSeasonNumber = true;
+
+            if ((int) $candidate === $target) {
+                return $seasonInfo;
             }
         }
 
@@ -134,10 +137,10 @@ class Series extends Model
             return $seasons[$seasonNumber];
         }
 
+        // Zero-indexed provider list: season 1 is the first entry.
         $orderedSeasons = array_values(array_filter($seasons, 'is_array'));
-        $position = $target - 1;
 
-        return $position >= 0 && isset($orderedSeasons[$position]) ? $orderedSeasons[$position] : [];
+        return $orderedSeasons[$target - 1] ?? [];
     }
 
     public function getMovieDbIds(): array

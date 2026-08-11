@@ -208,7 +208,7 @@
                                                         ).' MB',
                                                         $releaseBytes > 0 => number_format($releaseBytes / 1_024, 2).
                                                             ' KB',
-                                                        default => '–',
+                                                        default => '-',
                                                     };
                                                     $rejectionReasons = implode('; ', $release['rejections'] ?? []);
                                                 @endphp
@@ -593,7 +593,7 @@
                                     icon="heroicon-s-bookmark"
                                     class="h-4 w-4 flex-shrink-0 text-amber-500"
                                 />
-                                <span class="text-amber-600 dark:text-amber-400">{{ __('Monitored — searching for releases') }}</span>
+                                <span class="text-amber-600 dark:text-amber-400">{{ __('Monitored - searching for releases') }}</span>
                             @endif
                         </div>
                         @if ($sonarrSizeDisplay)

@@ -63,7 +63,7 @@
                             {{ __('Plugins Needing Attention') }}
                         </h2>
                         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            {{ __('These plugins have issues that need your attention — they may be blocked, modified, invalid, or incomplete.') }}
+                            {{ __('These plugins have issues that need your attention - they may be blocked, modified, invalid, or incomplete.') }}
                         </p>
                     </div>
                     <x-filament::badge color="warning" size="sm">
@@ -135,7 +135,7 @@
                             <div class="flex min-w-0 flex-col gap-0.5">
                                 <div class="flex items-center gap-2">
                                     <span class="text-sm font-medium text-gray-900 dark:text-white">
-                                        {{ $run->plugin?->name ?? '—' }}
+                                        {{ $run->plugin?->name ?? '-' }}
                                     </span>
                                     <span class="text-xs text-gray-400 dark:text-gray-500">
                                         {{ \Illuminate\Support\Str::headline($run->action ?? $run->hook ?? $run->trigger ?? '') }}
@@ -182,7 +182,7 @@
                             {{ __('Recent Plugin Installs') }}
                         </h2>
                         <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            {{ __('Recent plugin uploads — pending approval, approved, or rejected.') }}
+                            {{ __('Recent plugin uploads - pending approval, approved, or rejected.') }}
                         </p>
                     </div>
                     <x-filament::button

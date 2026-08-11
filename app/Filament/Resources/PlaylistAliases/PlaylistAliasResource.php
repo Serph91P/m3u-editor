@@ -319,7 +319,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                     Rule::unique('playlists', 'uuid'), // Ensure UUID is unique across both playlists and aliases
                     Rule::unique('playlist_aliases', 'uuid')->ignore($record?->id),
                 ])
-                ->helperText(__('3–36 characters. Only letters, numbers, hyphens, and underscores are allowed.'))
+                ->helperText(__('3-36 characters. Only letters, numbers, hyphens, and underscores are allowed.'))
                 ->hintIcon(
                     'heroicon-m-exclamation-triangle',
                     tooltip: 'Be careful changing this value as this will change the URLs for the Playlist, its EPG, and HDHR.'

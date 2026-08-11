@@ -156,11 +156,12 @@ class PlaylistAuth extends Model
     }
 
     /**
-     * Whether this credential may currently receive DVR notifications:
-     * the account itself must be enabled, not expired, and have DVR access
-     * turned on. A recording tied to this auth predates none of these
-     * conditions changing, so all three are re-checked at notify time
-     * rather than assumed from the recording's existence.
+     * Whether this credential may currently receive DVR notifications: the
+     * account must be enabled, unexpired, and have DVR access turned on.
+     *
+     * All three are re-checked at notify time rather than inferred from the
+     * recording's existence, since any of them may have changed after the
+     * recording was scheduled.
      */
     public function isEligibleForDvrNotifications(): bool
     {

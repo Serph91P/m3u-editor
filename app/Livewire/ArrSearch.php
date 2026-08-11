@@ -1030,7 +1030,7 @@ class ArrSearch extends Component implements HasActions, HasSchemas
             // A queued job will monitor + search once they're available.
             Notification::make()
                 ->info()
-                ->title(__('Series Added — Episode Queued'))
+                ->title(__('Series Added - Episode Queued'))
                 ->body(__('":title" was added to Sonarr. S:s E:e will be queued for download once indexing completes.', [
                     'title' => $this->detailResult['title'] ?? 'the show',
                     's' => str_pad((string) $seasonNumber, 2, '0', STR_PAD_LEFT),

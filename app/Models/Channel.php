@@ -746,7 +746,6 @@ class Channel extends Model
                     $movieData['info']['release_date'] = $releaseDateAlt;
                 }
                 if (empty($year) && ($releaseDate || $releaseDateAlt)) {
-                    // Derive a year only when one has not already been stored.
                     $dateToParse = $releaseDate ?? $releaseDateAlt;
                     try {
                         $date = new \DateTime($dateToParse);

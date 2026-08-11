@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Http\Controllers\MediaServerProxyController;
 use App\Interfaces\MediaServer;
 use App\Models\MediaServerIntegration;
+use App\Traits\DoesNotSupportLibraryCreation;
 use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -19,21 +20,7 @@ use Illuminate\Support\Facades\Log;
  */
 class LocalMediaService implements MediaServer
 {
-    public function createLibrary(
-        string $name,
-        string $collectionType,
-        array $paths,
-        bool $refreshLibrary = true,
-        ?string $libraryId = null,
-    ): array {
-        return [
-            'success' => false,
-            'created' => false,
-            'message' => 'Library creation is not supported by this media server.',
-            'library' => null,
-            'drift' => false,
-        ];
-    }
+    use DoesNotSupportLibraryCreation;
 
     protected MediaServerIntegration $integration;
 

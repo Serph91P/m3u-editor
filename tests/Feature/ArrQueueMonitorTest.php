@@ -148,7 +148,7 @@ it('only shows integrations belonging to the authenticated user', function () {
 });
 
 it('formats bytes correctly', function () {
-    expect(ArrQueueMonitor::formatBytes(0))->toBe('–');
+    expect(ArrQueueMonitor::formatBytes(0))->toBe('-');
     expect(ArrQueueMonitor::formatBytes(1_024))->toBe('1.00 KB');
     expect(ArrQueueMonitor::formatBytes(1_048_576))->toBe('1.00 MB');
     expect(ArrQueueMonitor::formatBytes(1_073_741_824))->toBe('1.00 GB');

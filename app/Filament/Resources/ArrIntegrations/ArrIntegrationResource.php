@@ -140,7 +140,7 @@ class ArrIntegrationResource extends Resource
                                         ->mapWithKeys(fn (array $p) => [$p['id'] => $p['name']])
                                         ->all();
                                 })
-                                ->helperText(__('Discovered from the server — click "Test Connection & Discover" above to populate.'))
+                                ->helperText(__('Discovered from the server - click "Test Connection & Discover" above to populate.'))
                                 ->visible(fn (Get $get): bool => filled($get('quality_profiles_options')))
                                 ->live()
                                 ->afterStateUpdated(function (Get $get, Set $set, $state): void {
@@ -163,7 +163,7 @@ class ArrIntegrationResource extends Resource
                                         ->mapWithKeys(fn (array $f) => [$f['path'] => $f['path']])
                                         ->all();
                                 })
-                                ->helperText(__('Discovered from the server — click "Test Connection & Discover" above to populate.'))
+                                ->helperText(__('Discovered from the server - click "Test Connection & Discover" above to populate.'))
                                 ->visible(fn (Get $get): bool => filled($get('root_folders_options')))
                                 ->native(false),
                         ]),
@@ -417,7 +417,7 @@ class ArrIntegrationResource extends Resource
                     Notification::make()
                         ->success()
                         ->title(__('Connection Successful'))
-                        ->body(__('Connected to v:version — found :p profiles, :f folders.', [
+                        ->body(__('Connected to v:version - found :p profiles, :f folders.', [
                             'version' => $test['version'] ?? 'unknown',
                             'p' => count($profiles),
                             'f' => count($folders),

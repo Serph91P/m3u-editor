@@ -14,7 +14,7 @@
                         </x-slot>
                         <x-filament::input type="text" :value="$m3uUrl" readonly />
                     </x-filament::input.wrapper>
-                    <x-qr-modal :title="$this->record->name" body="MediaFlow Proxy — M3U URL" :text="$m3uUrl" />
+                    <x-qr-modal :title="$this->record->name" body="MediaFlow Proxy - M3U URL" :text="$m3uUrl" />
                 </div>
             </div>
             <div>
@@ -26,7 +26,7 @@
                         </x-slot>
                         <x-filament::input type="text" :value="$epgUrl" readonly />
                     </x-filament::input.wrapper>
-                    <x-qr-modal :title="$this->record->name" body="MediaFlow Proxy — EPG URL" :text="$epgUrl" />
+                    <x-qr-modal :title="$this->record->name" body="MediaFlow Proxy - EPG URL" :text="$epgUrl" />
                 </div>
             </div>
         </div>
@@ -51,7 +51,7 @@
                     </x-filament::input.wrapper>
                     <x-qr-modal
                         :title="$this->record->name"
-                        body="MediaFlow Proxy — Server"
+                        body="MediaFlow Proxy - Server"
                         :text="$xtream['server']"
                     />
                 </div>
@@ -64,7 +64,7 @@
                     </x-filament::input.wrapper>
                     <x-qr-modal
                         :title="$this->record->name"
-                        body="MediaFlow Proxy — Username"
+                        body="MediaFlow Proxy - Username"
                         :text="$xtream['default']['username']"
                     />
                 </div>
@@ -77,7 +77,7 @@
                     </x-filament::input.wrapper>
                     <x-qr-modal
                         :title="$this->record->name"
-                        body="MediaFlow Proxy — Password"
+                        body="MediaFlow Proxy - Password"
                         :text="$xtream['default']['password']"
                     />
                 </div>
@@ -125,7 +125,7 @@
                             </x-filament::input.wrapper>
                             <x-qr-modal
                                 :title="$this->record->name"
-                                body="MediaFlow Proxy — Username"
+                                body="MediaFlow Proxy - Username"
                                 :text="$auth['username']"
                             />
                         </div>
@@ -138,7 +138,7 @@
                             </x-filament::input.wrapper>
                             <x-qr-modal
                                 :title="$this->record->name"
-                                body="MediaFlow Proxy — Password"
+                                body="MediaFlow Proxy - Password"
                                 :text="$auth['password']"
                             />
                         </div>

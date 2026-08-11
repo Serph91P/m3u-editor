@@ -256,7 +256,7 @@
                                         placeholder="{{ __('From') }}"
                                         class="focus:border-primary-500 focus:ring-primary-500 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                                     />
-                                    <span class="flex-shrink-0 text-xs text-gray-400">—</span>
+                                    <span class="flex-shrink-0 text-xs text-gray-400">-</span>
                                     <input
                                         type="number"
                                         wire:model="yearTo"
@@ -314,7 +314,7 @@
                                         placeholder="{{ __('Min') }}"
                                         class="focus:border-primary-500 focus:ring-primary-500 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                                     />
-                                    <span class="flex-shrink-0 text-xs text-gray-400">—</span>
+                                    <span class="flex-shrink-0 text-xs text-gray-400">-</span>
                                     <input
                                         type="number"
                                         wire:model="maxRuntime"

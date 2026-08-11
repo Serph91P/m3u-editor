@@ -119,6 +119,9 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
         return $this->hasMany(Playlist::class);
     }
 
+    /**
+     * Users Emby library mappings.
+     */
     public function embyLibraryMappings(): HasMany
     {
         return $this->hasMany(EmbyLibraryMapping::class);

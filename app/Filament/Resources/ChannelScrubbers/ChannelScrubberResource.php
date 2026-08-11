@@ -340,7 +340,7 @@ class ChannelScrubberResource extends Resource implements CopilotResource
                             'heroicon-s-information-circle',
                             tooltip: 'How long to wait for each stream to respond before marking it dead. Lower values are faster but may produce false positives on slow providers.',
                         )
-                        ->helperText(__('Seconds to wait per stream (3–30). Streams that do not respond within this window are marked dead.')),
+                        ->helperText(__('Seconds to wait per stream (3-30). Streams that do not respond within this window are marked dead.')),
                 ]),
             Section::make(__('Scan Scope'))
                 ->icon('heroicon-s-exclamation-triangle')

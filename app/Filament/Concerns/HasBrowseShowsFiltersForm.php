@@ -24,7 +24,7 @@ trait HasBrowseShowsFiltersForm
     {
         return Select::make('channel_id')
             ->label(__('Channel'))
-            ->placeholder(__('— Any —'))
+            ->placeholder(__('- Any -'))
             ->searchable()
             ->getSearchResultsUsing(function (string $search): array {
                 $subquery = $this->getCachedDvrSetting()?->ownerChannelsSubquery();
@@ -64,7 +64,7 @@ trait HasBrowseShowsFiltersForm
     {
         return Select::make('group_id')
             ->label(__('Group'))
-            ->placeholder(__('— Any —'))
+            ->placeholder(__('- Any -'))
             ->searchable()
             ->options(function (): array {
                 $dvrSetting = $this->getCachedDvrSetting();

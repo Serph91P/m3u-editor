@@ -165,7 +165,7 @@ class CreatePlugin extends Page
                                 ->helperText(__('Adds an uninstall() method for custom cleanup logic beyond what the manifest declares.')),
                             Toggle::make('bare')
                                 ->label(__('Bare scaffold'))
-                                ->helperText(__('Generate only plugin.json and Plugin.php — skip README, CI workflow, scripts, and AI guidance files.')),
+                                ->helperText(__('Generate only plugin.json and Plugin.php - skip README, CI workflow, scripts, and AI guidance files.')),
                         ]),
 
                     Step::make(__('Generate'))

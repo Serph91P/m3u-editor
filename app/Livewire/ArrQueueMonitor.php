@@ -431,7 +431,7 @@ class ArrQueueMonitor extends Component
     public static function formatBytes(int $bytes): string
     {
         if ($bytes <= 0) {
-            return '–';
+            return '-';
         }
 
         if ($bytes >= 1_073_741_824) {

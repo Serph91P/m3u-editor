@@ -10,7 +10,7 @@
             </x-slot>
 
             <x-slot name="description">
-                {{ __('The full catalog (all :total items) is what actually gets synced — this preview is capped so a large library does not crash the browser.', ['total' => $itemsTotal]) }}
+                {{ __('The full catalog (all :total items) is what actually gets synced - this preview is capped so a large library does not crash the browser.', ['total' => $itemsTotal]) }}
             </x-slot>
         </x-filament::callout>
     @endif

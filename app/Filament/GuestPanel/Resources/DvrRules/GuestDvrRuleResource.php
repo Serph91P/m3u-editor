@@ -88,11 +88,7 @@ class GuestDvrRuleResource extends Resource
      */
     public static function guestOwnsRule(Model $record, ?PlaylistAuth $auth): bool
     {
-        if ($auth !== null) {
-            return $record->playlist_auth_id === $auth->id;
-        }
-
-        return static::isOwnerAuth() && $record->playlist_auth_id === null;
+        return static::sessionOwnsRecord($auth, $record->playlist_auth_id);
     }
 
     public static function getUrl(
@@ -117,23 +113,14 @@ class GuestDvrRuleResource extends Resource
             return parent::getEloquentQuery()->whereRaw('1 = 0');
         }
 
-        $currentAuth = static::getCurrentPlaylistAuth();
-
-        // A null $currentAuth is only safe to treat as "the playlist owner"
-        // when isOwnerAuth() confirms it — otherwise (a guest session that
-        // failed to resolve) ->where('playlist_auth_id', null) would become
-        // whereNull() and leak the owner's rules to that guest.
-        if (! $currentAuth && ! static::isOwnerAuth()) {
-            return parent::getEloquentQuery()->whereRaw('1 = 0');
-        }
-
-        return parent::getEloquentQuery()
-            ->with(['channel', 'playlistAuth'])
-            ->where('dvr_setting_id', $dvrSetting->id)
-            // Guests only see their own rules — never another guest's, nor
-            // the playlist owner's (null playlist_auth_id).
-            ->where('playlist_auth_id', $currentAuth?->id)
-            ->orderByDesc('created_at');
+        // Guests only see their own rules — never another guest's, nor the
+        // playlist owner's (null playlist_auth_id).
+        return static::restrictToSessionOwner(
+            parent::getEloquentQuery()
+                ->with(['channel', 'playlistAuth'])
+                ->where('dvr_setting_id', $dvrSetting->id)
+                ->orderByDesc('created_at')
+        );
     }
 
     /**

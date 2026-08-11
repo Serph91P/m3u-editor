@@ -1147,7 +1147,7 @@ class Preferences extends SettingsPage
                                     ]),
 
                                 Section::make(__('Notification Channels'))
-                                    ->description(__('Define the notification channels available in the TV app. Users can subscribe to specific channels so they only receive relevant notifications. Channels not listed here are still usable — they appear automatically once a notification arrives on that channel.'))
+                                    ->description(__('Define the notification channels available in the TV app. Users can subscribe to specific channels so they only receive relevant notifications. Channels not listed here are still usable - they appear automatically once a notification arrives on that channel.'))
                                     ->icon('heroicon-m-tag')
                                     ->collapsed()
                                     ->schema([
@@ -1164,7 +1164,7 @@ class Preferences extends SettingsPage
                                                     TextInput::make('label')
                                                         ->label(__('Display label'))
                                                         ->placeholder(__('DVR Recording Completed'))
-                                                        ->helperText(__('Optional — shown in the TV app instead of the raw slug.')),
+                                                        ->helperText(__('Optional - shown in the TV app instead of the raw slug.')),
                                                 ]),
                                             ])
                                             ->addActionLabel(__('Add channel'))

@@ -243,7 +243,7 @@ class CandidatesRelationManager extends RelationManager
             ->filter(fn (array $c): bool => $c['epg_channel_id'] !== null);
 
         $options = $allCandidates->mapWithKeys(fn (array $candidate): array => [
-            $candidate['epg_channel_id'] => __(':name — :confidence% — :reason', [
+            $candidate['epg_channel_id'] => __(':name - :confidence% - :reason', [
                 'name' => $candidate['display_name'] ?: __('(no name)'),
                 'confidence' => $candidate['confidence'],
                 'reason' => $candidate['reason'],

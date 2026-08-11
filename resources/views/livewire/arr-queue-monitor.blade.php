@@ -22,7 +22,7 @@
                     <div class="flex items-center gap-2">
                         <x-heroicon-o-tv class="h-5 w-5" />
                         <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">
-                            {{ __('Sonarr — TV Shows') }}
+                            {{ __('Sonarr - TV Shows') }}
                         </h2>
                     </div>
                     @foreach ($this->sonarrQueues as $queueGroup)
@@ -36,7 +36,7 @@
                     <div class="flex items-center gap-2">
                         <x-heroicon-o-film class="h-5 w-5" />
                         <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">
-                            {{ __('Radarr — Movies') }}
+                            {{ __('Radarr - Movies') }}
                         </h2>
                     </div>
                     @foreach ($this->radarrQueues as $queueGroup)

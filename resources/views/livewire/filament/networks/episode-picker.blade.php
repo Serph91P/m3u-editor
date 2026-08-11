@@ -83,7 +83,7 @@
                             @if ($ep->duration)
                                 {{ gmdate('i:s', $ep->duration) }}
                             @else
-                                —
+                                -
                             @endif
                         </td>
                     </tr>
@@ -105,7 +105,7 @@
     {{-- Footer --}}
     <div class="flex flex-col items-center justify-between gap-4 sm:flex-row">
         <p class="text-sm text-gray-500 dark:text-gray-400">
-            Showing {{ $episodes->firstItem() ?? 0 }}–{{ $episodes->lastItem() ?? 0 }} of {{ $episodes->total() }}
+            Showing {{ $episodes->firstItem() ?? 0 }}-{{ $episodes->lastItem() ?? 0 }} of {{ $episodes->total() }}
         </p>
 
         <div class="flex items-center gap-4">

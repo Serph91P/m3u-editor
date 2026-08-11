@@ -13,6 +13,7 @@ use App\Services\ProfileService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Livewire\Component;
 
 class PlaylistInfo extends Component
@@ -156,18 +157,13 @@ class PlaylistInfo extends Component
     private function formatExpiresInDays(Carbon $expires): string
     {
         $days = (int) round(now()->diffInDays($expires, absolute: false));
+        $absoluteDays = abs($days);
 
-        if ($days < 0) {
-            $days = abs($days);
-
-            return $days === 1 ? '1 day ago' : "{$days} days ago";
-        }
-
-        if ($days === 0) {
-            return 'Today';
-        }
-
-        return $days === 1 ? '1 day' : "{$days} days";
+        return match (true) {
+            $days === 0 => 'Today',
+            $days < 0 => $absoluteDays.' '.Str::plural('day', $absoluteDays).' ago',
+            default => $absoluteDays.' '.Str::plural('day', $absoluteDays),
+        };
     }
 
     /**

@@ -28,17 +28,17 @@
         </div>
         <div>
             <dt class="font-medium text-gray-500 dark:text-gray-400">MIME Type</dt>
-            <dd class="text-gray-900 dark:text-gray-100">{{ $asset->mime_type ?? '—' }}</dd>
+            <dd class="text-gray-900 dark:text-gray-100">{{ $asset->mime_type ?? '-' }}</dd>
         </div>
         <div>
             <dt class="font-medium text-gray-500 dark:text-gray-400">Size</dt>
             <dd class="text-gray-900 dark:text-gray-100">
-                {{ $asset->size_bytes ? number_format($asset->size_bytes / 1024, 2) . ' KB' : '—' }}
+                {{ $asset->size_bytes ? number_format($asset->size_bytes / 1024, 2) . ' KB' : '-' }}
             </dd>
         </div>
         <div>
             <dt class="font-medium text-gray-500 dark:text-gray-400">Modified</dt>
-            <dd class="text-gray-900 dark:text-gray-100">{{ $asset->last_modified_at?->toDateTimeString() ?? '—' }}</dd>
+            <dd class="text-gray-900 dark:text-gray-100">{{ $asset->last_modified_at?->toDateTimeString() ?? '-' }}</dd>
         </div>
     </dl>
 

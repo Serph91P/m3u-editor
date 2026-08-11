@@ -156,7 +156,7 @@
                                     title="{{ $genre }}"
                                 >{{ Str::limit($genre, 30) }}</span>
                             @else
-                                —
+                                -
                             @endif
                         </td>
                         <td class="px-4 py-3 text-sm">
@@ -166,7 +166,7 @@
                                     {{ number_format((float) $rating, 1) }}
                                 </span>
                             @else
-                                <span class="text-gray-400">—</span>
+                                <span class="text-gray-400">-</span>
                             @endif
                         </td>
                         <td class="px-4 py-3 text-sm">
@@ -175,7 +175,7 @@
                                     {{ $mpaa }}
                                 </span>
                             @else
-                                <span class="text-gray-400">—</span>
+                                <span class="text-gray-400">-</span>
                             @endif
                         </td>
                         <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
@@ -186,7 +186,7 @@
                                 @endphp
                                 {{ $hours > 0 ? "{$hours}h " : '' }}{{ $minutes }}m
                             @else
-                                —
+                                -
                             @endif
                         </td>
                     </tr>
@@ -204,7 +204,7 @@
     {{-- Footer --}}
     <div class="flex flex-col items-center justify-between gap-4 sm:flex-row">
         <p class="text-sm text-gray-500 dark:text-gray-400">
-            Showing {{ $vods->firstItem() ?? 0 }}–{{ $vods->lastItem() ?? 0 }} of {{ $vods->total() }}
+            Showing {{ $vods->firstItem() ?? 0 }}-{{ $vods->lastItem() ?? 0 }} of {{ $vods->total() }}
         </p>
 
         <div class="flex items-center gap-4">

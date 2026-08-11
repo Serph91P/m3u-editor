@@ -425,7 +425,7 @@ class CustomPlaylistResource extends Resource implements CopilotResource
                         ->required(),
                     Repeater::make('dummy_epg_fallback_order')
                         ->label(__('Dummy EPG Title Source'))
-                        ->helperText(__('Which field to use as the programme title for dummy EPG entries. Tried in order — first non-empty value wins. Leave empty to use the channel title.'))
+                        ->helperText(__('Which field to use as the programme title for dummy EPG entries. Tried in order - first non-empty value wins. Leave empty to use the channel title.'))
                         ->schema([
                             Select::make('method')
                                 ->label(__('Field'))

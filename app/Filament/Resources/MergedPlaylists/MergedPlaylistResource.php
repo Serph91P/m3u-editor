@@ -233,7 +233,7 @@ class MergedPlaylistResource extends Resource implements CopilotResource
                                 Rule::unique('playlists', 'uuid')->ignore($record?->id),
                             ];
                         })
-                        ->helperText(__('3–36 characters. Only letters, numbers, hyphens, and underscores are allowed.'))
+                        ->helperText(__('3-36 characters. Only letters, numbers, hyphens, and underscores are allowed.'))
                         ->hintIcon(
                             'heroicon-m-exclamation-triangle',
                             tooltip: 'Be careful changing this value as this will change the URLs for the Playlist, its EPG, and HDHR.'
@@ -333,7 +333,7 @@ class MergedPlaylistResource extends Resource implements CopilotResource
                         ->required(),
                     Repeater::make('dummy_epg_fallback_order')
                         ->label(__('Dummy EPG Title Source'))
-                        ->helperText(__('Which field to use as the programme title for dummy EPG entries. Tried in order — first non-empty value wins. Leave empty to use the channel title.'))
+                        ->helperText(__('Which field to use as the programme title for dummy EPG entries. Tried in order - first non-empty value wins. Leave empty to use the channel title.'))
                         ->schema([
                             Select::make('method')
                                 ->label(__('Field'))

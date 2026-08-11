@@ -45,7 +45,7 @@ class DvrRequestsAiostreamsTabs
                             ->live(),
                         Select::make('dvr_output_format')
                             ->label(__('Output Format'))
-                            ->helperText(__('Container format for the final recording file. All options use stream copy (no re-encoding) — only the container changes.'))
+                            ->helperText(__('Container format for the final recording file. All options use stream copy (no re-encoding) - only the container changes.'))
                             ->options([
                                 'ts' => 'MPEG-TS (.ts) — fastest, direct segment join, no remuxing',
                                 'mp4' => 'MP4 (.mp4) — best compatibility with media players',

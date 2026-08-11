@@ -128,19 +128,17 @@ class EmbyJellyfinService implements MediaServer
                         return in_array($collectionType, ['movies', 'tvshows']);
                     })
                     ->map(function ($library) {
-                        $collectionType = $library['CollectionType'] ?? 'unknown';
+                        $locations = is_array($library['Locations'] ?? null)
+                            ? array_values($library['Locations'])
+                            : array_values(array_filter([$library['Path'] ?? null]));
 
                         return [
                             'id' => $library['ItemId'] ?? $library['Id'] ?? '',
                             'name' => $library['Name'] ?? 'Unknown Library',
-                            'type' => $collectionType,
+                            'type' => $library['CollectionType'] ?? 'unknown',
                             'item_count' => $library['ChildCount'] ?? 0,
-                            'paths' => is_array($library['Locations'] ?? null)
-                                ? array_values($library['Locations'])
-                                : array_values(array_filter([$library['Path'] ?? null])),
-                            'path' => is_array($library['Locations'] ?? null)
-                                ? implode(', ', $library['Locations'])
-                                : ($library['Path'] ?? ''),
+                            'paths' => $locations,
+                            'path' => implode(', ', $locations),
                         ];
                     })
                     ->values();
@@ -164,29 +162,8 @@ class EmbyJellyfinService implements MediaServer
 
     /**
      * @param  list<string>  $paths
-     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null}
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool}
      */
-    /**
-     * Build the standard createLibrary() result shape, so every return path
-     * carries the same keys (including 'drift') instead of each branch
-     * assembling its own array and risking an omitted key.
-     */
-    private function libraryResult(
-        bool $success,
-        bool $created,
-        string $message,
-        ?array $library = null,
-        bool $drift = false,
-    ): array {
-        return [
-            'success' => $success,
-            'created' => $created,
-            'message' => $message,
-            'library' => $library,
-            'drift' => $drift,
-        ];
-    }
-
     public function createLibrary(
         string $name,
         string $collectionType,
@@ -206,13 +183,15 @@ class EmbyJellyfinService implements MediaServer
             fn (mixed $path): string => is_string($path) ? trim($path) : '',
             $paths,
         )));
-        $hasInvalidPath = $paths === [] || collect($paths)->contains(
-            fn (string $path): bool => ! MediaServerIntegration::isSafeWritablePath($path),
-        );
+        $validPaths = array_filter($paths, MediaServerIntegration::isSafeWritablePath(...));
 
-        if ($hasInvalidPath) {
+        if ($paths === [] || count($validPaths) !== count($paths)) {
             return $this->libraryResult(false, false, 'Invalid Emby library path.');
         }
+
+        $matchesRequest = fn (array $library): bool => $library['name'] === $name
+            && $library['type'] === $collectionType
+            && $library['paths'] === $paths;
 
         try {
             $existingLibraries = $this->fetchLibraries();
@@ -221,16 +200,12 @@ class EmbyJellyfinService implements MediaServer
                 : $existingLibraries->firstWhere('id', $libraryId);
 
             if ($existingLibrary !== null) {
-                $drift = $existingLibrary['name'] !== $name
-                    || $existingLibrary['type'] !== $collectionType
-                    || $existingLibrary['paths'] !== $paths;
+                $drift = ! $matchesRequest($existingLibrary);
 
                 return $this->libraryResult(true, false, 'Existing Emby library found by ID.', $existingLibrary, $drift);
             }
 
-            $existingLibrary = $existingLibraries->first(fn (array $library): bool => $library['name'] === $name
-                && $library['type'] === $collectionType
-                && $library['paths'] === $paths);
+            $existingLibrary = $existingLibraries->first($matchesRequest);
 
             if ($existingLibrary !== null) {
                 return $this->libraryResult(true, false, 'Existing managed Emby library found.', $existingLibrary);
@@ -253,11 +228,12 @@ class EmbyJellyfinService implements MediaServer
                 return $this->libraryResult(false, false, 'Emby rejected the library request.');
             }
 
-            $library = $this->fetchLibraries()->first(fn (array $library): bool => $library['name'] === $name
-                && $library['type'] === $collectionType
-                && $library['paths'] === $paths);
-
-            return $this->libraryResult(true, true, 'Emby library created.', $library);
+            return $this->libraryResult(
+                true,
+                true,
+                'Emby library created.',
+                $this->fetchLibraries()->first($matchesRequest),
+            );
         } catch (Exception $exception) {
             Log::warning('EmbyJellyfinService: Library creation failed', [
                 'integration_id' => $this->integration->id,
@@ -266,6 +242,30 @@ class EmbyJellyfinService implements MediaServer
 
             return $this->libraryResult(false, false, 'Emby library request failed.');
         }
+    }
+
+    /**
+     * Build the standard createLibrary() result shape, so every return path
+     * carries the same keys (including 'drift') instead of each branch
+     * assembling its own array and risking an omitted key.
+     *
+     * @param  array<string, mixed>|null  $library
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool}
+     */
+    private function libraryResult(
+        bool $success,
+        bool $created,
+        string $message,
+        ?array $library = null,
+        bool $drift = false,
+    ): array {
+        return [
+            'success' => $success,
+            'created' => $created,
+            'message' => $message,
+            'library' => $library,
+            'drift' => $drift,
+        ];
     }
 
     /**

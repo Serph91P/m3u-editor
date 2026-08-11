@@ -96,17 +96,9 @@ class DvrVodIntegrationService
      */
     private function resolvePlaylistId(DvrSetting $setting, DvrRecording $recording): ?int
     {
-        if ($setting->playlist_id !== null) {
-            return $setting->playlist_id;
-        }
+        $playlistId = $setting->playlist_id ?? $recording->channel?->playlist_id;
 
-        $channel = $recording->channel;
-
-        if ($channel !== null && $channel->playlist_id !== null) {
-            return (int) $channel->playlist_id;
-        }
-
-        return null;
+        return $playlistId !== null ? (int) $playlistId : null;
     }
 
     /**
@@ -184,8 +176,8 @@ class DvrVodIntegrationService
     private function buildStreamUrl(DvrRecording $recording): string
     {
         $setting = $recording->dvrSetting;
-        $playlistId = $setting ? $this->resolvePlaylistId($setting, $recording) : null;
-        $playlist = $playlistId ? Playlist::find($playlistId) : null;
+        $playlistId = $setting !== null ? $this->resolvePlaylistId($setting, $recording) : null;
+        $playlist = $playlistId !== null ? Playlist::find($playlistId) : null;
         $user = $recording->user;
 
         if ($playlist && $user) {

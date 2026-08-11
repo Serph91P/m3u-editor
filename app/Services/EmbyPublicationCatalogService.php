@@ -51,17 +51,12 @@ class EmbyPublicationCatalogService
         }
 
         usort($mappings, fn (array $left, array $right): int => $left['mapping_uuid'] <=> $right['mapping_uuid']);
-        $catalog = [
+
+        return $this->withRevision([
             'api_version' => 1,
             'full_snapshot' => true,
             'mappings' => $mappings,
-        ];
-        $catalog['revision'] = hash(
-            'sha256',
-            json_encode($catalog, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-        );
-
-        return $catalog;
+        ]);
     }
 
     /**
@@ -76,7 +71,7 @@ class EmbyPublicationCatalogService
             ? $this->buildMovies($mapping, $username, $password)
             : $this->buildSeries($mapping, $username, $password);
 
-        $catalog = [
+        return $this->withRevision([
             'mapping_uuid' => $mapping->uuid,
             'integration_id' => $mapping->media_server_integration_id,
             'target_library' => [
@@ -89,7 +84,19 @@ class EmbyPublicationCatalogService
             'options' => $mapping->options,
             'full_snapshot' => true,
             'items' => $items,
-        ];
+        ]);
+    }
+
+    /**
+     * Append the sha256 revision hash of a catalog payload to itself. The hash
+     * always covers the payload *without* the 'revision' key, so an unchanged
+     * catalog always hashes to the same value.
+     *
+     * @param  array<string, mixed>  $catalog
+     * @return array<string, mixed>
+     */
+    private function withRevision(array $catalog): array
+    {
         $catalog['revision'] = hash(
             'sha256',
             json_encode($catalog, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
@@ -372,10 +379,13 @@ class EmbyPublicationCatalogService
     {
         $metadata = $series->metadata ?? [];
         $year = $this->seriesYear($series);
+        $ids = $this->seriesIds($series);
         $originalTitle = (string) ($metadata['original_name'] ?? $metadata['original_title'] ?? $series->name);
-        $originalTitleSource = isset($metadata['original_name'])
-            ? 'metadata.original_name'
-            : (isset($metadata['original_title']) ? 'metadata.original_title' : 'series.name');
+        $originalTitleSource = match (true) {
+            isset($metadata['original_name']) => 'metadata.original_name',
+            isset($metadata['original_title']) => 'metadata.original_title',
+            default => 'series.name',
+        };
         $relativeFolder = $this->safeComponent(trim($series->name.' '.($year ?? '')));
 
         return [
@@ -386,7 +396,7 @@ class EmbyPublicationCatalogService
             'original_title' => $originalTitle,
             'original_title_source' => $originalTitleSource,
             'year' => $year,
-            'ids' => $this->seriesIds($series),
+            'ids' => $ids,
             'groups' => [$mapping->source_label],
             'relative_folder' => $relativeFolder,
             'base_filename' => $relativeFolder,
@@ -396,7 +406,7 @@ class EmbyPublicationCatalogService
                 'year' => $year,
                 'plot' => $series->plot,
                 'genres' => array_values(array_filter(array_map('trim', explode(',', (string) $series->genre)))),
-                'ids' => $this->seriesIds($series),
+                'ids' => $ids,
             ],
             'episodes' => [],
         ];
@@ -511,10 +521,6 @@ class EmbyPublicationCatalogService
         $sourceIdentity = $channel->uuid ?: (string) $channel->id;
         $fallback = 'movie:title:'.$this->safeComponent($title).':'.$year.':'.hash('sha256', $sourceIdentity);
 
-        // Priority is tmdb -> tvdb -> imdb, matching seriesCanonicalId() and
-        // episodeItem()'s cascade (canonicalIdFromIds()) — kept identical
-        // across media types so the same provider always wins when an item
-        // carries more than one external ID.
         return $this->canonicalIdFromIds('movie', $this->movieIds($channel), $fallback);
     }
 
@@ -543,6 +549,7 @@ class EmbyPublicationCatalogService
         $displayTitle = $this->displayTitle($channel);
         [$originalTitle, $originalTitleSource] = $this->originalTitle($channel, $displayTitle);
         $year = $this->movieYear($channel);
+        $ids = $this->movieIds($channel);
         $component = $this->safeComponent(trim($displayTitle.' '.($year ?? '')));
 
         return [
@@ -553,7 +560,7 @@ class EmbyPublicationCatalogService
             'original_title' => $originalTitle,
             'original_title_source' => $originalTitleSource,
             'year' => $year,
-            'ids' => $this->movieIds($channel),
+            'ids' => $ids,
             'groups' => [$mapping->source_label],
             'relative_folder' => $component,
             'base_filename' => $component,
@@ -563,7 +570,7 @@ class EmbyPublicationCatalogService
                 'year' => $year,
                 'plot' => $info['plot'] ?? $movieData['plot'] ?? $movieData['description'] ?? null,
                 'genres' => $info['genres'] ?? $movieData['genre'] ?? [],
-                'ids' => $this->movieIds($channel),
+                'ids' => $ids,
             ],
             'variants' => [],
         ];
@@ -656,6 +663,11 @@ class EmbyPublicationCatalogService
     {
         ksort($groupedSources, SORT_STRING);
         $variants = [];
+        $withoutInternalKeys = function (array $source): array {
+            unset($source['source_priority'], $source['sort'], $source['technical_metadata']);
+
+            return $source;
+        };
 
         foreach ($groupedSources as $key => $sources) {
             usort($sources, fn (array $left, array $right): int => [
@@ -668,19 +680,12 @@ class EmbyPublicationCatalogService
                 $right['source_id'],
             ]);
             $preferred = array_shift($sources);
-            $technicalMetadata = $preferred['technical_metadata'];
-            unset($preferred['source_priority'], $preferred['sort'], $preferred['technical_metadata']);
-            $failover = array_map(function (array $source): array {
-                unset($source['source_priority'], $source['sort'], $source['technical_metadata']);
-
-                return $source;
-            }, $sources);
 
             $variants[] = [
                 'key' => $key,
-                'preferred' => $preferred,
-                'failover' => $failover,
-                'technical_metadata' => $technicalMetadata,
+                'preferred' => $withoutInternalKeys($preferred),
+                'failover' => array_map($withoutInternalKeys, $sources),
+                'technical_metadata' => $preferred['technical_metadata'],
             ];
         }
 

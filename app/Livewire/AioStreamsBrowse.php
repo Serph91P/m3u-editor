@@ -796,7 +796,7 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
         NotifyAioStreamsResolutionComplete::dispatch([$channel->id], [], $integration->user_id, $channel->title ?? $channel->name)
             ->delay(now()->addSeconds(15));
 
-        Notification::make()->success()->title(__('Added — resolving stream, check back shortly'))->send();
+        Notification::make()->success()->title(__('Added - resolving stream, check back shortly'))->send();
     }
 
     /**
@@ -822,7 +822,7 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
             return;
         }
 
-        Notification::make()->success()->title(__('Series added — add individual episodes to resolve their streams'))->send();
+        Notification::make()->success()->title(__('Series added - add individual episodes to resolve their streams'))->send();
     }
 
     /**
@@ -856,7 +856,7 @@ class AioStreamsBrowse extends Component implements HasActions, HasSchemas
                 ->delay(now()->addSeconds(15));
         }
 
-        Notification::make()->success()->title(__('Episode added — resolving stream, check back shortly'))->send();
+        Notification::make()->success()->title(__('Episode added - resolving stream, check back shortly'))->send();
     }
 
     public function toggleEpisodeSelected(int $season, int $episode): void

@@ -33,7 +33,7 @@ class GuestDvrRecordingResource extends Resource
     protected static ?string $slug = 'dvr';
 
     /**
-     * Whether the given guest may play the given recording.
+     * Whether the given session may play the given recording.
      *
      * Single source of truth for the play authorization, deliberately factored
      * out of the table so it can be asserted directly. The guest panel resolves
@@ -57,18 +57,11 @@ class GuestDvrRecordingResource extends Resource
             return false;
         }
 
-        if ($auth !== null) {
-            // Guests may only play their own recordings.
-            return $record->playlist_auth_id === $auth->id;
-        }
-
-        // The playlist owner (no PlaylistAuth record) may play their own
-        // recordings — the ones with a null playlist_auth_id.
-        return static::isOwnerAuth() && $record->playlist_auth_id === null;
+        return static::sessionOwnsRecord($auth, $record->playlist_auth_id);
     }
 
     /**
-     * Whether the given guest may cancel the given recording.
+     * Whether the given session may cancel the given recording.
      *
      * Single source of truth for the cancel authorization, mirroring
      * guestCanPlay() above: factored out of the table so it can be asserted
@@ -84,14 +77,7 @@ class GuestDvrRecordingResource extends Resource
             return false;
         }
 
-        if ($auth !== null) {
-            // Guests can only cancel recordings they created.
-            return $record->playlist_auth_id === $auth->id;
-        }
-
-        // The playlist owner (no PlaylistAuth record) may cancel their own
-        // recordings — the ones with a null playlist_auth_id.
-        return static::isOwnerAuth() && $record->playlist_auth_id === null;
+        return static::sessionOwnsRecord($auth, $record->playlist_auth_id);
     }
 
     public static function getNavigationLabel(): string
@@ -166,23 +152,14 @@ class GuestDvrRecordingResource extends Resource
             return parent::getEloquentQuery()->whereRaw('1 = 0');
         }
 
-        $currentAuth = static::getCurrentPlaylistAuth();
-
-        // A null $currentAuth is only safe to treat as "the playlist owner"
-        // when isOwnerAuth() confirms it — otherwise (a guest session that
-        // failed to resolve) ->where('playlist_auth_id', null) would become
-        // whereNull() and leak the owner's recordings to that guest.
-        if (! $currentAuth && ! static::isOwnerAuth()) {
-            return parent::getEloquentQuery()->whereRaw('1 = 0');
-        }
-
-        return parent::getEloquentQuery()
-            ->with(['channel', 'playlistAuth', 'dvrSetting.playlist', 'dvrSetting.customPlaylist', 'dvrSetting.mergedPlaylist'])
-            ->where('dvr_setting_id', $dvrSetting->id)
-            // Guests only see their own recordings — never another guest's,
-            // nor the playlist owner's (null playlist_auth_id).
-            ->where('playlist_auth_id', $currentAuth?->id)
-            ->orderByDesc('scheduled_start');
+        // Guests only see their own recordings — never another guest's, nor
+        // the playlist owner's (null playlist_auth_id).
+        return static::restrictToSessionOwner(
+            parent::getEloquentQuery()
+                ->with(['channel', 'playlistAuth', 'dvrSetting.playlist', 'dvrSetting.customPlaylist', 'dvrSetting.mergedPlaylist'])
+                ->where('dvr_setting_id', $dvrSetting->id)
+                ->orderByDesc('scheduled_start')
+        );
     }
 
     public static function infolist(Schema $schema): Schema

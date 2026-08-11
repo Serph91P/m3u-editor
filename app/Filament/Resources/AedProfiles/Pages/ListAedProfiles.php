@@ -16,7 +16,7 @@ class ListAedProfiles extends ListRecords
 
     public function getSubheading(): string|Htmlable|null
     {
-        return __('Advanced EPG Dummies (AED) — extract live event info from stream titles to generate smart EPG programmes.');
+        return __('Advanced EPG Dummies (AED) - extract live event info from stream titles to generate smart EPG programmes.');
     }
 
     protected function getHeaderActions(): array

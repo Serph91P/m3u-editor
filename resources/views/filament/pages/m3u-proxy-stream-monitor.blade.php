@@ -124,7 +124,7 @@
 
                 <x-filament::badge size="sm">
                     Last updated:
-                    <span x-text="$wire.lastUpdatedAt ? new Date($wire.lastUpdatedAt).toLocaleTimeString() : '—'"></span>
+                    <span x-text="$wire.lastUpdatedAt ? new Date($wire.lastUpdatedAt).toLocaleTimeString() : '-'"></span>
                 </x-filament::badge>
             </div>
 
@@ -355,7 +355,7 @@
                                         </span>
                                         @if ($epgStartLabel && $epgStopLabel)
                                             <span class="text-xs text-gray-500 dark:text-gray-400">
-                                                {{ $epgStartLabel }} – {{ $epgStopLabel }}
+                                                {{ $epgStartLabel }} - {{ $epgStopLabel }}
                                             </span>
                                         @endif
                                         <span class="ml-auto text-xs text-gray-500 dark:text-gray-400">
@@ -605,13 +605,13 @@
                                                             {{ $client['ip'] }}
                                                         </td>
                                                         <td class="px-3 py-2 text-sm whitespace-nowrap text-gray-900 dark:text-white">
-                                                            {{ $client['username'] ?? '—' }}
+                                                            {{ $client['username'] ?? '-' }}
                                                         </td>
                                                         <td
                                                             class="max-w-xs truncate px-3 py-2 text-xs text-gray-500 dark:text-gray-400"
                                                             title="{{ $client['user_agent'] ?? '' }}"
                                                         >
-                                                            {{ $client['user_agent'] ? \Illuminate\Support\Str::limit($client['user_agent'], 40, '…') : '—' }}
+                                                            {{ $client['user_agent'] ? \Illuminate\Support\Str::limit($client['user_agent'], 40, '…') : '-' }}
                                                         </td>
                                                         <td class="px-3 py-2 text-sm whitespace-nowrap text-gray-500 dark:text-gray-400">
                                                             {{ $client['connected_at'] }}

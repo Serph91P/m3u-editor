@@ -78,7 +78,7 @@ class Season extends Model
     protected function displayCover(): Attribute
     {
         return Attribute::make(
-            get: fn () => $this->cover_big ?? $this->cover ?? $this->serie?->cover,
+            get: fn (): mixed => $this->cover_big ?? $this->cover ?? $this->serie?->cover,
         );
     }
 }

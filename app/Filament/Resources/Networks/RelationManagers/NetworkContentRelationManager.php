@@ -440,7 +440,7 @@ class NetworkContentRelationManager extends RelationManager
                     ->icon('heroicon-o-link')
                     ->color('warning')
                     ->requiresConfirmation()
-                    ->modalDescription(__('Selected items will always play consecutively, in their current sort order, as one unit — most impactful in Shuffle mode.'))
+                    ->modalDescription(__('Selected items will always play consecutively, in their current sort order, as one unit - most impactful in Shuffle mode.'))
                     ->action(function (Collection $records) use ($network): void {
                         if ($records->count() < 2) {
                             Notification::make()

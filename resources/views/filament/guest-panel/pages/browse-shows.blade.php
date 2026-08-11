@@ -32,7 +32,7 @@
                         $pageFrom = ($currentPage - 1) * 20 + 1;
                         $pageTo = min($currentPage * 20, $totalShows);
                     @endphp
-                    {{ __(':from–:to of :total shows', ['from' => $pageFrom, 'to' => $pageTo, 'total' => $totalShows]) }}
+                    {{ __(':from-:to of :total shows', ['from' => $pageFrom, 'to' => $pageTo, 'total' => $totalShows]) }}
                 </p>
 
                 @if ($this->totalPages > 1)
@@ -129,7 +129,7 @@
                                 </p>
                                 <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                                     <span class="font-semibold text-gray-600 dark:text-gray-300">{{ __('Airing Next:') }}</span>
-                                    {{ $show['next_air_date_human'] ?? '—' }}
+                                    {{ $show['next_air_date_human'] ?? '-' }}
                                 </p>
                             </button>
 

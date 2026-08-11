@@ -193,8 +193,8 @@ class EpgViewer extends Component implements HasActions, HasForms
                 Select::make('rule_type')
                     ->label(__('Recording type'))
                     ->options([
-                        DvrRuleType::Once->value => __('Once — record this episode only'),
-                        DvrRuleType::Series->value => __('Series — record all episodes with this title'),
+                        DvrRuleType::Once->value => __('Once - record this episode only'),
+                        DvrRuleType::Series->value => __('Series - record all episodes with this title'),
                     ])
                     ->default(DvrRuleType::Once->value)
                     ->required(),
@@ -359,7 +359,7 @@ class EpgViewer extends Component implements HasActions, HasForms
                 ->success()
                 ->title(ucfirst($typeLabel))
                 ->body($ruleType === DvrRuleType::Series
-                    ? __('(:title) — series rule created', ['title' => $title])
+                    ? __('(:title) - series rule created', ['title' => $title])
                     : __('(:title) has been scheduled.', ['title' => $title]))
                 ->send();
         } catch (Exception $e) {

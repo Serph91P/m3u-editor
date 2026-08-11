@@ -9,6 +9,7 @@ use App\Models\MergedPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
+use Illuminate\Database\Eloquent\Builder;
 
 trait HasGuestDvr
 {
@@ -51,6 +52,42 @@ trait HasGuestDvr
         $result = PlaylistFacade::authenticate($credentials['username'], $credentials['password']);
 
         return is_array($result) && ($result[1] ?? null) === 'owner_auth';
+    }
+
+    /**
+     * Whether the current session owns a record carrying the given
+     * playlist_auth_id.
+     *
+     * Guests own only the records they created themselves. The playlist owner
+     * has no PlaylistAuth record, so the records they own are the ones with a
+     * null playlist_auth_id.
+     */
+    protected static function sessionOwnsRecord(?PlaylistAuth $auth, int|string|null $playlistAuthId): bool
+    {
+        if ($auth !== null) {
+            return $playlistAuthId === $auth->id;
+        }
+
+        return $playlistAuthId === null && static::isOwnerAuth();
+    }
+
+    /**
+     * Restrict a query to the records owned by the current session.
+     *
+     * A null PlaylistAuth is only safe to treat as "the playlist owner" when
+     * isOwnerAuth() confirms it — otherwise (a guest session that failed to
+     * resolve) where('playlist_auth_id', null) becomes whereNull() and leaks
+     * the owner's records to that guest.
+     */
+    protected static function restrictToSessionOwner(Builder $query): Builder
+    {
+        $auth = static::getCurrentPlaylistAuth();
+
+        if (! $auth && ! static::isOwnerAuth()) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('playlist_auth_id', $auth?->id);
     }
 
     /**

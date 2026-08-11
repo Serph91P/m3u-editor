@@ -1332,7 +1332,7 @@ class NetworkResource extends Resource implements CopilotResource
                     'reset' => __('Fresh start'),
                 ])
                 ->descriptions([
-                    'continue' => __("Keeps the currently-airing programme. Regenerates the next {$windowDays} days from where the schedule left off. The content order stays the same — good for topping up an expiring schedule without disrupting viewers."),
+                    'continue' => __("Keeps the currently-airing programme. Regenerates the next {$windowDays} days from where the schedule left off. The content order stays the same - good for topping up an expiring schedule without disrupting viewers."),
                     'reset' => __("Deletes all existing programmes and builds a completely new {$windowDays}-day schedule from scratch.{$shuffleNote} Use this after reordering content, setting pins, or when you want a fresh lineup."),
                 ])
                 ->default('continue')

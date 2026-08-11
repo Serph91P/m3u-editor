@@ -145,7 +145,7 @@ class QueueMonitorResource extends Resource
                     ->limit(60)
                     ->tooltip(fn (QueueMonitor $record): ?string => $record->exception_message)
                     ->color(fn (QueueMonitor $record): ?string => $record->exception_message ? 'danger' : null)
-                    ->placeholder(__('—'))
+                    ->placeholder(__('-'))
                     ->wrap()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])

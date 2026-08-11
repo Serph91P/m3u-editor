@@ -220,7 +220,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                     ->description(fn (callable $get) => match ($get('type')) {
                         'local' => 'Configure your local media library paths',
                         'webdav' => 'Configure your WebDAV server connection and media library paths',
-                        'aiostreams' => __('Configure your AIOStreams addon — paste your manifest URL to connect'),
+                        'aiostreams' => __('Configure your AIOStreams addon - paste your manifest URL to connect'),
                         default => 'Configure your media server connection',
                     })
                     ->collapsible(! $creating)
@@ -314,7 +314,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                             ->label(__('Manifest URL'))
                             ->url()
                             ->placeholder('https://your-aiostreams-instance.com/stremio/uuid/token/manifest.json')
-                            ->helperText(__('Paste your AIOStreams manifest URL. The auth tokens are embedded in the URL — no API key needed.'))
+                            ->helperText(__('Paste your AIOStreams manifest URL. The auth tokens are embedded in the URL - no API key needed.'))
                             ->required(fn (callable $get) => $get('type') === 'aiostreams')
                             ->visible(fn (callable $get) => $get('type') === 'aiostreams')
                             ->maxLength(1024)
@@ -762,7 +762,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
             ],
             'Plex Management' => [
                 Section::make(__('Plex Server Management'))
-                    ->description(__('Manage your Plex server directly from m3u-editor — register DVR tuners, monitor sessions, and control libraries.'))
+                    ->description(__('Manage your Plex server directly from m3u-editor - register DVR tuners, monitor sessions, and control libraries.'))
                     ->schema([
                         Toggle::make('plex_management_enabled')
                             ->label(__('Enable Plex Management'))

@@ -6,6 +6,7 @@ use App\Exceptions\MediaServerException;
 use App\Interfaces\MediaServer;
 use App\Models\MediaServerIntegration;
 use App\Settings\GeneralSettings;
+use App\Traits\DoesNotSupportLibraryCreation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
@@ -21,21 +22,7 @@ use Illuminate\Support\Facades\RateLimiter;
  */
 class AIOStreamsService implements MediaServer
 {
-    public function createLibrary(
-        string $name,
-        string $collectionType,
-        array $paths,
-        bool $refreshLibrary = true,
-        ?string $libraryId = null,
-    ): array {
-        return [
-            'success' => false,
-            'created' => false,
-            'message' => 'Library creation is not supported by this media server.',
-            'library' => null,
-            'drift' => false,
-        ];
-    }
+    use DoesNotSupportLibraryCreation;
 
     protected MediaServerIntegration $integration;
 

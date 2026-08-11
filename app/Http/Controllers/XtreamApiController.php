@@ -3148,11 +3148,11 @@ class XtreamApiController extends Controller
             return false;
         }
 
-        if ($authMethod === 'playlist_auth' && ! $playlistAuth?->library_publishing_enabled) {
+        if (! in_array($authMethod, ['owner_auth', 'playlist_auth'], true)) {
             return false;
         }
 
-        if (! in_array($authMethod, ['owner_auth', 'playlist_auth'], true)) {
+        if ($authMethod === 'playlist_auth' && ! $playlistAuth?->library_publishing_enabled) {
             return false;
         }
 
@@ -3170,16 +3170,27 @@ class XtreamApiController extends Controller
      */
     private function apiVersionValidationError(Request $request): JsonResponse
     {
-        $code = $request->integer('api_version') !== 1
-            ? 'unsupported_api_version'
-            : 'invalid_request';
+        if ($request->integer('api_version') !== 1) {
+            return $this->requestError(
+                'unsupported_api_version',
+                'The requested API version is not supported.',
+                400,
+            );
+        }
 
+        return $this->requestError('invalid_request', 'The request parameters are invalid.', 422);
+    }
+
+    /**
+     * The 403 returned by every managed-library-publishing action handler when
+     * the credentials aren't authorized for the protocol.
+     */
+    private function libraryPublishingUnavailableError(): JsonResponse
+    {
         return $this->requestError(
-            $code,
-            $code === 'unsupported_api_version'
-                ? 'The requested API version is not supported.'
-                : 'The request parameters are invalid.',
-            $code === 'unsupported_api_version' ? 400 : 422,
+            'library_publishing_unavailable',
+            'Managed library publishing is not available for these credentials.',
+            403,
         );
     }
 
@@ -3191,11 +3202,7 @@ class XtreamApiController extends Controller
     ): JsonResponse {
         $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
         if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
-            return $this->requestError(
-                'library_publishing_unavailable',
-                'Managed library publishing is not available for these credentials.',
-                403,
-            );
+            return $this->libraryPublishingUnavailableError();
         }
 
         $input = $request->all();
@@ -3255,11 +3262,7 @@ class XtreamApiController extends Controller
     ): JsonResponse {
         $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
         if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
-            return $this->requestError(
-                'library_publishing_unavailable',
-                'Managed library publishing is not available for these credentials.',
-                403,
-            );
+            return $this->libraryPublishingUnavailableError();
         }
 
         $validator = Validator::make($request->all(), [
@@ -3280,11 +3283,7 @@ class XtreamApiController extends Controller
     ): JsonResponse {
         $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
         if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
-            return $this->requestError(
-                'library_publishing_unavailable',
-                'Managed library publishing is not available for these credentials.',
-                403,
-            );
+            return $this->libraryPublishingUnavailableError();
         }
 
         $validator = Validator::make($request->all(), [

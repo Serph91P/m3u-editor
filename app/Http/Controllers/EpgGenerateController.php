@@ -482,9 +482,8 @@ class EpgGenerateController extends Controller
                         ?? $aedExtractor->fallback($aedProfile, $rawTitle);
 
                     // No event found and no-event fallback is disabled: emit nothing for this channel
+                    // ($buffer is still empty here, so there is nothing to flush)
                     if ($aedEvent === null) {
-                        echo $buffer;
-
                         continue;
                     }
 

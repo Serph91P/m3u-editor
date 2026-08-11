@@ -142,7 +142,7 @@ class EditPlugin extends EditRecord
                         Notification::make()
                             ->title(__('File check complete'))
                             ->body($plugin->hasVerifiedIntegrity()
-                                ? __('No changes detected — plugin files match the trusted version.')
+                                ? __('No changes detected - plugin files match the trusted version.')
                                 : __('Files have been modified. Use Trust Plugin to approve the new version.'))
                             ->color($plugin->hasVerifiedIntegrity() ? 'success' : 'warning')
                             ->send();
@@ -317,7 +317,7 @@ class EditPlugin extends EditRecord
                             Notification::make()
                                 ->success()
                                 ->title(__('Update staged for review'))
-                                ->body(__('Review #:id is ready — check Plugin Installs to approve it.', ['id' => $review->id]))
+                                ->body(__('Review #:id is ready - check Plugin Installs to approve it.', ['id' => $review->id]))
                                 ->actions([
                                     Action::make('view_review')
                                         ->label(__('View Review'))
@@ -380,7 +380,7 @@ class EditPlugin extends EditRecord
                         Notification::make()
                             ->success()
                             ->title(__('Security review created'))
-                            ->body(__('Review #:id is queued — check Plugin Installs to scan and approve it.', ['id' => $review->id]))
+                            ->body(__('Review #:id is queued - check Plugin Installs to scan and approve it.', ['id' => $review->id]))
                             ->send();
                     }),
                 Action::make('reinstall')

@@ -52,7 +52,7 @@
                             <div class="flex items-center justify-between gap-4 py-2">
                                 <div class="flex min-w-0 items-center gap-2">
                                     <span class="truncate text-sm font-medium text-gray-950 dark:text-white">
-                                        {{ $run->plugin?->name ?? '—' }}
+                                        {{ $run->plugin?->name ?? '-' }}
                                     </span>
                                     <span class="truncate text-xs text-gray-400 dark:text-gray-500">
                                         {{ \Illuminate\Support\Str::headline($run->action ?? $run->hook ?? $run->trigger ?? '') }}

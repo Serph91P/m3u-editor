@@ -359,13 +359,9 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                         $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($record);
                         $itemsTotal = count($catalog['items']);
 
-                        // The full catalog (all $itemsTotal items) is still what gets hashed
-                        // into 'revision' above and what actually gets synced — only the
-                        // rendered JSON is capped, since a large library's full item list can
-                        // be large enough to crash the browser rendering it into the DOM.
-                        if ($itemsTotal > self::PREVIEW_ITEM_LIMIT) {
-                            $catalog['items'] = array_slice($catalog['items'], 0, self::PREVIEW_ITEM_LIMIT);
-                        }
+                        // Only the rendered JSON is capped — 'revision' was already
+                        // hashed from, and the sync still uses, the complete item list.
+                        $catalog['items'] = array_slice($catalog['items'], 0, self::PREVIEW_ITEM_LIMIT);
 
                         return view(
                             'filament.resources.media-server-integrations.relation-managers.emby-library-mapping-preview',
@@ -545,10 +541,9 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
     /** @return array<string, string> */
     private function writablePathOptions(): array
     {
-        return array_combine(
-            $this->ownerRecord->getEmbyPublisherWritablePaths(),
-            $this->ownerRecord->getEmbyPublisherWritablePaths(),
-        ) ?: [];
+        $paths = $this->ownerRecord->getEmbyPublisherWritablePaths();
+
+        return array_combine($paths, $paths) ?: [];
     }
 
     private function reconcile(EmbyLibraryMapping $mapping): void

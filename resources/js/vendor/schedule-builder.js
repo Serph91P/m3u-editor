@@ -261,7 +261,7 @@ function scheduleBuilder(config) {
             const startM = prog.start_minute ?? 0;
             const endH = prog.end_hour ?? 0;
             const endM = prog.end_minute ?? 0;
-            return `${this.formatTimeLabel(startH, startM)} – ${this.formatTimeLabel(endH, endM)}`;
+            return `${this.formatTimeLabel(startH, startM)} - ${this.formatTimeLabel(endH, endM)}`;
         },
 
         formatTimeLabel(hour, minute) {

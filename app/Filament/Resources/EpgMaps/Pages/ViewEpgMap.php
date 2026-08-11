@@ -58,7 +58,7 @@ class ViewEpgMap extends ViewRecord
                                         TextEntry::make('progress')
                                             ->label(__('Progress'))
                                             ->state(fn ($record): string => $record->status === Status::Processing || $record->status === Status::Pending
-                                                ? __('In progress — :pct%', ['pct' => round((float) $record->progress)])
+                                                ? __('In progress - :pct%', ['pct' => round((float) $record->progress)])
                                                 : __('Complete')),
                                         TextEntry::make('mapped_at')
                                             ->label(__('Last ran'))
@@ -171,7 +171,7 @@ class ViewEpgMap extends ViewRecord
         }
 
         if ($record->candidates_building) {
-            return __('Building candidate review — please wait, this page will refresh automatically.');
+            return __('Building candidate review - please wait, this page will refresh automatically.');
         }
 
         if ($record->candidates_built_at) {
