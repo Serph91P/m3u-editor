@@ -62,6 +62,27 @@ class GuestDvrRecordingResource extends Resource
         return $auth !== null && $record->playlist_auth_id === $auth->id;
     }
 
+    /**
+     * Whether the given guest may cancel the given recording.
+     *
+     * Single source of truth for the cancel authorization, mirroring
+     * guestCanPlay() above: factored out of the table so it can be asserted
+     * directly, and shared between ->visible() and the in-action backend
+     * guard so the two layers cannot drift apart.
+     */
+    public static function guestCanCancel(DvrRecording $record, ?PlaylistAuth $auth): bool
+    {
+        if (! in_array($record->status, [
+            DvrRecordingStatus::Scheduled,
+            DvrRecordingStatus::Recording,
+        ], true)) {
+            return false;
+        }
+
+        // Guests can only cancel recordings they created.
+        return $auth !== null && $record->playlist_auth_id === $auth->id;
+    }
+
     public static function getNavigationLabel(): string
     {
         return __('DVR');
@@ -243,37 +264,16 @@ class GuestDvrRecordingResource extends Resource
                         ->color('danger')
                         ->button()
                         ->hiddenLabel()
-                        ->visible(function (DvrRecording $record) use ($currentAuth): bool {
-                            if (! in_array($record->status, [
-                                DvrRecordingStatus::Scheduled,
-                                DvrRecordingStatus::Recording,
-                            ])) {
-                                return false;
-                            }
-
-                            // Guests can only cancel recordings they created
-                            return $currentAuth && $record->playlist_auth_id === $currentAuth->id;
-                        })
+                        ->visible(fn (DvrRecording $record): bool => static::guestCanCancel($record, $currentAuth))
                         ->requiresConfirmation()
                         ->modalDescription(__('This will stop the recording. Are you sure?'))
                         ->action(function (DvrRecording $record) use ($currentAuth): void {
-                            // Backend guard — prevents forged Livewire calls bypassing ->visible()
-                            if (! $currentAuth || $record->playlist_auth_id !== $currentAuth->id) {
+                            // Backend guard — prevents forged Livewire calls bypassing
+                            // ->visible(). Same predicate, deliberately re-evaluated.
+                            if (! static::guestCanCancel($record, $currentAuth)) {
                                 Notification::make()
                                     ->danger()
                                     ->title(__('Unauthorized'))
-                                    ->send();
-
-                                return;
-                            }
-
-                            if (! in_array($record->status, [
-                                DvrRecordingStatus::Scheduled,
-                                DvrRecordingStatus::Recording,
-                            ])) {
-                                Notification::make()
-                                    ->danger()
-                                    ->title(__('Recording cannot be cancelled'))
                                     ->send();
 
                                 return;

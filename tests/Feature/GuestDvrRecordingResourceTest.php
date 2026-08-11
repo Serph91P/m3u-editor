@@ -116,6 +116,14 @@ it('returns no recordings when no DvrSetting exists', function () {
 
 // --- Cancel action authorization guard ---
 
+/*
+ * These assert GuestDvrRecordingResource::guestCanCancel() directly — the
+ * single predicate both ->visible() and the in-action backend guard call
+ * (mirrors guestCanPlay() below, #1397 follow-up). Asserting the resource's
+ * actual method, rather than reimplementing its logic inline in the test,
+ * is what makes these fail if the guard itself is ever weakened.
+ */
+
 it('cancel guard authorizes the owning guest', function () {
     $recording = DvrRecording::factory()
         ->for($this->dvrSetting)
@@ -127,11 +135,7 @@ it('cancel guard authorizes the owning guest', function () {
 
     $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
 
-    $isOwner = $currentAuth && $recording->playlist_auth_id === $currentAuth->id;
-    $isCancellable = in_array($recording->status, [DvrRecordingStatus::Scheduled, DvrRecordingStatus::Recording]);
-
-    expect($isOwner)->toBeTrue()
-        ->and($isCancellable)->toBeTrue();
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeTrue();
 });
 
 it('cancel guard rejects a recording owned by a different guest', function () {
@@ -146,9 +150,7 @@ it('cancel guard rejects a recording owned by a different guest', function () {
     // Context is guest A
     $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
 
-    $isOwner = $currentAuth && $recording->playlist_auth_id === $currentAuth->id;
-
-    expect($isOwner)->toBeFalse();
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
 });
 
 it('cancel guard rejects a recording owned by the playlist owner (null playlist_auth_id)', function () {
@@ -162,9 +164,19 @@ it('cancel guard rejects a recording owned by the playlist owner (null playlist_
 
     $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
 
-    $isOwner = $currentAuth && $recording->playlist_auth_id === $currentAuth->id;
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
+});
 
-    expect($isOwner)->toBeFalse();
+it('cancel guard rejects when there is no authenticated guest', function () {
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create([
+            'playlist_auth_id' => $this->guestA->id,
+            'status' => DvrRecordingStatus::Scheduled,
+        ]);
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, null))->toBeFalse();
 });
 
 it('cancel guard rejects completed recordings', function () {
@@ -174,9 +186,9 @@ it('cancel guard rejects completed recordings', function () {
         ->for($this->user)
         ->create(['playlist_auth_id' => $this->guestA->id]);
 
-    $isCancellable = in_array($recording->status, [DvrRecordingStatus::Scheduled, DvrRecordingStatus::Recording]);
+    $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
 
-    expect($isCancellable)->toBeFalse();
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
 });
 
 it('cancel guard rejects failed recordings', function () {
@@ -186,9 +198,9 @@ it('cancel guard rejects failed recordings', function () {
         ->for($this->user)
         ->create(['playlist_auth_id' => $this->guestA->id]);
 
-    $isCancellable = in_array($recording->status, [DvrRecordingStatus::Scheduled, DvrRecordingStatus::Recording]);
+    $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
 
-    expect($isCancellable)->toBeFalse();
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
 });
 
 it('cancel guard accepts recordings in Recording status', function () {
@@ -200,11 +212,7 @@ it('cancel guard accepts recordings in Recording status', function () {
 
     $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
 
-    $isOwner = $currentAuth && $recording->playlist_auth_id === $currentAuth->id;
-    $isCancellable = in_array($recording->status, [DvrRecordingStatus::Scheduled, DvrRecordingStatus::Recording]);
-
-    expect($isOwner)->toBeTrue()
-        ->and($isCancellable)->toBeTrue();
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeTrue();
 });
 
 // --- Play action visibility (visible() closure predicates) ---
