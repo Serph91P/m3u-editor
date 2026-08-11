@@ -152,6 +152,48 @@ it('denies deleting a rule owned by the playlist owner (null playlist_auth_id)',
     expect(GuestDvrRuleResource::canDelete($rule))->toBeFalse();
 });
 
+// --- canEdit / canDelete capability re-check (regression for #1388) ---
+//
+// Owning a rule is not enough — canEdit/canDelete must also re-check that DVR
+// is currently usable, the same way canAccess/canCreate do. Before this fix,
+// a guest could still edit/delete their own rule after DVR was disabled.
+
+it('denies editing an owned rule when dvr_enabled is false', function () {
+    $rule = DvrRecordingRule::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id]);
+
+    $this->guestA->update(['dvr_enabled' => false]);
+
+    expect(GuestDvrRuleResource::canEdit($rule))->toBeFalse()
+        ->and(GuestDvrRuleResource::canDelete($rule))->toBeFalse();
+});
+
+it('denies editing an owned rule when the playlist-level DvrSetting is disabled', function () {
+    $rule = DvrRecordingRule::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id]);
+
+    $this->dvrSetting->update(['enabled' => false]);
+
+    expect(GuestDvrRuleResource::canEdit($rule))->toBeFalse()
+        ->and(GuestDvrRuleResource::canDelete($rule))->toBeFalse();
+});
+
+it('denies editing an owned rule when DVR_ENABLED config is false', function () {
+    $rule = DvrRecordingRule::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id]);
+
+    config()->set('dvr.dvr_enabled', false);
+
+    expect(GuestDvrRuleResource::canEdit($rule))->toBeFalse()
+        ->and(GuestDvrRuleResource::canDelete($rule))->toBeFalse();
+});
+
 // --- before() guard conditions (same logic applied in the before hooks for EditAction/DeleteAction) ---
 
 it('before guard authorizes the owning guest for edit and delete', function () {

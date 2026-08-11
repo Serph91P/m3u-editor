@@ -9,6 +9,7 @@ use App\Models\MergedPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
+use App\Services\DvrCapabilityGate;
 use Illuminate\Database\Eloquent\Builder;
 
 trait HasGuestDvr
@@ -119,20 +120,12 @@ trait HasGuestDvr
      */
     protected static function guestCanAccessDvr(): bool
     {
-        if (! (config('dvr.dvr_enabled', true) && config('proxy.proxy_integration_enabled', true))) {
-            return false;
-        }
-
-        $dvrSetting = static::getDvrSetting();
-        if (! $dvrSetting) {
-            return false;
-        }
-
         $auth = static::getCurrentPlaylistAuth();
-        if ($auth) {
-            return (bool) $auth->dvr_enabled;
+
+        if (! DvrCapabilityGate::granted(static::getDvrSetting(), $auth, $auth !== null)) {
+            return false;
         }
 
-        return $dvrSetting->enabled && static::isOwnerAuth();
+        return $auth !== null || static::isOwnerAuth();
     }
 }

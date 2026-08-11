@@ -70,6 +70,10 @@ class GuestDvrRecordingResource extends Resource
      */
     public static function guestCanCancel(DvrRecording $record, ?PlaylistAuth $auth): bool
     {
+        if (! static::guestCanAccessDvr()) {
+            return false;
+        }
+
         if (! in_array($record->status, [
             DvrRecordingStatus::Scheduled,
             DvrRecordingStatus::Recording,

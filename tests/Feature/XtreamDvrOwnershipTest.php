@@ -356,6 +356,94 @@ it('rejects all DVR actions for a PlaylistAuth credential without dvr_enabled', 
     'search_epg_shows',
 ]);
 
+it('rejects all DVR actions when the playlist-level DvrSetting is disabled', function (string $action) {
+    // Regression for #1388: every DVR action must consult the same capability
+    // gate used to decide whether the DVR feature is advertised at all — not
+    // just schedule_dvr and create_dvr_series_rule, which were the only two
+    // actions that checked DvrSetting::$enabled before this fix.
+    $this->setting->update(['enabled' => false]);
+
+    $response = $this->postJson(dvrActionUrl('credential-a', 'password-a', $action), [
+        'recording_id' => 'does-not-matter',
+        'rule_id' => '1',
+        'channel_id' => (string) $this->channel->id,
+        'title' => 'Evening News',
+        'q' => 'ne',
+        'start_time' => now()->addHour()->toIso8601String(),
+        'end_time' => now()->addHours(2)->toIso8601String(),
+    ]);
+
+    $response->assertStatus(403)->assertJson(['error' => 'DVR access denied']);
+})->with([
+    'get_dvr_recordings',
+    'get_dvr_recording',
+    'get_dvr_storage',
+    'schedule_dvr',
+    'create_dvr_series_rule',
+    'update_dvr_series_rule',
+    'cancel_dvr_recording',
+    'delete_dvr_recording',
+    'list_dvr_series_rules',
+    'delete_dvr_series_rule',
+    'search_epg_shows',
+]);
+
+it('rejects all DVR actions when DVR is disabled globally via config', function (string $action) {
+    config(['dvr.dvr_enabled' => false]);
+
+    $response = $this->postJson(dvrActionUrl('credential-a', 'password-a', $action), [
+        'recording_id' => 'does-not-matter',
+        'rule_id' => '1',
+        'channel_id' => (string) $this->channel->id,
+        'title' => 'Evening News',
+        'q' => 'ne',
+        'start_time' => now()->addHour()->toIso8601String(),
+        'end_time' => now()->addHours(2)->toIso8601String(),
+    ]);
+
+    $response->assertStatus(403)->assertJson(['error' => 'DVR access denied']);
+})->with([
+    'get_dvr_recordings',
+    'get_dvr_recording',
+    'get_dvr_storage',
+    'schedule_dvr',
+    'create_dvr_series_rule',
+    'update_dvr_series_rule',
+    'cancel_dvr_recording',
+    'delete_dvr_recording',
+    'list_dvr_series_rules',
+    'delete_dvr_series_rule',
+    'search_epg_shows',
+]);
+
+it('rejects all DVR actions when the proxy/DVR integration is disabled globally via config', function (string $action) {
+    config(['proxy.proxy_integration_enabled' => false]);
+
+    $response = $this->postJson(dvrActionUrl('credential-a', 'password-a', $action), [
+        'recording_id' => 'does-not-matter',
+        'rule_id' => '1',
+        'channel_id' => (string) $this->channel->id,
+        'title' => 'Evening News',
+        'q' => 'ne',
+        'start_time' => now()->addHour()->toIso8601String(),
+        'end_time' => now()->addHours(2)->toIso8601String(),
+    ]);
+
+    $response->assertStatus(403)->assertJson(['error' => 'DVR access denied']);
+})->with([
+    'get_dvr_recordings',
+    'get_dvr_recording',
+    'get_dvr_storage',
+    'schedule_dvr',
+    'create_dvr_series_rule',
+    'update_dvr_series_rule',
+    'cancel_dvr_recording',
+    'delete_dvr_recording',
+    'list_dvr_series_rules',
+    'delete_dvr_series_rule',
+    'search_epg_shows',
+]);
+
 it('does not let one credential see or delete another credential\'s series rule via list/delete_dvr_series_rule', function () {
     $ruleA = DvrRecordingRule::create([
         'user_id' => $this->user->id,

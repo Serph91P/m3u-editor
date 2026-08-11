@@ -70,12 +70,12 @@ class GuestDvrRuleResource extends Resource
 
     public static function canEdit(Model $record): bool
     {
-        return static::guestOwnsRule($record, static::getCurrentPlaylistAuth());
+        return static::guestCanAccessDvr() && static::guestOwnsRule($record, static::getCurrentPlaylistAuth());
     }
 
     public static function canDelete(Model $record): bool
     {
-        return static::guestOwnsRule($record, static::getCurrentPlaylistAuth());
+        return static::guestCanAccessDvr() && static::guestOwnsRule($record, static::getCurrentPlaylistAuth());
     }
 
     /**
@@ -308,7 +308,7 @@ class GuestDvrRuleResource extends Resource
             ->recordActions([
                 EditAction::make()
                     ->before(function (DvrRecordingRule $record, Action $action) use ($currentAuth): void {
-                        if (! static::guestOwnsRule($record, $currentAuth)) {
+                        if (! static::guestCanAccessDvr() || ! static::guestOwnsRule($record, $currentAuth)) {
                             Notification::make()
                                 ->danger()
                                 ->title(__('Unauthorized'))
@@ -343,7 +343,7 @@ class GuestDvrRuleResource extends Resource
 
                 DeleteAction::make()
                     ->before(function (DvrRecordingRule $record, Action $action) use ($currentAuth): void {
-                        if (! static::guestOwnsRule($record, $currentAuth)) {
+                        if (! static::guestCanAccessDvr() || ! static::guestOwnsRule($record, $currentAuth)) {
                             Notification::make()
                                 ->danger()
                                 ->title(__('Unauthorized'))
@@ -367,7 +367,7 @@ class GuestDvrRuleResource extends Resource
                         $dvrSetting = static::getDvrSetting();
                         $auth = static::getCurrentPlaylistAuth();
 
-                        if (! $dvrSetting || (! $auth && ! static::isOwnerAuth())) {
+                        if (! static::guestCanAccessDvr() || (! $auth && ! static::isOwnerAuth())) {
                             Notification::make()
                                 ->danger()
                                 ->title(__('Unauthorized'))

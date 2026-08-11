@@ -326,6 +326,49 @@ it('cancel guard accepts recordings in Recording status', function () {
     expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeTrue();
 });
 
+// --- Cancel guard capability re-check (regression for #1388) ---
+//
+// Owning the recording and it being in a cancellable status is not enough —
+// guestCanCancel must also re-check that DVR is currently usable, the same
+// way canAccess does. Before this fix, a guest could still cancel their own
+// recording after DVR was disabled globally or for the playlist.
+
+it('cancel guard rejects an owned recording when dvr_enabled is false', function () {
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    $this->guestA->update(['dvr_enabled' => false]);
+    $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
+});
+
+it('cancel guard rejects an owned recording when the playlist-level DvrSetting is disabled', function () {
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    $this->dvrSetting->update(['enabled' => false]);
+    $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
+});
+
+it('cancel guard rejects an owned recording when DVR_ENABLED config is false', function () {
+    $recording = DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => $this->guestA->id, 'status' => DvrRecordingStatus::Scheduled]);
+
+    config()->set('dvr.dvr_enabled', false);
+    $currentAuth = GuestDvrRecordingResource::getCurrentPlaylistAuth();
+
+    expect(GuestDvrRecordingResource::guestCanCancel($recording, $currentAuth))->toBeFalse();
+});
+
 // --- Play action visibility (visible() closure predicates) ---
 
 /*

@@ -36,6 +36,7 @@ use App\Models\ViewerFavorite;
 use App\Models\ViewerWatchProgress;
 use App\Providers\VersionServiceProvider;
 use App\Services\ContentRequestService;
+use App\Services\DvrCapabilityGate;
 use App\Services\DvrRecorderService;
 use App\Services\EmbyPublicationCatalogService;
 use App\Services\EpgCacheService;
@@ -2111,15 +2112,14 @@ class XtreamApiController extends Controller
             return $this->managedLibrarySyncResult($request, $playlist, $authMethod, $playlistAuth);
         } elseif (in_array($action, self::DVR_ACTIONS, true)) {
             $dvrPlaylist = $this->resolveDvrPlaylist($playlist);
-            if (! $dvrPlaylist) {
-                return response()->json(['error' => 'DVR access denied'], 403);
-            }
 
-            // Advertising the DVR feature already gates playlist_auth credentials on
-            // their own `dvr_enabled` flag (see canAdvertiseDvrFeature) — enforce the
-            // same rule here so a credential the TV app never showed DVR controls for
-            // can't dispatch DVR actions directly against the shared playlist DVR setting.
-            if ($authMethod === 'playlist_auth' && ! $playlistAuth?->dvr_enabled) {
+            // Every DVR action must pass the same baseline gate used to decide
+            // whether the DVR feature is advertised at all (global config, the
+            // effective playlist's DvrSetting, and playlist_auth's dvr_enabled
+            // flag) — a credential that was never shown DVR controls, or whose
+            // playlist has DVR turned off, must not be able to dispatch any DVR
+            // action directly regardless of what it individually checks.
+            if (! $this->dvrCapabilityGranted($dvrPlaylist, $authMethod, $playlistAuth)) {
                 return response()->json(['error' => 'DVR access denied'], 403);
             }
 
@@ -3470,24 +3470,25 @@ class XtreamApiController extends Controller
 
     private function canAdvertiseDvrFeature($playlist, string $authMethod, ?PlaylistAuth $playlistAuth): bool
     {
-        if (! (config('dvr.dvr_enabled', true) && config('proxy.proxy_integration_enabled', true))) {
-            return false;
-        }
+        return $this->dvrCapabilityGranted($this->resolveDvrPlaylist($playlist), $authMethod, $playlistAuth);
+    }
 
-        $dvrPlaylist = $this->resolveDvrPlaylist($playlist);
-        if (! $dvrPlaylist) {
-            return false;
-        }
-
-        if (! $dvrPlaylist->dvrSetting?->enabled) {
-            return false;
-        }
-
-        if ($authMethod !== 'playlist_auth') {
-            return true;
-        }
-
-        return (bool) $playlistAuth?->dvr_enabled;
+    /**
+     * Single source of truth for whether DVR is usable at all: global config,
+     * the effective playlist's DvrSetting, and (for guest credentials) the
+     * PlaylistAuth's own dvr_enabled flag. Both feature advertisement and every
+     * direct DVR action must agree with this result.
+     */
+    private function dvrCapabilityGranted(
+        Playlist|CustomPlaylist|MergedPlaylist|null $dvrPlaylist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth
+    ): bool {
+        return DvrCapabilityGate::granted(
+            $dvrPlaylist?->dvrSetting,
+            $playlistAuth,
+            $authMethod === 'playlist_auth'
+        );
     }
 
     private function resolveDvrPlaylist($playlist): Playlist|CustomPlaylist|MergedPlaylist|null

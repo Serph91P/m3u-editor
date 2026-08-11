@@ -10,6 +10,7 @@ use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Services\DvrCapabilityGate;
 use App\Services\M3uProxyService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
@@ -39,7 +40,7 @@ class DvrStreamController extends Controller
      */
     public function stream(Request $request, string $username, string $password, string $uuid): Response|StreamedResponse|RedirectResponse
     {
-        $user = $this->resolveUser($username, $password);
+        [$user, $playlistAuth, $isGuestCredential] = $this->resolveUser($username, $password);
 
         if (! $user) {
             abort(401, 'Invalid credentials');
@@ -47,9 +48,10 @@ class DvrStreamController extends Controller
 
         $recording = DvrRecording::where('uuid', $uuid)
             ->where('user_id', $user->id)
+            ->when($isGuestCredential, fn ($q) => $q->where('playlist_auth_id', $playlistAuth->id))
             ->first();
 
-        if (! $recording) {
+        if (! $recording || ! DvrCapabilityGate::granted($recording->dvrSetting, $playlistAuth, $isGuestCredential)) {
             abort(404, 'Recording not found');
         }
 
@@ -203,7 +205,7 @@ class DvrStreamController extends Controller
      */
     public function hlsPlaylist(Request $request, string $username, string $password, string $uuid): Response
     {
-        $user = $this->resolveUser($username, $password);
+        [$user, $playlistAuth, $isGuestCredential] = $this->resolveUser($username, $password);
 
         if (! $user) {
             abort(401, 'Invalid credentials');
@@ -211,11 +213,12 @@ class DvrStreamController extends Controller
 
         $recording = DvrRecording::where('uuid', $uuid)
             ->where('user_id', $user->id)
+            ->when($isGuestCredential, fn ($q) => $q->where('playlist_auth_id', $playlistAuth->id))
             ->where('status', DvrRecordingStatus::Recording)
             ->whereNotNull('proxy_network_id')
             ->first();
 
-        if (! $recording) {
+        if (! $recording || ! DvrCapabilityGate::granted($recording->dvrSetting, $playlistAuth, $isGuestCredential)) {
             abort(404, 'Recording not found or not in progress');
         }
 
@@ -232,7 +235,7 @@ class DvrStreamController extends Controller
      */
     public function edl(string $username, string $password, string $uuid): JsonResponse
     {
-        $user = $this->resolveUser($username, $password);
+        [$user, $playlistAuth, $isGuestCredential] = $this->resolveUser($username, $password);
 
         if (! $user) {
             abort(401, 'Invalid credentials');
@@ -240,9 +243,10 @@ class DvrStreamController extends Controller
 
         $recording = DvrRecording::where('uuid', $uuid)
             ->where('user_id', $user->id)
+            ->when($isGuestCredential, fn ($q) => $q->where('playlist_auth_id', $playlistAuth->id))
             ->first();
 
-        if (! $recording) {
+        if (! $recording || ! DvrCapabilityGate::granted($recording->dvrSetting, $playlistAuth, $isGuestCredential)) {
             abort(404, 'Recording not found');
         }
 
@@ -287,9 +291,16 @@ class DvrStreamController extends Controller
      * 1. PlaylistAuth username/password lookup
      * 2. Fallback: username = user's name, password = any playlist UUID owned by that user
      *
-     * Returns the owning User model or null on failure.
+     * Recordings must additionally be scoped to the resolved PlaylistAuth (Method 1) so one
+     * guest credential can't reach another guest's recordings just because they share an
+     * owning user — mirrors the playlist_auth_id scoping XtreamApiController applies to every
+     * other DVR query.
+     *
+     * @return array{0: ?User, 1: ?PlaylistAuth, 2: bool} The owning user, the resolved guest
+     *                                                    credential (null for owner auth), and
+     *                                                    whether auth resolved as a guest credential.
      */
-    private function resolveUser(string $username, string $password): ?User
+    private function resolveUser(string $username, string $password): array
     {
         // Method 1: PlaylistAuth credentials
         $playlistAuth = PlaylistAuth::where('username', $username)
@@ -300,7 +311,7 @@ class DvrStreamController extends Controller
         if ($playlistAuth && ! $playlistAuth->isExpired()) {
             $playlist = $playlistAuth->getAssignedModel();
 
-            return $playlist?->user;
+            return [$playlist?->user, $playlistAuth, true];
         }
 
         // Method 2: password = playlist UUID, username = owner's name
@@ -311,14 +322,14 @@ class DvrStreamController extends Controller
                 $playlist = $type::with('user')->where('uuid', $password)->firstOrFail();
 
                 if ($playlist->user && $playlist->user->name === $username) {
-                    return $playlist->user;
+                    return [$playlist->user, null, false];
                 }
             } catch (ModelNotFoundException) {
                 // Try next type
             }
         }
 
-        return null;
+        return [null, null, false];
     }
 
     /**

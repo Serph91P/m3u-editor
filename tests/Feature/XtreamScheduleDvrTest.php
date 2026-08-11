@@ -169,8 +169,11 @@ it('rejects scheduling when DVR is not enabled for the playlist', function () {
         'end_time' => now()->addHours(2)->toIso8601String(),
     ]);
 
-    $response->assertStatus(422)
-        ->assertJson(['error' => 'DVR is not enabled for this playlist']);
+    // A disabled playlist-level DvrSetting now fails the shared capability gate
+    // (DvrCapabilityGate) before any DVR action dispatches, so every DVR action
+    // — not just schedule_dvr — rejects uniformly with the same generic denial.
+    $response->assertStatus(403)
+        ->assertJson(['error' => 'DVR access denied']);
 
     expect(DvrRecordingRule::count())->toBe(0);
 });
