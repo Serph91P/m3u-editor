@@ -160,6 +160,22 @@ it('excludes owner-created recordings (null playlist_auth_id) from the list quer
     expect($ids)->toBe([$ownRecording->id]);
 });
 
+it('returns no recordings when the guest session credentials do not resolve to a PlaylistAuth or the owner', function () {
+    DvrRecording::factory()
+        ->for($this->dvrSetting)
+        ->for($this->user)
+        ->create(['playlist_auth_id' => null]);
+
+    request()->attributes->set('playlist_uuid', $this->playlist->uuid);
+    $prefix = base64_encode($this->playlist->uuid).'_';
+    session()->put("{$prefix}guest_auth_username", 'stale-username');
+    session()->put("{$prefix}guest_auth_password", 'stale-password');
+
+    $ids = GuestDvrRecordingResource::getEloquentQuery()->pluck('id')->all();
+
+    expect($ids)->toBe([]);
+});
+
 // --- Navigation badge count ---
 
 it('navigation badge only counts the current guest\'s own active recordings', function () {

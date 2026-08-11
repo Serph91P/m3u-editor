@@ -11,15 +11,18 @@ use App\Enums\PlaylistChannelId;
 use App\Events\ViewerFavoriteEvent;
 use App\Facades\PlaylistFacade;
 use App\Facades\ProxyFacade;
+use App\Jobs\RefreshMediaServerLibraryJob;
 use App\Models\ArrIntegration;
 use App\Models\Category;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\DvrRecording;
 use App\Models\DvrRecordingRule;
+use App\Models\EmbyLibraryMapping;
 use App\Models\Epg;
 use App\Models\EpgProgramme;
 use App\Models\Group;
+use App\Models\MediaServerIntegration;
 use App\Models\MergedPlaylist;
 use App\Models\Network;
 use App\Models\NetworkProgramme;
@@ -34,6 +37,7 @@ use App\Models\ViewerWatchProgress;
 use App\Providers\VersionServiceProvider;
 use App\Services\ContentRequestService;
 use App\Services\DvrRecorderService;
+use App\Services\EmbyPublicationCatalogService;
 use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
@@ -45,7 +49,9 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Redirect;
 use Illuminate\Support\Facades\Validator;
@@ -710,6 +716,25 @@ class XtreamApiController extends Controller
                 $proxyData = $this->resolveProxyData($playlist, $features, $authMethod, $playlistAuth);
                 if (! empty($proxyData)) {
                     $m3uEditorPayload['proxy'] = $proxyData;
+                }
+
+                if ($this->canAdvertiseLibraryPublishing($playlist, $authMethod, $playlistAuth)) {
+                    $m3uEditorPayload['library_publishing'] = [
+                        'api_version' => 1,
+                        'actions' => [
+                            'register_publisher' => 'm3u_editor_register_publisher',
+                            'catalog' => 'm3u_editor_catalog',
+                            'sync_result' => 'm3u_editor_sync_result',
+                        ],
+                        'snapshot_mode' => 'full',
+                        'features' => [
+                            'library_mappings',
+                            'variants',
+                            'provider_failover',
+                            'local_nfo',
+                            'revision_metadata',
+                        ],
+                    ];
                 }
 
                 $payload['m3u_editor'] = $m3uEditorPayload;
@@ -2078,6 +2103,12 @@ class XtreamApiController extends Controller
             return $this->requestStatus($request, $playlist, $authMethod, $playlistAuth);
         } elseif ($action === 'request_dismiss') {
             return $this->dismissRequest($request, $playlist, $authMethod, $playlistAuth);
+        } elseif ($action === 'm3u_editor_register_publisher') {
+            return $this->registerManagedLibraryPublisher($request, $playlist, $authMethod, $playlistAuth);
+        } elseif ($action === 'm3u_editor_catalog') {
+            return $this->managedLibraryCatalog($request, $playlist, $authMethod, $playlistAuth);
+        } elseif ($action === 'm3u_editor_sync_result') {
+            return $this->managedLibrarySyncResult($request, $playlist, $authMethod, $playlistAuth);
         } elseif (in_array($action, self::DVR_ACTIONS, true)) {
             $dvrPlaylist = $this->resolveDvrPlaylist($playlist);
             if (! $dvrPlaylist) {
@@ -3089,6 +3120,260 @@ class XtreamApiController extends Controller
         }
 
         return $features;
+    }
+
+    private function canAdvertiseLibraryPublishing(
+        mixed $playlist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth,
+    ): bool {
+        $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
+
+        return $effectivePlaylist !== null
+            && $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth);
+    }
+
+    /**
+     * Core authorization check for the managed-library-publishing protocol,
+     * shared by canAdvertiseLibraryPublishing() (raw $playlist, used for the
+     * info-response feature flag) and the three action handlers below (which
+     * already hold an $effectivePlaylist and must not re-resolve it).
+     */
+    private function libraryPublishingAuthorized(
+        Playlist|CustomPlaylist|MergedPlaylist $effectivePlaylist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth,
+    ): bool {
+        if (! $effectivePlaylist->user?->canUseIntegrations()) {
+            return false;
+        }
+
+        if ($authMethod === 'playlist_auth' && ! $playlistAuth?->library_publishing_enabled) {
+            return false;
+        }
+
+        if (! in_array($authMethod, ['owner_auth', 'playlist_auth'], true)) {
+            return false;
+        }
+
+        return MediaServerIntegration::query()
+            ->where('user_id', $effectivePlaylist->user_id)
+            ->where('type', 'emby')
+            ->where('enabled', true)
+            ->exists();
+    }
+
+    /**
+     * Build the standard 400/422 error response for a failed api_version-
+     * gated validator, shared by the three managed-library-publishing action
+     * handlers below.
+     */
+    private function apiVersionValidationError(Request $request): JsonResponse
+    {
+        $code = $request->integer('api_version') !== 1
+            ? 'unsupported_api_version'
+            : 'invalid_request';
+
+        return $this->requestError(
+            $code,
+            $code === 'unsupported_api_version'
+                ? 'The requested API version is not supported.'
+                : 'The request parameters are invalid.',
+            $code === 'unsupported_api_version' ? 400 : 422,
+        );
+    }
+
+    private function registerManagedLibraryPublisher(
+        Request $request,
+        mixed $playlist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth,
+    ): JsonResponse {
+        $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
+        if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
+            return $this->requestError(
+                'library_publishing_unavailable',
+                'Managed library publishing is not available for these credentials.',
+                403,
+            );
+        }
+
+        $input = $request->all();
+        if (is_array($input['writable_paths'] ?? null)) {
+            $input['writable_paths'] = array_map(
+                fn (mixed $path): mixed => is_string($path) ? trim($path) : $path,
+                $input['writable_paths'],
+            );
+        }
+
+        $validator = Validator::make($input, [
+            'api_version' => ['required', 'integer', 'in:1'],
+            'integration_id' => ['required', 'integer', 'min:1'],
+            'writable_paths' => ['required', 'array', 'list', 'min:1', 'max:50'],
+            'writable_paths.*' => [
+                'required',
+                'string',
+                'distinct:strict',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (! is_string($value) || ! MediaServerIntegration::isSafeWritablePath($value)) {
+                        $fail('The :attribute must be a valid absolute path.');
+                    }
+                },
+            ],
+        ]);
+        if ($validator->fails()) {
+            return $this->apiVersionValidationError($request);
+        }
+
+        $validated = $validator->validated();
+        $integration = MediaServerIntegration::query()
+            ->whereKey($validated['integration_id'])
+            ->where('user_id', $effectivePlaylist->user_id)
+            ->where('type', 'emby')
+            ->where('enabled', true)
+            ->first();
+        if (! $integration) {
+            return $this->requestError('integration_not_found', 'The Emby integration was not found.', 404);
+        }
+
+        $integration->updateQuietly([
+            'emby_publisher_writable_paths' => $validated['writable_paths'],
+            'emby_publisher_capabilities_updated_at' => now(),
+        ]);
+
+        return $this->requestSuccess([
+            'integration_id' => $integration->id,
+            'writable_paths' => $integration->getEmbyPublisherWritablePaths(),
+        ]);
+    }
+
+    private function managedLibraryCatalog(
+        Request $request,
+        mixed $playlist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth,
+    ): JsonResponse {
+        $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
+        if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
+            return $this->requestError(
+                'library_publishing_unavailable',
+                'Managed library publishing is not available for these credentials.',
+                403,
+            );
+        }
+
+        $validator = Validator::make($request->all(), [
+            'api_version' => ['required', 'integer', 'in:1'],
+        ]);
+        if ($validator->fails()) {
+            return $this->apiVersionValidationError($request);
+        }
+
+        return response()->json(app(EmbyPublicationCatalogService::class)->buildForUser($effectivePlaylist->user));
+    }
+
+    private function managedLibrarySyncResult(
+        Request $request,
+        mixed $playlist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth,
+    ): JsonResponse {
+        $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
+        if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
+            return $this->requestError(
+                'library_publishing_unavailable',
+                'Managed library publishing is not available for these credentials.',
+                403,
+            );
+        }
+
+        $validator = Validator::make($request->all(), [
+            'api_version' => ['required', 'integer', 'in:1'],
+            'integration_id' => ['required', 'integer', 'min:1'],
+            'mapping_uuid' => ['required', 'uuid'],
+            'revision' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'status' => ['required', 'string', 'in:success,failed'],
+            'summary' => ['nullable', 'string', 'max:2000'],
+            'error' => ['nullable', 'string', 'max:2000'],
+        ]);
+        if ($validator->fails()) {
+            return $this->apiVersionValidationError($request);
+        }
+
+        $validated = $validator->validated();
+        $result = DB::transaction(function () use ($effectivePlaylist, $validated): array {
+            $mapping = EmbyLibraryMapping::query()
+                ->with('integration')
+                ->where('user_id', $effectivePlaylist->user_id)
+                ->where('media_server_integration_id', $validated['integration_id'])
+                ->where('uuid', $validated['mapping_uuid'])
+                ->where('enabled', true)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $mapping) {
+                return ['error' => 'mapping_not_found'];
+            }
+
+            if (! hash_equals((string) $mapping->last_planned_revision, $validated['revision'])) {
+                return ['error' => 'stale_revision'];
+            }
+
+            if ($validated['status'] !== 'success') {
+                $mapping->updateQuietly([
+                    'status' => 'failed',
+                    'status_summary' => EmbyLibraryMapping::redactSummary($validated['summary'] ?? null),
+                    'error_summary' => EmbyLibraryMapping::redactSummary($validated['error'] ?? null),
+                ]);
+
+                return ['error' => 'sync_failed'];
+            }
+
+            if ($mapping->last_applied_revision === $validated['revision']) {
+                return [
+                    'mapping' => $mapping,
+                    'duplicate' => true,
+                    'refresh' => false,
+                ];
+            }
+
+            $mapping->updateQuietly([
+                'last_applied_revision' => $validated['revision'],
+                'last_success_at' => now(),
+                'status' => 'synced',
+                'status_summary' => EmbyLibraryMapping::redactSummary($validated['summary'] ?? null)
+                    ?? 'Revision applied.',
+                'error_summary' => null,
+            ]);
+
+            return [
+                'mapping' => $mapping,
+                'duplicate' => false,
+                'refresh' => (bool) ($mapping->options['refresh'] ?? true),
+            ];
+        });
+
+        if (isset($result['error'])) {
+            return match ($result['error']) {
+                'mapping_not_found' => $this->requestError('mapping_not_found', 'The mapping was not found.', 404),
+                'stale_revision' => $this->requestError('stale_revision', 'The reported revision is not current.', 409),
+                default => $this->requestError('sync_failed', 'The companion reported a failed sync.', 422),
+            };
+        }
+
+        if ($result['refresh']) {
+            Bus::dispatch(new RefreshMediaServerLibraryJob(
+                $result['mapping']->integration,
+                notify: false,
+            ));
+        }
+
+        return $this->requestSuccess([
+            'applied' => true,
+            'duplicate' => $result['duplicate'],
+            'mapping_uuid' => $result['mapping']->uuid,
+            'revision' => $result['mapping']->last_applied_revision,
+        ]);
     }
 
     private function hasAIOStreams($playlist, string $authMethod, ?PlaylistAuth $playlistAuth): bool
