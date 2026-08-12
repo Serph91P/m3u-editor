@@ -185,3 +185,43 @@ test('converts source timezone to output timezone', function () {
         ->and($result->start->hour)->toBe(14)
         ->and($result->start->timezone->getName())->toBe('America/New_York');
 });
+
+test('year rollover treats same-date events consistently regardless of time of day', function () {
+    // Regression test for #1381: a fixed 12-hour instant buffer caused two events on
+    // the same (past) source date to be treated inconsistently depending on time of day,
+    // wrongly bumping the year for one but not the other.
+    Carbon::setTestNow(Carbon::create(2026, 8, 9, 8, 0, 0, 'America/New_York'));
+
+    $profile = makeProfile([
+        'time_regex' => '(\d{1,2}:\d{2}\s*[AP]M)\s+ET',
+        'date_regex' => '\((\d{2}\.\d{2})',
+        'date_format' => 'm.d',
+        'time_format' => 'g:i A',
+        'source_timezone' => 'America/New_York',
+        'output_timezone' => 'America/New_York',
+    ]);
+    $service = new AedExtractorService;
+
+    $noon = $service->extract($profile, 'Event (08.08 12:00 PM ET)');
+    $lateNight = $service->extract($profile, 'Event (08.08 11:30 PM ET)');
+
+    expect($noon->start->year)->toBe($lateNight->start->year);
+});
+
+test('year rollover does not bump events dated today or later', function () {
+    Carbon::setTestNow(Carbon::create(2026, 8, 9, 10, 0, 0, 'America/New_York'));
+
+    $profile = makeProfile([
+        'time_regex' => '(\d{1,2}:\d{2}\s*[AP]M)\s+ET',
+        'date_regex' => '\((\d{2}\.\d{2})',
+        'date_format' => 'm.d',
+        'time_format' => 'g:i A',
+        'source_timezone' => 'America/New_York',
+        'output_timezone' => 'America/New_York',
+    ]);
+    $service = new AedExtractorService;
+
+    $result = $service->extract($profile, 'Event (08.09 11:00 PM ET)');
+
+    expect($result->start->year)->toBe(2026);
+});

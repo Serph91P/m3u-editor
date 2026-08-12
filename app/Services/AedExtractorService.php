@@ -190,15 +190,21 @@ class AedExtractorService
                 return null;
             }
 
-            // If no year was in the date format, snap to the nearest upcoming occurrence
+            $startTime->setTimezone($outputTimezone);
+
+            // If no year was in the date format, snap to the nearest upcoming occurrence.
+            // Compare calendar dates in the output timezone (not a sliding instant buffer):
+            // only roll the year forward once the event's output-timezone date has fully
+            // passed today's output-timezone date. A fixed-hour buffer would treat two
+            // events on the same source date inconsistently depending on time of day.
             if (! $dateString || ! str_contains($profile->date_format ?? '', 'Y')) {
-                $now = Carbon::now($sourceTimezone);
-                if ($startTime->lt($now->copy()->subHours(12))) {
+                $today = Carbon::now($outputTimezone)->startOfDay();
+                if ($startTime->lt($today)) {
                     $startTime->addYear();
                 }
             }
 
-            return $startTime->setTimezone($outputTimezone);
+            return $startTime;
         } catch (Throwable) {
             return null;
         }
