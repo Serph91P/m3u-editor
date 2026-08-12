@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\ChannelLogoType;
+use App\Enums\PlaylistChannelId;
 use App\Enums\PlaylistSourceType;
 use App\Jobs\FetchTmdbIds;
 use App\Models\Scopes\ExcludeAioFailoverClonesScope;
@@ -232,6 +233,23 @@ class Channel extends Model
     public function getDisplayTitleAttribute(): string
     {
         return $this->title_custom ?? $this->title ?? $this->name_custom ?? $this->name ?? '';
+    }
+
+    /**
+     * Resolve the TVG/channel ID to output for the given playlist's "Preferred TVG ID output"
+     * setting. Used to keep the M3U, xmltv, Xtream API, and JSON EPG API outputs consistent
+     * with each other (e.g. so `epg_channel_id` matches the `<programme channel="...">` used
+     * in the generated xmltv guide data).
+     */
+    public function resolveTvgId(PlaylistChannelId $idChannelBy, int|string|null $channelNumber = null): int|string|null
+    {
+        return match ($idChannelBy) {
+            PlaylistChannelId::ChannelId => $this->id,
+            PlaylistChannelId::Number => $channelNumber,
+            PlaylistChannelId::Name => $this->name_custom ?? $this->name,
+            PlaylistChannelId::Title => $this->title_custom ?? $this->title,
+            default => $this->stream_id_custom ?? $this->source_id ?? $this->stream_id,
+        };
     }
 
     public function getFloatingPlayerAttributes(?string $username = null, ?string $password = null): array

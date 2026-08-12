@@ -446,23 +446,7 @@ class EpgApiController extends Controller
                 }
 
                 // Get the TVG ID
-                switch ($idChannelBy) {
-                    case PlaylistChannelId::ChannelId:
-                        $tvgId = $channel->id;
-                        break;
-                    case PlaylistChannelId::Number:
-                        $tvgId = $channelNo;
-                        break;
-                    case PlaylistChannelId::Name:
-                        $tvgId = $channel->name_custom ?? $channel->name;
-                        break;
-                    case PlaylistChannelId::Title:
-                        $tvgId = $channel->title_custom ?? $channel->title;
-                        break;
-                    default:
-                        $tvgId = $channel->source_id ?? $channel->stream_id_custom ?? $channel->stream_id;
-                        break;
-                }
+                $tvgId = $channel->resolveTvgId($idChannelBy, $channelNo);
 
                 // Get the channel URL with embedded auth. XtreamStreamController routes
                 // to the channelPlayer method, which applies the in-app transcoding

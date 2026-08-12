@@ -153,23 +153,7 @@ class PlaylistGenerateController extends Controller
                     }
 
                     // Get the TVG ID
-                    switch ($idChannelBy) {
-                        case PlaylistChannelId::ChannelId:
-                            $tvgId = $channel->id;
-                            break;
-                        case PlaylistChannelId::Number:
-                            $tvgId = $channelNo;
-                            break;
-                        case PlaylistChannelId::Name:
-                            $tvgId = $channel->name_custom ?? $channel->name;
-                            break;
-                        case PlaylistChannelId::Title:
-                            $tvgId = $channel->title_custom ?? $channel->title;
-                            break;
-                        default:
-                            $tvgId = $channel->stream_id_custom ?? $channel->source_id ?? $channel->stream_id;
-                            break;
-                    }
+                    $tvgId = $channel->resolveTvgId($idChannelBy, $channelNo);
 
                     // If no TVG ID still, fallback to the channel source ID or internal ID as a last resort
                     if (empty($tvgId)) {
@@ -574,23 +558,7 @@ class PlaylistGenerateController extends Controller
                 }
 
                 // Get the TVG ID
-                switch ($idChannelBy) {
-                    case PlaylistChannelId::ChannelId:
-                        $tvgId = $channel->id;
-                        break;
-                    case PlaylistChannelId::Number:
-                        $tvgId = $channelNo;
-                        break;
-                    case PlaylistChannelId::Name:
-                        $tvgId = $channel->name_custom ?? $channel->name;
-                        break;
-                    case PlaylistChannelId::Title:
-                        $tvgId = $channel->title_custom ?? $channel->title;
-                        break;
-                    default:
-                        $tvgId = $channel->stream_id_custom ?? $channel->source_id ?? $channel->stream_id;
-                        break;
-                }
+                $tvgId = $channel->resolveTvgId($idChannelBy, $channelNo);
 
                 // If no TVG ID still, fallback to the channel source ID or internal ID as a last resort
                 if (empty($tvgId)) {

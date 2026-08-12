@@ -831,23 +831,7 @@ class XtreamApiController extends Controller
                         $channelNo = ++$channelNumber;
                     }
 
-                    switch ($idChannelBy) {
-                        case PlaylistChannelId::ChannelId:
-                            $tvgId = $channel->id;
-                            break;
-                        case PlaylistChannelId::Number:
-                            $tvgId = $channelNo;
-                            break;
-                        case PlaylistChannelId::Name:
-                            $tvgId = $channel->name_custom ?? $channel->name;
-                            break;
-                        case PlaylistChannelId::Title:
-                            $tvgId = $channel->title_custom ?? $channel->title;
-                            break;
-                        default:
-                            $tvgId = $channel->source_id ?? $channel->stream_id_custom ?? $channel->stream_id;
-                            break;
-                    }
+                    $tvgId = $channel->resolveTvgId($idChannelBy, $channelNo);
 
                     if (empty($tvgId)) {
                         $tvgId = $channel->source_id ?? $channel->id;
