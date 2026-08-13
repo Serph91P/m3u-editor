@@ -854,7 +854,10 @@ it('enables tv archive for live streams when shift is set', function () {
     ]);
 
     // Channel with catchup enabled but no known duration - retention is
-    // unknown, not zero, so tv_archive_duration should be null (#1389).
+    // unknown, not zero, so tv_archive_duration falls back to a sensible
+    // default rather than asserting zero retention (#1389). It stays a
+    // plain int (never null) for compatibility with third-party Xtream
+    // clients like TiviMate that deserialize this as a non-nullable int.
     $channelWithUnknownDuration = Channel::factory()->for($this->playlist)->for($group)->create([
         'enabled' => true,
         'title_custom' => 'Channel With Unknown Duration',
@@ -885,7 +888,7 @@ it('enables tv archive for live streams when shift is set', function () {
 
     $unknownDurationData = collect($jsonResponse)->firstWhere('stream_id', $channelWithUnknownDuration->id);
     $this->assertEquals(1, $unknownDurationData['tv_archive'], 'tv_archive should be 1 when catchup is set even without a known duration');
-    $this->assertNull($unknownDurationData['tv_archive_duration'], 'unknown retention should be null, not 0, so m3u-tv applies its own fallback');
+    $this->assertEquals(7, $unknownDurationData['tv_archive_duration'], 'unknown retention falls back to a sensible default, not 0');
 
     $noArchiveData = collect($jsonResponse)->firstWhere('stream_id', $channelWithoutArchive->id);
     $this->assertEquals(0, $noArchiveData['tv_archive'], 'tv_archive should be 0 when no shift and no catchup');
