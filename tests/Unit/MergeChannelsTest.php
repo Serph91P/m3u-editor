@@ -42,6 +42,56 @@ it('does not merge channels with empty stream ids', function () {
     $this->assertDatabaseCount('channel_failovers', 1);
 });
 
+it('does not create a failover for a candidate with the exact same stream url as the master', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+
+    $master = Channel::factory()->create([
+        'stream_id' => 'streamDup',
+        'url' => 'http://provider.test/stream/dup.m3u8',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'enabled' => true,
+        'sort' => 1,
+    ]);
+
+    // Same stream_id, identical URL - a failover here is a no-op duplicate.
+    $identicalUrlCandidate = Channel::factory()->create([
+        'stream_id' => 'streamDup',
+        'url' => 'http://provider.test/stream/dup.m3u8',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'enabled' => true,
+        'sort' => 2,
+    ]);
+
+    // Same stream_id, different URL - this one still provides real redundancy.
+    $distinctUrlCandidate = Channel::factory()->create([
+        'stream_id' => 'streamDup',
+        'url' => 'http://provider.test/stream/dup-alt.m3u8',
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'group_id' => null,
+        'enabled' => true,
+        'sort' => 3,
+    ]);
+
+    $playlists = collect([['playlist_failover_id' => $playlist->id]]);
+
+    runMergeChannels($user, $playlists, $playlist->id);
+
+    $this->assertDatabaseMissing('channel_failovers', [
+        'channel_id' => $master->id,
+        'channel_failover_id' => $identicalUrlCandidate->id,
+    ]);
+    $this->assertDatabaseHas('channel_failovers', [
+        'channel_id' => $master->id,
+        'channel_failover_id' => $distinctUrlCandidate->id,
+    ]);
+});
+
 it('merges vod channels by tmdb id when requested', function () {
     $user = User::factory()->create();
     $playlist1 = Playlist::factory()->for($user)->createQuietly();
