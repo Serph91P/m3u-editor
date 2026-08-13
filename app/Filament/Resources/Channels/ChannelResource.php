@@ -196,9 +196,7 @@ class ChannelResource extends Resource implements CopilotResource
                 ->label(__('Info'))
                 ->wrap()
                 ->sortable(query: function (Builder $query, string $direction): Builder {
-                    return $query
-                        ->orderBy('title_custom', $direction)
-                        ->orderBy('title', $direction);
+                    return $query->orderByRaw("COALESCE(title_custom, title) {$direction}");
                 })
                 ->getStateUsing(function ($record) {
                     $info = $record->info;
@@ -259,9 +257,7 @@ class ChannelResource extends Resource implements CopilotResource
                 ->placeholder(fn ($record) => $record->stream_id)
                 ->searchable()
                 ->sortable(query: function (Builder $query, string $direction): Builder {
-                    return $query
-                        ->orderBy('stream_id_custom', $direction)
-                        ->orderBy('stream_id', $direction);
+                    return $query->orderByRaw("COALESCE(stream_id_custom, stream_id) {$direction}");
                 })
                 ->toggleable(),
             TextInputColumn::make('title_custom')
@@ -270,9 +266,7 @@ class ChannelResource extends Resource implements CopilotResource
                 ->placeholder(fn ($record) => $record->title)
                 ->searchable()
                 ->sortable(query: function (Builder $query, string $direction): Builder {
-                    return $query
-                        ->orderBy('title_custom', $direction)
-                        ->orderBy('title', $direction);
+                    return $query->orderByRaw("COALESCE(title_custom, title) {$direction}");
                 })
                 ->toggleable(),
             TextInputColumn::make('name_custom')
@@ -283,9 +277,7 @@ class ChannelResource extends Resource implements CopilotResource
                     return $query->orWhereRaw('LOWER(channels.name_custom) LIKE ?', ['%'.strtolower($search).'%']);
                 })
                 ->sortable(query: function (Builder $query, string $direction): Builder {
-                    return $query
-                        ->orderBy('name_custom', $direction)
-                        ->orderBy('name', $direction);
+                    return $query->orderByRaw("COALESCE(name_custom, name) {$direction}");
                 })
                 ->toggleable(),
             TextInputColumn::make('channel')
