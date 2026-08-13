@@ -35,6 +35,12 @@ use Illuminate\Support\Facades\Queue;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    // Freeze time so every now() call in this file (seeding and assertions)
+    // resolves to the same instant. Without this, a second boundary can tick
+    // between seeding a programme's start_time and asserting against a fresh
+    // now() call, producing an intermittent 1-second mismatch.
+    $this->freezeTime();
+
     Queue::fake();
 
     $this->user = User::factory()->create();
