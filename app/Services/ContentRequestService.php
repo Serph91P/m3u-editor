@@ -18,6 +18,7 @@ use App\Services\Arr\SonarrService;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -335,7 +336,11 @@ class ContentRequestService
         ?Carbon $reviewedAt = null,
     ): ?MediaRequest {
         try {
-            return MediaRequest::create([
+            // Wrapped in its own transaction so a unique-constraint failure only
+            // rolls back to a savepoint, not the whole ambient transaction - on
+            // Postgres, an uncaught-at-the-connection-level failed statement
+            // otherwise poisons every later query until an explicit rollback.
+            return DB::transaction(fn () => MediaRequest::create([
                 'playlist_auth_id' => $playlistAuth->id,
                 'arr_integration_id' => $integration->id,
                 'title' => $title,
@@ -345,7 +350,7 @@ class ContentRequestService
                 'status' => $status,
                 'requested_at' => now(),
                 'reviewed_at' => $reviewedAt,
-            ]);
+            ]));
         } catch (QueryException $e) {
             $message = $e->getMessage();
             if (str_contains($message, 'UNIQUE constraint failed')
