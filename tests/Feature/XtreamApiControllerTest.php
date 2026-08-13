@@ -888,11 +888,30 @@ it('enables tv archive for live streams when shift is set', function () {
 
     $unknownDurationData = collect($jsonResponse)->firstWhere('stream_id', $channelWithUnknownDuration->id);
     $this->assertEquals(1, $unknownDurationData['tv_archive'], 'tv_archive should be 1 when catchup is set even without a known duration');
-    $this->assertEquals(7, $unknownDurationData['tv_archive_duration'], 'unknown retention falls back to a sensible default, not 0');
+    $this->assertEquals(config('dev.default_epg_catchup_days'), $unknownDurationData['tv_archive_duration'], 'unknown retention falls back to the configured default, not 0');
 
     $noArchiveData = collect($jsonResponse)->firstWhere('stream_id', $channelWithoutArchive->id);
     $this->assertEquals(0, $noArchiveData['tv_archive'], 'tv_archive should be 0 when no shift and no catchup');
     $this->assertEquals(0, $noArchiveData['tv_archive_duration']);
+});
+
+it('respects dev.default_epg_catchup_days=0 to advertise no retention instead of the default fallback', function () {
+    config(['dev.default_epg_catchup_days' => 0]);
+
+    $group = Group::factory()->for($this->user)->create();
+    $channel = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'title_custom' => 'Channel With Unknown Duration',
+        'shift' => 0,
+        'catchup' => 'default',
+    ]);
+
+    $response = $this->getJson(getXtreamApiUrl($this->username, $this->password, 'get_live_streams'));
+    $response->assertStatus(200);
+
+    $data = collect($response->json())->firstWhere('stream_id', $channel->id);
+    $this->assertEquals(1, $data['tv_archive']);
+    $this->assertEquals(0, $data['tv_archive_duration']);
 });
 
 it('returns valid json with episode count for dvr series info', function () {

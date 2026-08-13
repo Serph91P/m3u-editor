@@ -122,8 +122,9 @@ class XtreamApiController extends Controller
      * `added`, `category_id`, `category_ids`, `tv_archive`, `tv_archive_duration`, `custom_sid`, `thumbnail`, `direct_source`.
      * The `direct_source` field contains the proxy URL when proxy is enabled, otherwise the Xtream-style stream URL.
      * The `thumbnail` field contains the same value as `stream_icon`.
-     * `tv_archive_duration` is in days. It falls back to 7 when `tv_archive` is `1` but the actual retention window
-     * is unknown (catchup enabled with no known duration), and is `0` when catchup is unavailable or disabled entirely.
+     * `tv_archive_duration` is in days. It falls back to `dev.default_epg_catchup_days` (env `DEFAULT_EPG_CATCHUP_DAYS`,
+     * default 7) when `tv_archive` is `1` but the actual retention window is unknown (catchup enabled with no known
+     * duration), and is `0` when catchup is unavailable or disabled entirely.
      *
      * ### get_vod_streams
      * Returns a JSON array of VOD channel objects (movies marked as VOD). Only enabled VOD channels are included.
@@ -3375,14 +3376,6 @@ class XtreamApiController extends Controller
     }
 
     /**
-     * Fallback retention (days) reported when catchup is enabled but no
-     * duration was ever supplied by the provider. Matches m3u-tv's own
-     * EpgService.kCatchupFallbackDays default so both sides agree without
-     * either needing to special-case the other.
-     */
-    private const int DEFAULT_CATCHUP_RETENTION_DAYS = 7;
-
-    /**
      * Resolve `tv_archive_duration` (days) for a live stream entry (#1389).
      *
      * `Channel::$shift` is stored in hours (see M3uImportCatchupShiftTest),
@@ -3395,9 +3388,10 @@ class XtreamApiController extends Controller
      * controller) deserialize this field as a non-nullable integer, so a
      * JSON null risks breaking their entire live-stream list rather than
      * degrading gracefully. When catchup is enabled but no duration is
-     * known, DEFAULT_CATCHUP_RETENTION_DAYS is reported instead of 0 - 0
-     * would assert "zero retention" to a client, when the retention is
-     * actually just unconfigured.
+     * known, `dev.default_epg_catchup_days` (env `DEFAULT_EPG_CATCHUP_DAYS`)
+     * is reported instead of 0 - 0 would assert "zero retention" to a
+     * client, when the retention is actually just unconfigured. Users who'd
+     * rather advertise no retention in that case can set the env var to 0.
      */
     private function resolveTvArchiveDuration(Channel $channel, bool $disableCatchup): int
     {
@@ -3413,7 +3407,7 @@ class XtreamApiController extends Controller
             return (int) ceil($channel->shift / 24);
         }
 
-        return self::DEFAULT_CATCHUP_RETENTION_DAYS;
+        return (int) config('dev.default_epg_catchup_days', 7);
     }
 
     private function hasAIOStreams($playlist, string $authMethod, ?PlaylistAuth $playlistAuth): bool
