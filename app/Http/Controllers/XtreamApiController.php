@@ -35,6 +35,7 @@ use App\Models\StreamProfile;
 use App\Models\ViewerFavorite;
 use App\Models\ViewerWatchProgress;
 use App\Providers\VersionServiceProvider;
+use App\Services\AIOStreamsAuthorizationService;
 use App\Services\ContentRequestService;
 use App\Services\DvrCapabilityGate;
 use App\Services\DvrRecorderService;
@@ -3373,24 +3374,7 @@ class XtreamApiController extends Controller
 
     private function hasAIOStreams($playlist, string $authMethod, ?PlaylistAuth $playlistAuth): bool
     {
-        $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
-
-        if (! $effectivePlaylist) {
-            return false;
-        }
-
-        $hasEnabledAiostreams = $effectivePlaylist->aiostreams_integration_id !== null
-            && optional($effectivePlaylist->aiostreamsIntegration)->enabled;
-
-        if (! $hasEnabledAiostreams) {
-            return false;
-        }
-
-        if ($authMethod !== 'playlist_auth') {
-            return true;
-        }
-
-        return (bool) $playlistAuth?->aiostreams_enabled;
+        return app(AIOStreamsAuthorizationService::class)->isEnabled($playlist, $authMethod, $playlistAuth);
     }
 
     /**

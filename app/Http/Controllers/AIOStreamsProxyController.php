@@ -2,13 +2,10 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\CustomPlaylist;
+use App\Facades\PlaylistFacade;
 use App\Models\MediaServerIntegration;
-use App\Models\MergedPlaylist;
-use App\Models\Playlist;
-use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
+use App\Services\AIOStreamsAuthorizationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -138,67 +135,42 @@ class AIOStreamsProxyController extends Controller
     }
 
     /**
-     * Authenticate the request and resolve an enabled AIOStreams integration for the given credentials.
+     * Authenticate the request and resolve the AIOStreams integration for the given
+     * credentials - only the integration actually assigned to the caller's effective
+     * playlist is ever returned, never an arbitrary integration ID owned by the same
+     * user (see #1384). Mirrors the authorization Xtream's feature advertisement uses.
      */
     private function resolveIntegration(string $username, string $password, int $integrationId): ?MediaServerIntegration
     {
-        $userId = $this->resolveUserId($username, $password);
+        $auth = PlaylistFacade::authenticate($username, $password);
 
-        if (! $userId) {
+        if (! $auth || $auth[0] === null || $auth[1] === 'none') {
+            return null;
+        }
+
+        [$playlist, $authMethod] = $auth;
+
+        $playlistAuth = $authMethod === 'playlist_auth'
+            ? PlaylistAuth::where('username', $username)
+                ->where('password', $password)
+                ->where('enabled', true)
+                ->first()
+            : null;
+
+        if ($playlistAuth && $playlistAuth->isExpired()) {
+            return null;
+        }
+
+        $authService = app(AIOStreamsAuthorizationService::class);
+
+        if (! $authService->isAuthorizedForIntegration($playlist, $authMethod, $playlistAuth, $integrationId)) {
             return null;
         }
 
         return MediaServerIntegration::where('id', $integrationId)
-            ->where('user_id', $userId)
             ->where('type', 'aiostreams')
             ->where('enabled', true)
             ->whereNotNull('manifest_url')
             ->first();
-    }
-
-    /**
-     * Resolve a user ID from playlist credentials (username + password).
-     * Mirrors the auth logic in XtreamStreamController.
-     */
-    private function resolveUserId(string $username, string $password): ?int
-    {
-        // Method 1: PlaylistAuth credentials
-        $playlistAuth = PlaylistAuth::where('username', $username)
-            ->where('password', $password)
-            ->where('enabled', true)
-            ->first();
-
-        if ($playlistAuth && ! $playlistAuth->isExpired()) {
-            $model = $playlistAuth->getAssignedModel();
-            if ($model) {
-                return $model->user_id;
-            }
-        }
-
-        // Method 2: Playlist UUID as password
-        $models = [Playlist::class, MergedPlaylist::class, CustomPlaylist::class, PlaylistAlias::class];
-
-        foreach ($models as $modelClass) {
-            try {
-                $record = $modelClass::with('user')->where('uuid', $password)->firstOrFail();
-                if ($record->user->name === $username) {
-                    return $record->user_id;
-                }
-            } catch (ModelNotFoundException) {
-                continue;
-            }
-        }
-
-        // PlaylistAlias with direct username/password match
-        try {
-            $alias = PlaylistAlias::with('user')
-                ->where('username', $username)
-                ->where('password', $password)
-                ->firstOrFail();
-
-            return $alias->user_id;
-        } catch (ModelNotFoundException) {
-            return null;
-        }
     }
 }
