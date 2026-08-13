@@ -119,6 +119,7 @@ class PlaylistsRelationManager extends RelationManager
                         'include_vod' => $record->pivot->include_vod,
                         'include_series' => $record->pivot->include_series,
                     ])
+                    ->modalWidth('md')
                     ->modalHeading(fn (Playlist $record): string => __('Edit content types for :name', ['name' => $record->name]))
                     ->schema(self::contentTypeToggles())
                     ->action(function (array $data, Playlist $record) {
