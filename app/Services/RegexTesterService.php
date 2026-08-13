@@ -64,6 +64,12 @@ class RegexTesterService
                 ->limit($limit)
                 ->pluck('display_name'),
 
+            'urls' => Channel::where('user_id', $userId)
+                ->whereNotNull('url')
+                ->inRandomOrder()
+                ->limit($limit)
+                ->pluck('url'),
+
             default => collect(),
         };
     }

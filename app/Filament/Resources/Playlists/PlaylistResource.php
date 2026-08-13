@@ -1908,6 +1908,61 @@ class PlaylistResource extends Resource implements CopilotResource
                         ])->splitKeys(['Tab', 'Return']),
                 ]),
 
+            Section::make(__('URL Find & Replace Preprocessing'))
+                ->description(__('Define find & replace rules that run against each provider stream URL during import, before channels are saved. Useful for cleaning up malformed provider URLs (e.g. fixing a wrong scheme or port). Rules execute in order and only affect newly imported data - existing channel URLs are not modified until the next sync.'))
+                ->columnSpanFull()
+                ->collapsible()
+                ->collapsed($creating)
+                ->schema([
+                    Repeater::make('url_find_replace_rules')
+                        ->label(__('URL Find & Replace Rule'))
+                        ->schema([
+                            Toggle::make('enabled')
+                                ->label(__('Enabled'))
+                                ->default(true)
+                                ->inline(false)
+                                ->columnSpan(1),
+                            TextInput::make('name')
+                                ->label(__('Rule Name'))
+                                ->required()
+                                ->placeholder(__('e.g. Fix https on port 80'))
+                                ->columnSpan(2),
+                            Toggle::make('use_regex')
+                                ->label(__('Use regex for URL find & replace'))
+                                ->default(false)
+                                ->inline(false)
+                                ->live()
+                                ->columnSpan(2),
+                            TextInput::make('find')
+                                ->label(fn (Get $get): string => ($get('use_regex') ?? false) ? __('Pattern to find') : __('String to find'))
+                                ->required()
+                                ->placeholder(fn (Get $get): string => ($get('use_regex') ?? false) ? '^https://(.*):80/' : 'https://')
+                                ->rules(fn (Get $get) => $get('use_regex') ? [new ValidRegexPattern] : [])
+                                ->suffixAction(
+                                    RegexTesterAction::make(
+                                        samplesContext: 'urls',
+                                        patternField: 'find',
+                                        replacementField: 'replace_with',
+                                    )->visible(fn (Get $get): bool => (bool) ($get('use_regex') ?? false))
+                                )
+                                ->columnSpan(3),
+                            TextInput::make('replace_with')
+                                ->label(__('Replace with'))
+                                ->placeholder(__('Leave empty to remove'))
+                                ->columnSpan(3),
+                        ])
+                        ->columns(11)
+                        ->reorderable()
+                        ->reorderableWithButtons()
+                        ->collapsible()
+                        ->defaultItems(0)
+                        ->addActionLabel('Add URL find & replace rule')
+                        ->itemLabel(fn (array $state): ?string => ($state['name'] ?? null)
+                            ? ($state['name'].($state['enabled'] ?? true ? '' : ' (disabled)'))
+                            : null
+                        ),
+                ]),
+
             Section::make(__('Stream Probing'))
                 ->description(__('Configure automatic stream probing after each playlist sync.'))
                 ->columnSpanFull()

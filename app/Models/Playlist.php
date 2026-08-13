@@ -66,6 +66,7 @@ class Playlist extends Model
         'probe_use_batching' => 'boolean',
         'probe_timeout' => 'integer',
         'find_replace_rules' => 'array',
+        'url_find_replace_rules' => 'array',
         'sort_alpha_config' => 'array',
         'channel_enable_rules' => 'array',
         'auto_sync_to_custom_config' => 'array',

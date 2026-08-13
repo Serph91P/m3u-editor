@@ -95,6 +95,9 @@ class ProcessM3uImport implements ShouldQueue
     // Groups we should auto-enable channels for
     public Collection $enabledGroups;
 
+    // Enabled URL find & replace rules for this playlist, applied to provider URLs during import
+    public Collection $urlFindReplaceRules;
+
     // EPG mapping enabled by default
     public bool $epgMapEnabled = true;
 
@@ -162,6 +165,10 @@ class ProcessM3uImport implements ShouldQueue
         // Get the enabled groups and categories for this playlist
         $this->enabledGroups = $playlist->groups()->where('enabled', true)->get('name')->pluck('name');
         $this->enabledCategories = $playlist->categories()->where('enabled', true)->get('name')->pluck('name');
+
+        // URL find & replace rules, applied to provider stream URLs before they're saved
+        $this->urlFindReplaceRules = collect($playlist->url_find_replace_rules ?? [])
+            ->filter(fn (array $rule): bool => ($rule['enabled'] ?? false) && filled($rule['find'] ?? null));
     }
 
     /**
@@ -664,7 +671,7 @@ class ProcessM3uImport implements ShouldQueue
                             ...$channelFields,
                             'title' => $item->name,
                             'name' => $item->name,
-                            'url' => "$streamBaseUrl/{$item->stream_id}.$output",
+                            'url' => $this->applyUrlFindReplaceRules("$streamBaseUrl/{$item->stream_id}.$output"),
                             'logo_internal' => Str::replace(' ', '%20', $item->stream_icon ?? ''), // internal logo path
                             'group' => $category['category_name'] ?? '',
                             'group_internal' => $category['category_name'] ?? '',
@@ -718,7 +725,7 @@ class ProcessM3uImport implements ShouldQueue
                             ...$channelFields,
                             'title' => $item->name,
                             'name' => $item->name,
-                            'url' => "$vodBaseUrl/{$item->stream_id}.".$extension,
+                            'url' => $this->applyUrlFindReplaceRules("$vodBaseUrl/{$item->stream_id}.".$extension),
                             'logo_internal' => Str::replace(' ', '%20', $item->stream_icon ?? ''), // internal logo path
                             'group' => $category['category_name'] ?? '',
                             'group_internal' => $category['category_name'] ?? '',
@@ -945,7 +952,7 @@ class ProcessM3uImport implements ShouldQueue
                         }
                         $channel = [
                             ...$channelFields,
-                            'url' => $url,
+                            'url' => $this->applyUrlFindReplaceRules($url),
                         ];
                         $extvlcopt = [];
                         $kodidrop = [];
@@ -1993,6 +2000,37 @@ class ProcessM3uImport implements ShouldQueue
         }
 
         app(SyncPipelineService::class)->fail($run, $reason);
+    }
+
+    /**
+     * Apply the playlist's URL find & replace rules, in order, to a single provider stream URL.
+     */
+    private function applyUrlFindReplaceRules(?string $url): ?string
+    {
+        if (! $url || $this->urlFindReplaceRules->isEmpty()) {
+            return $url;
+        }
+
+        foreach ($this->urlFindReplaceRules as $rule) {
+            $find = $rule['find'];
+            $replace = $rule['replace_with'] ?? '';
+
+            if ($rule['use_regex'] ?? false) {
+                // Escape existing delimiters in user input
+                $delimiter = '/';
+                $pattern = str_replace($delimiter, '\\'.$delimiter, $find);
+                $finalPattern = $delimiter.$pattern.$delimiter.'ui';
+
+                $newUrl = @preg_replace($finalPattern, $replace, $url);
+                if ($newUrl !== null) {
+                    $url = $newUrl;
+                }
+            } else {
+                $url = str_ireplace($find, $replace, $url);
+            }
+        }
+
+        return $url;
     }
 
     /**
