@@ -65,6 +65,32 @@ it('tvBroadcast dispatches TvNotificationEvent with correct payload', function (
     });
 });
 
+it('TvNotificationEvent broadcasts admin_only in snake_case matching the REST payload', function () {
+    Notification::make()
+        ->title('Admin alert')
+        ->warning()
+        ->tvBroadcast($this->playlist, 'billing', adminOnly: true);
+
+    $record = TvNotification::first();
+    $event = new TvNotificationEvent(
+        id: $record->id,
+        notifiableType: $record->notifiable_type,
+        notifiableId: $record->notifiable_id,
+        notifiableUuid: $this->playlist->uuid,
+        adminOnly: $record->admin_only,
+        channel: $record->channel,
+        title: $record->title,
+        body: $record->body ?? '',
+        status: $record->status,
+        playlistAuthId: $record->playlist_auth_id,
+        metadata: $record->metadata,
+    );
+
+    expect($event->broadcastWith())
+        ->toHaveKey('admin_only', true)
+        ->not->toHaveKey('adminOnly');
+});
+
 it('tvBroadcast defaults channel to general and adminOnly to false', function () {
     Event::fake([TvNotificationEvent::class]);
 

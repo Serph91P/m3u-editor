@@ -54,4 +54,23 @@ class TvNotificationEvent implements ShouldBroadcast
     {
         return 'tv.notification';
     }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function broadcastWith(): array
+    {
+        return [
+            'id' => $this->id,
+            'notifiable_type' => $this->notifiableType,
+            'notifiable_id' => $this->notifiableId,
+            'channel' => $this->channel,
+            'admin_only' => $this->adminOnly,
+            'title' => $this->title,
+            'body' => $this->body,
+            'status' => $this->status,
+            'playlist_auth_id' => $this->playlistAuthId,
+            'metadata' => $this->metadata,
+        ];
+    }
 }
