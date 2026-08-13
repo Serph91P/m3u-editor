@@ -122,6 +122,8 @@ class XtreamApiController extends Controller
      * `added`, `category_id`, `category_ids`, `tv_archive`, `tv_archive_duration`, `custom_sid`, `thumbnail`, `direct_source`.
      * The `direct_source` field contains the proxy URL when proxy is enabled, otherwise the Xtream-style stream URL.
      * The `thumbnail` field contains the same value as `stream_icon`.
+     * `tv_archive_duration` is in days. It is `null` when `tv_archive` is `1` but the actual retention window is
+     * unknown (catchup enabled with no known duration), and `0` when catchup is unavailable or disabled entirely.
      *
      * ### get_vod_streams
      * Returns a JSON array of VOD channel objects (movies marked as VOD). Only enabled VOD channels are included.
@@ -289,7 +291,7 @@ class XtreamApiController extends Controller
      *     "category_id": "1",
      *     "category_ids": [1],
      *     "tv_archive": 1,
-     *     "tv_archive_duration": 24,
+     *     "tv_archive_duration": 7,
      *     "custom_sid": "cnn-hd",
      *     "thumbnail": "https://example.com/logos/cnn.png",
      *     "direct_source": ""
@@ -862,7 +864,7 @@ class XtreamApiController extends Controller
                         'category_id' => $channelCategoryId,
                         'category_ids' => [(int) $channelCategoryId],
                         'tv_archive' => (! $disableCatchup && ($channel->catchup || $channel->shift)) ? 1 : 0,
-                        'tv_archive_duration' => $disableCatchup ? 0 : ($channel->shift ?? 0),
+                        'tv_archive_duration' => $this->resolveTvArchiveDuration($channel, $disableCatchup),
                         'custom_sid' => $channel->stream_id_custom ?? '',
                         'thumbnail' => $streamIcon,
                         'direct_source' => '',
@@ -3370,6 +3372,37 @@ class XtreamApiController extends Controller
             'mapping_uuid' => $result['mapping']->uuid,
             'revision' => $result['mapping']->last_applied_revision,
         ]);
+    }
+
+    /**
+     * Resolve `tv_archive_duration` (days) for a live stream entry (#1389).
+     *
+     * `Channel::$shift` is stored in hours (see M3uImportCatchupShiftTest),
+     * matching the various hour/day provider attributes it's normalized
+     * from, but standard Xtream clients (and m3u-tv) expect this field in
+     * days - so it must be converted here, not echoed as-is.
+     *
+     * When catchup is enabled but no duration is known (no shift value was
+     * ever supplied by the provider), this returns null rather than 0: 0
+     * would assert "zero retention" to a client, whereas null lets m3u-tv's
+     * own client-side fallback (EpgService.kCatchupFallbackDays) apply a
+     * sensible default instead of hiding catchup entirely.
+     */
+    private function resolveTvArchiveDuration(Channel $channel, bool $disableCatchup): ?int
+    {
+        if ($disableCatchup) {
+            return 0;
+        }
+
+        if (! $channel->catchup && ! $channel->shift) {
+            return 0;
+        }
+
+        if ($channel->shift) {
+            return (int) ceil($channel->shift / 24);
+        }
+
+        return null;
     }
 
     private function hasAIOStreams($playlist, string $authMethod, ?PlaylistAuth $playlistAuth): bool

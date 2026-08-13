@@ -836,7 +836,8 @@ it('orders series categories by sort order for a regular playlist', function () 
 it('enables tv archive for live streams when shift is set', function () {
     $group = Group::factory()->for($this->user)->create();
 
-    // Channel with shift > 0 but no catchup value (custom channel scenario)
+    // Channel with shift > 0 but no catchup value (custom channel scenario).
+    // shift is stored in hours; tv_archive_duration is reported in days (#1389).
     $channelWithShift = Channel::factory()->for($this->playlist)->for($group)->create([
         'enabled' => true,
         'title_custom' => 'Channel With Shift',
@@ -844,11 +845,20 @@ it('enables tv archive for live streams when shift is set', function () {
         'catchup' => null,
     ]);
 
-    // Channel with catchup set (provider-imported scenario)
+    // Channel with catchup and a known duration (provider-imported scenario).
     $channelWithCatchup = Channel::factory()->for($this->playlist)->for($group)->create([
         'enabled' => true,
         'title_custom' => 'Channel With Catchup',
-        'shift' => 24,
+        'shift' => 48,
+        'catchup' => 'default',
+    ]);
+
+    // Channel with catchup enabled but no known duration - retention is
+    // unknown, not zero, so tv_archive_duration should be null (#1389).
+    $channelWithUnknownDuration = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'title_custom' => 'Channel With Unknown Duration',
+        'shift' => 0,
         'catchup' => 'default',
     ]);
 
@@ -867,11 +877,15 @@ it('enables tv archive for live streams when shift is set', function () {
 
     $shiftData = collect($jsonResponse)->firstWhere('stream_id', $channelWithShift->id);
     $this->assertEquals(1, $shiftData['tv_archive'], 'tv_archive should be 1 when shift > 0');
-    $this->assertEquals(12, $shiftData['tv_archive_duration']);
+    $this->assertEquals(1, $shiftData['tv_archive_duration'], '12 hours rounds up to 1 day');
 
     $catchupData = collect($jsonResponse)->firstWhere('stream_id', $channelWithCatchup->id);
     $this->assertEquals(1, $catchupData['tv_archive'], 'tv_archive should be 1 when catchup is set');
-    $this->assertEquals(24, $catchupData['tv_archive_duration']);
+    $this->assertEquals(2, $catchupData['tv_archive_duration'], '48 hours converts to 2 days');
+
+    $unknownDurationData = collect($jsonResponse)->firstWhere('stream_id', $channelWithUnknownDuration->id);
+    $this->assertEquals(1, $unknownDurationData['tv_archive'], 'tv_archive should be 1 when catchup is set even without a known duration');
+    $this->assertNull($unknownDurationData['tv_archive_duration'], 'unknown retention should be null, not 0, so m3u-tv applies its own fallback');
 
     $noArchiveData = collect($jsonResponse)->firstWhere('stream_id', $channelWithoutArchive->id);
     $this->assertEquals(0, $noArchiveData['tv_archive'], 'tv_archive should be 0 when no shift and no catchup');
