@@ -103,6 +103,11 @@ class MergedPlaylistResource extends Resource implements CopilotResource
                 TextColumn::make('name')
                     ->searchable()
                     ->sortable(),
+                TextColumn::make('groups_count')
+                    ->label(__('Groups'))
+                    ->counts('groups')
+                    ->toggleable()
+                    ->sortable(),
                 // Tables\Columns\TextColumn::make('channels_count')
                 //     ->label(__('Channels'))
                 //     ->counts('channels')

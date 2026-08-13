@@ -80,7 +80,9 @@ class MergedPlaylist extends Model
 
     public function playlists(): BelongsToMany
     {
-        return $this->belongsToMany(Playlist::class, 'merged_playlist_playlist');
+        return $this->belongsToMany(Playlist::class, 'merged_playlist_playlist')
+            ->using(MergedPlaylistPivot::class)
+            ->withPivot(['include_live', 'include_vod', 'include_series']);
     }
 
     public function channels(): HasManyThrough
@@ -92,7 +94,15 @@ class MergedPlaylist extends Model
             'playlist_id',
             'id',
             'playlist_id'
-        );
+        )->where(function ($query) {
+            // Per-source content-type toggle: a channel only comes through if its
+            // source playlist is configured to contribute that content type.
+            $query->where(function ($q) {
+                $q->where('channels.is_vod', false)->where('merged_playlist_playlist.include_live', true);
+            })->orWhere(function ($q) {
+                $q->where('channels.is_vod', true)->where('merged_playlist_playlist.include_vod', true);
+            });
+        });
     }
 
     public function groups(): HasManyThrough
@@ -121,7 +131,7 @@ class MergedPlaylist extends Model
             'playlist_id',
             'id',
             'playlist_id'
-        );
+        )->where('merged_playlist_playlist.include_series', true);
     }
 
     public function enabled_series(): HasManyThrough
@@ -138,7 +148,7 @@ class MergedPlaylist extends Model
             'playlist_id',
             'id',
             'playlist_id'
-        );
+        )->where('merged_playlist_playlist.include_series', true);
     }
 
     public function episodes(): HasManyThrough
@@ -150,7 +160,7 @@ class MergedPlaylist extends Model
             'playlist_id',
             'id',
             'playlist_id'
-        );
+        )->where('merged_playlist_playlist.include_series', true);
     }
 
     public function live_channels(): HasManyThrough
