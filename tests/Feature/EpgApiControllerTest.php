@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\AedProfile;
 use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
@@ -146,6 +147,36 @@ it('does not generate dummy epg when disabled', function () {
 
     // Programmes should be empty or not include the channel without EPG
     $this->assertEmpty($data['programmes'][$channelId] ?? []);
+});
+
+it('generates aed dummy epg for a channel with an assigned aed profile even when playlist dummy epg is disabled', function () {
+    $this->playlist->update(['dummy_epg' => false]);
+
+    $aedProfile = new AedProfile;
+    $aedProfile->forceFill([
+        'user_id' => $this->user->id,
+        'name' => 'Independent AED',
+        'event_duration_minutes' => 120,
+    ])->save();
+
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'is_vod' => false,
+        'channel' => 995,
+        'aed_profile_id' => $aedProfile->id,
+    ]);
+
+    $response = $this->getJson("/api/epg/playlist/{$this->playlist->uuid}/data");
+
+    $response->assertSuccessful();
+
+    $data = $response->json();
+    $channel->refresh();
+    $channelId = $channel->id;
+
+    $this->assertNotEmpty($data['programmes'][$channelId] ?? [], 'AED-assigned channel should get dummy programmes even with playlist dummy_epg disabled');
 });
 
 it('can disable dummy epg category', function () {

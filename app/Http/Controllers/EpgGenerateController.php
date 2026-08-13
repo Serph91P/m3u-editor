@@ -214,7 +214,7 @@ class EpgGenerateController extends Controller
                     echo PHP_EOL.'    <icon src="'.$this->escapeXml($icon).'"/>';
                 }
                 echo PHP_EOL.'  </channel>'.PHP_EOL;
-            } elseif ($dummyEpgEnabled) {
+            } elseif ($dummyEpgEnabled || $aedProfileId) {
                 // Get the icon
                 $icon = $channel->logo ?? $channel->logo_internal ?? '';
                 if (empty($icon)) {

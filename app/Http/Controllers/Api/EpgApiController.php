@@ -403,7 +403,7 @@ class EpgApiController extends Controller
                         'group' => $channel->group ?? $channel->group_internal,
                         'logo' => $logo ?? '',
                     ];
-                } elseif ($dummyEpgEnabled) {
+                } elseif ($dummyEpgEnabled || $aedProfileId) {
                     // Get the icon
                     $icon = $channel->logo ?? $channel->logo_internal ?? '';
                     if (empty($icon)) {

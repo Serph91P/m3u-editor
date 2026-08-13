@@ -418,6 +418,40 @@ test('standard dummy programmes do not copy channel branding into programme artw
         ->and($xpath->query('//programme[@channel="dummy-channel"]/icon'))->toHaveCount(0);
 });
 
+test('aed dummy programmes are generated even when the playlist dummy epg toggle is disabled', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->create([
+        'dummy_epg' => false,
+    ]);
+    $aedProfile = new AedProfile;
+    $aedProfile->forceFill([
+        'user_id' => $user->id,
+        'name' => 'Independent AED',
+        'event_duration_minutes' => 7200,
+    ])->save();
+
+    Channel::factory()->for($user)->for($playlist)->create([
+        'enabled' => true,
+        'is_vod' => false,
+        'stream_id' => 'aed-independent-channel',
+        'title' => 'AED Independent Channel',
+        'channel' => 1,
+        'aed_profile_id' => $aedProfile->id,
+    ]);
+
+    $response = $this->get("/{$playlist->uuid}/epg.xml.gz");
+
+    $response->assertOk()->assertHeader('Content-Type', 'application/gzip');
+
+    $document = new DOMDocument;
+    expect($document->loadXML(gzdecode($response->getContent())))->toBeTrue();
+
+    $xpath = new DOMXPath($document);
+
+    expect($xpath->query('//channel[@id="aed-independent-channel"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[@channel="aed-independent-channel"]'))->toHaveCount(1);
+});
+
 test('aed dummy programmes do not fall back to channel branding for programme artwork', function () {
     $user = User::factory()->create();
     $playlist = Playlist::factory()->for($user)->create([
