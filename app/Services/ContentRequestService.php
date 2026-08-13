@@ -287,15 +287,10 @@ class ContentRequestService
             ];
         }
 
-        $result = $service->add($payload);
-        if (! ($result['ok'] ?? false)) {
-            return [
-                'ok' => false,
-                'code' => 'submission_failed',
-                'error' => 'The request provider could not accept this title.',
-            ];
-        }
-
+        // Claim the request atomically (via the partial unique index on active
+        // statuses) before calling the provider. Concurrent duplicate submissions
+        // then race on this DB insert instead of both reaching $service->add(),
+        // which would otherwise double-add the same title on the provider side.
         $mediaRequest = $this->createMediaRequest(
             $playlistAuth,
             $integration,
@@ -308,6 +303,17 @@ class ContentRequestService
         );
         if (! $mediaRequest) {
             return ['ok' => false, 'code' => 'already_requested', 'error' => 'This title has already been requested.'];
+        }
+
+        $result = $service->add($payload);
+        if (! ($result['ok'] ?? false)) {
+            $mediaRequest->delete();
+
+            return [
+                'ok' => false,
+                'code' => 'submission_failed',
+                'error' => 'The request provider could not accept this title.',
+            ];
         }
 
         return [
