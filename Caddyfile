@@ -119,9 +119,10 @@
     # This must come after specific route handlers
     php_fastcgi m3u-editor:9000 {
         root /var/www/html/public
-        # Increase timeout for long-running requests
-        read_timeout 300s
-        write_timeout 300s
+        # Covers clients downloading large generated playlists/EPG via player_api.php,
+        # get.php, xmltv.php, etc. Configurable via NGINX_READ_TIMEOUT, default 900s (15 min).
+        read_timeout {$NGINX_READ_TIMEOUT:900}s
+        write_timeout {$NGINX_READ_TIMEOUT:900}s
     }
 
     # Enable file serving for static assets

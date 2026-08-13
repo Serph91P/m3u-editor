@@ -223,6 +223,10 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: m3u-caddy
+    environment:
+      # How long Caddy waits for Laravel to finish generating a response - covers
+      # clients downloading large generated playlists/EPG. Default 900s (15 min).
+      NGINX_READ_TIMEOUT: "${NGINX_READ_TIMEOUT:-900}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Share public directory from m3u-editor container for static file serving

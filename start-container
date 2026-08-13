@@ -59,6 +59,12 @@ export APP_PORT="${APP_PORT:-36400}" # Default 36400
 export XTREAM_PORT="${XTREAM_PORT:-36401}" # Default 36401
 export XTREAM_ONLY_ENABLED="${XTREAM_ONLY_ENABLED:-false}" # Default disabled
 
+# How long nginx waits for Laravel to finish generating a response (fastcgi_read_timeout)
+# and for proxy_pass'd requests (proxy_read_timeout/proxy_send_timeout) - covers clients
+# downloading large generated playlists/EPG via player_api.php, get.php, xmltv.php, etc.
+# Default 900s (15 min), matches PLAYLIST_DOWNLOAD_TIMEOUT/EPG_DOWNLOAD_TIMEOUT.
+export NGINX_READ_TIMEOUT="${NGINX_READ_TIMEOUT:-900}"
+
 # Set proxy reverse proxy target and token based on mode
 if [ "${M3U_PROXY_INTEGRATION_ENABLED}" = "true" ] && [ "${M3U_PROXY_ENABLED}" = "true" ]; then
     # Embedded mode - proxy through nginx to localhost
@@ -265,7 +271,7 @@ if [ -f /etc/php84/php-fpm.d/www.tmpl ]; then
     envsubst '${FPMUSER} ${FPMGROUP} ${FPMPORT}' < /etc/php84/php-fpm.d/www.tmpl > /etc/php84/php-fpm.d/www.conf
 fi
 if [ -f /etc/nginx/nginx.tmpl ]; then
-    envsubst '${NGINX_USER}' < /etc/nginx/nginx.tmpl > /etc/nginx/nginx.conf
+    envsubst '${NGINX_USER} ${NGINX_READ_TIMEOUT}' < /etc/nginx/nginx.tmpl > /etc/nginx/nginx.conf
 fi
 if [ -f /etc/redis/redis.tmpl ]; then
     envsubst '${REDIS_SERVER_PORT}' < /etc/redis/redis.tmpl > /etc/redis/redis.conf
