@@ -339,6 +339,14 @@ return [
         '57e265dc6af9',
         'db463012a7cf',
 
+        // ChannelResource (#1346 title/name/stream_id sort fix): $direction is
+        // Filament's table sort direction, validated to 'asc'|'desc' via
+        // ternary immediately before interpolation — same guarantee as the
+        // ChannelController fix above.
+        'f8a660d33460', // title_custom sortable (used on both the `info` and `title_custom` columns)
+        '56d4b412ca84', // stream_id_custom sortable
+        '40377b7d003c', // name_custom sortable
+
         // ── XSS — controlled server-side rendering ───────────────────────────
         // regex-tester.blade.php: {!! !!} renders output from a Livewire
         // component method — content is generated server-side, not from raw

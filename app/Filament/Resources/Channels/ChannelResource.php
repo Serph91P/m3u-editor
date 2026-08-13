@@ -196,6 +196,8 @@ class ChannelResource extends Resource implements CopilotResource
                 ->label(__('Info'))
                 ->wrap()
                 ->sortable(query: function (Builder $query, string $direction): Builder {
+                    $direction = strtolower($direction) === 'desc' ? 'desc' : 'asc';
+
                     return $query->orderByRaw("COALESCE(title_custom, title) {$direction}");
                 })
                 ->getStateUsing(function ($record) {
@@ -257,6 +259,8 @@ class ChannelResource extends Resource implements CopilotResource
                 ->placeholder(fn ($record) => $record->stream_id)
                 ->searchable()
                 ->sortable(query: function (Builder $query, string $direction): Builder {
+                    $direction = strtolower($direction) === 'desc' ? 'desc' : 'asc';
+
                     return $query->orderByRaw("COALESCE(stream_id_custom, stream_id) {$direction}");
                 })
                 ->toggleable(),
@@ -266,6 +270,8 @@ class ChannelResource extends Resource implements CopilotResource
                 ->placeholder(fn ($record) => $record->title)
                 ->searchable()
                 ->sortable(query: function (Builder $query, string $direction): Builder {
+                    $direction = strtolower($direction) === 'desc' ? 'desc' : 'asc';
+
                     return $query->orderByRaw("COALESCE(title_custom, title) {$direction}");
                 })
                 ->toggleable(),
@@ -277,6 +283,8 @@ class ChannelResource extends Resource implements CopilotResource
                     return $query->orWhereRaw('LOWER(channels.name_custom) LIKE ?', ['%'.strtolower($search).'%']);
                 })
                 ->sortable(query: function (Builder $query, string $direction): Builder {
+                    $direction = strtolower($direction) === 'desc' ? 'desc' : 'asc';
+
                     return $query->orderByRaw("COALESCE(name_custom, name) {$direction}");
                 })
                 ->toggleable(),
