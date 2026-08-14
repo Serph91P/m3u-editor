@@ -283,7 +283,7 @@ class MergedPlaylistResource extends Resource implements CopilotResource
                         ->helperText(__('When enabled, a <tvg-type> tag will be included in the M3U output based on the channel type (live, vod, series).')),
                     ComponentsGroup::make()
                         ->columnSpanFull()
-                        ->columns(2)
+                        ->columns(3)
                         ->schema([
                             Toggle::make('auto_channel_increment')
                                 ->label(__('Auto channel number increment'))
@@ -397,7 +397,7 @@ class MergedPlaylistResource extends Resource implements CopilotResource
                     TextInput::make('streams')
                         ->label(__('HDHR/Xtream API Streams'))
                         ->helperText(__('Number of streams available for HDHR and Xtream API service (if using).'))
-                        ->columnSpan(1)
+                        ->columnSpanfull()
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
                             tooltip: 'This value is also used when generating the Xtream API user info response.'

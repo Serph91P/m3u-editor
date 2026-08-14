@@ -519,7 +519,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                     Forms\Components\TextInput::make('streams')
                         ->label(__('HDHR/Xtream API Streams'))
                         ->helperText(__('Number of streams available for HDHR and Xtream API service (if using).'))
-                        ->columnSpan(1)
+                        ->columnSpanfull()
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
                             tooltip: 'Enter 0 to use to use provider defined value. This value is also used when generating the Xtream API user info response.'
