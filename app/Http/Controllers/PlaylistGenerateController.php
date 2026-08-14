@@ -121,7 +121,7 @@ class PlaylistGenerateController extends Controller
                 // Output the enabled channels
                 $epgUrl = route('epg.generate', ['uuid' => $playlist->uuid]);
                 echo "#EXTM3U x-tvg-url=\"$epgUrl\" \n";
-                $channelNumber = $playlist->auto_channel_increment ? $playlist->channel_start - 1 : 0;
+                $channelNumber = ($playlist->auto_channel_increment || $playlist->force_channel_numbering) ? $playlist->channel_start - 1 : 0;
                 $idChannelBy = $playlist->id_channel_by;
                 foreach ($cursor as $channel) {
                     // Get the title and name
@@ -140,7 +140,7 @@ class PlaylistGenerateController extends Controller
                     $stationId = $channel->station_id ?? '';
                     $epgShift = $channel->tvg_shift ?? 0;
                     $group = $channel->group ?? '';
-                    if (! $channelNo && ($playlist->auto_channel_increment || $idChannelBy === PlaylistChannelId::Number)) {
+                    if ($playlist->force_channel_numbering || (! $channelNo && ($playlist->auto_channel_increment || $idChannelBy === PlaylistChannelId::Number))) {
                         $channelNo = ++$channelNumber;
                     }
                     if ($isCustomContext) {
@@ -516,7 +516,7 @@ class PlaylistGenerateController extends Controller
 
         // Check if proxy enabled
         $idChannelBy = $playlist->id_channel_by;
-        $channelNumber = $playlist->auto_channel_increment
+        $channelNumber = ($playlist->auto_channel_increment || $playlist->force_channel_numbering)
             ? $playlist->channel_start - 1
             : 0;
         $isCustomContext = ($playlist instanceof CustomPlaylist) ||
@@ -553,7 +553,7 @@ class PlaylistGenerateController extends Controller
                         ? (int) $channel->pivot->channel_number
                         : $channel->channel;
 
-                if (! $channelNo && ($playlist->auto_channel_increment || $idChannelBy === PlaylistChannelId::Number)) {
+                if ($playlist->force_channel_numbering || (! $channelNo && ($playlist->auto_channel_increment || $idChannelBy === PlaylistChannelId::Number))) {
                     $channelNo = ++$channelNumber;
                 }
 

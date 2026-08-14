@@ -379,6 +379,18 @@ class CustomPlaylistResource extends Resource implements CopilotResource
                                 ->live()
                                 ->default(false)
                                 ->helperText(__('If no channel number is set, output an automatically incrementing number.')),
+                            Toggle::make('force_channel_numbering')
+                                ->label(__('Force channel number override'))
+                                ->columnSpan(1)
+                                ->inline(false)
+                                ->live()
+                                ->default(false)
+                                ->hidden(fn (Get $get): bool => ! $get('auto_channel_increment'))
+                                ->hintIcon(
+                                    'heroicon-m-question-mark-circle',
+                                    tooltip: 'When enabled, the incrementing channel number always replaces the number provided by the source feed, instead of only filling in missing numbers.'
+                                )
+                                ->helperText(__('Always assign an incrementing channel number, overriding any number provided by the source.')),
                             TextInput::make('channel_start')
                                 ->helperText(__('The starting channel number.'))
                                 ->columnSpan(1)

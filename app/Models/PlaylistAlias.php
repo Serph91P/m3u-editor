@@ -271,6 +271,13 @@ class PlaylistAlias extends Model
         return $effectivePlaylist ? (int) ($effectivePlaylist->channel_start ?? 1) : 1;
     }
 
+    public function getForceChannelNumberingAttribute(): bool
+    {
+        $effectivePlaylist = $this->getEffectivePlaylist();
+
+        return $effectivePlaylist ? (bool) $effectivePlaylist->force_channel_numbering : false;
+    }
+
     public function getDummyEpgAttribute(): bool
     {
         $effectivePlaylist = $this->getEffectivePlaylist();

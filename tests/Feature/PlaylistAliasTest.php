@@ -208,12 +208,13 @@ describe('PlaylistAuth::assignTo() with PlaylistAlias', function () {
 // ── Delegating accessors ──────────────────────────────────────────────────────
 
 describe('PlaylistAlias delegating accessors', function () {
-    it('delegates include_vod_in_m3u, include_series_in_m3u, channel_start, dummy_epg, dummy_epg_category to effective playlist', function () {
+    it('delegates include_vod_in_m3u, include_series_in_m3u, channel_start, force_channel_numbering, dummy_epg, dummy_epg_category to effective playlist', function () {
         $user = User::factory()->create();
         $playlist = Playlist::factory()->for($user)->create([
             'include_vod_in_m3u' => true,
             'include_series_in_m3u' => true,
             'channel_start' => 5,
+            'force_channel_numbering' => true,
             'dummy_epg' => true,
             'dummy_epg_category' => true,
         ]);
@@ -223,6 +224,7 @@ describe('PlaylistAlias delegating accessors', function () {
         expect($alias->include_vod_in_m3u)->toBeTrue()
             ->and($alias->include_series_in_m3u)->toBeTrue()
             ->and($alias->channel_start)->toBe(5)
+            ->and($alias->force_channel_numbering)->toBeTrue()
             ->and($alias->dummy_epg)->toBeTrue()
             ->and($alias->dummy_epg_category)->toBeTrue();
     });
@@ -241,6 +243,7 @@ describe('PlaylistAlias delegating accessors', function () {
         expect($alias->include_vod_in_m3u)->toBeFalse()
             ->and($alias->include_series_in_m3u)->toBeFalse()
             ->and($alias->channel_start)->toBe(1)
+            ->and($alias->force_channel_numbering)->toBeFalse()
             ->and($alias->dummy_epg)->toBeFalse()
             ->and($alias->dummy_epg_category)->toBeFalse();
     });
