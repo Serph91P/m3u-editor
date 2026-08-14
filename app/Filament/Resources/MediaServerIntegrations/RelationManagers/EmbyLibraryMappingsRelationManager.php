@@ -6,6 +6,7 @@ use App\Models\Category;
 use App\Models\CustomPlaylist;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Group;
+use App\Models\MediaServerIntegration;
 use App\Services\EmbyPublicationCatalogService;
 use App\Services\MediaServerService;
 use Filament\Actions\Action;
@@ -17,8 +18,10 @@ use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Forms\Components\ToggleButtons;
 use Filament\Notifications\Notification;
 use Filament\Resources\RelationManagers\RelationManager;
+use Filament\Schemas\Components\Callout;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Tabs\Tab;
@@ -32,6 +35,7 @@ use Filament\Tables\Enums\RecordActionsPosition;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class EmbyLibraryMappingsRelationManager extends RelationManager
 {
@@ -47,6 +51,16 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
      * other field are still computed from the complete, untruncated catalog.
      */
     private const int PREVIEW_ITEM_LIMIT = 50;
+
+    /**
+     * Per-request memo for outputPathOptions(), keyed by destination mode
+     * (and target library for "existing"). The same options are otherwise
+     * recomputed on every options()/visible()/required() closure call for
+     * output_path and its sibling callout during a single form render.
+     *
+     * @var array<string, array<string, string>>
+     */
+    private array $outputPathOptionsCache = [];
 
     public function isReadOnly(): bool
     {
@@ -73,6 +87,125 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
     {
         return $schema
             ->components([
+                Fieldset::make(__('Emby library'))
+                    ->schema([
+                        Toggle::make('enabled')
+                            ->label(__('Enabled'))
+                            ->columnSpanFull()
+                            ->default(true),
+                        Grid::make(2)->schema([
+                            ToggleButtons::make('destination_mode')
+                                ->label(__('Destination'))
+                                ->grouped()
+                                ->options([
+                                    'existing' => __('Use an existing Emby library'),
+                                    'new' => __('Create a managed Emby library'),
+                                ])
+                                ->icons([
+                                    'existing' => 'heroicon-s-check',
+                                    'new' => 'heroicon-s-plus',
+                                ])
+                                ->colors([
+                                    'existing' => 'primary',
+                                    'new' => 'success',
+                                ])
+                                ->default('new')
+                                ->afterStateHydrated(function (ToggleButtons $component, ?EmbyLibraryMapping $record): void {
+                                    $component->state($record?->is_managed === false ? 'existing' : 'new');
+                                })
+                                ->required()
+                                ->live()
+                                ->afterStateUpdated(function (Set $set, Get $get, ?string $state): void {
+                                    $set('output_path', null);
+                                    $set('target_library_id', null);
+                                    $set('collection_type', null);
+
+                                    if ($state === 'new') {
+                                        $set('target_library_name', null);
+                                    }
+
+                                    if ($get('source_kind') === 'custom_playlist_group') {
+                                        $set('source_label', null);
+                                    }
+                                })
+                                ->helperText(__('Choose whether m3u-editor should use an existing library or create and manage a new one.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Existing libraries keep their Emby name, type, and management settings.'))
+                                ->columnSpanFull(),
+                            Select::make('target_library_id')
+                                ->label(__('Existing library'))
+                                ->options(fn (): array => $this->libraryOptions())
+                                ->visible(fn (Get $get): bool => $get('destination_mode') === 'existing')
+                                ->required(fn (Get $get): bool => $get('destination_mode') === 'existing')
+                                ->searchable()
+                                ->columnSpanFull()
+                                ->live()
+                                ->afterStateUpdated(function (Set $set, Get $get, ?string $state): void {
+                                    $library = $this->library($state);
+                                    $set('output_path', null);
+                                    if ($library) {
+                                        $set('target_library_name', $library['name'] ?? null);
+                                        $set('collection_type', $library['type'] ?? null);
+
+                                        if ($get('source_kind') === 'custom_playlist_group') {
+                                            $set('source_label', null);
+                                        }
+
+                                        $paths = array_keys($this->compatibleLibraryPathOptions($state));
+                                        if (count($paths) === 1) {
+                                            $set('output_path', $paths[0]);
+                                        }
+                                    }
+                                })
+                                ->helperText(__('Choose the Emby library that will receive the published files. Its name and type are set automatically.')),
+                            TextInput::make('target_library_name')
+                                ->label(__('Library name'))
+                                ->visible(fn (Get $get): bool => $get('destination_mode') === 'new')
+                                ->required(fn (Get $get): bool => $get('destination_mode') === 'new')
+                                ->maxLength(255)
+                                ->helperText(__('This is the name m3u-editor will use when it creates the Emby library.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Choose a clear, unique name that does not conflict with another Emby library.')),
+                            Select::make('collection_type')
+                                ->label(__('Library type'))
+                                ->options([
+                                    'movies' => __('Movies'),
+                                    'tvshows' => __('TV shows'),
+                                ])
+                                ->visible(fn (Get $get): bool => $get('destination_mode') === 'new')
+                                ->required(fn (Get $get): bool => $get('destination_mode') === 'new')
+                                ->live()
+                                ->afterStateUpdated(function (Set $set, Get $get): void {
+                                    if ($get('source_kind') === 'custom_playlist_group') {
+                                        $set('source_label', null);
+                                    }
+                                }),
+                            Callout::make()
+                                ->info()
+                                ->description(__('The Emby companion writes STRM and NFO files to this destination. m3u-editor then creates and manages the Emby library.'))
+                                ->visible(fn (Get $get): bool => $get('destination_mode') === 'new')
+                                ->columnSpanFull(),
+                            Select::make('output_path')
+                                ->label(fn (Get $get): string => $get('destination_mode') === 'existing'
+                                    ? __('Compatible library path')
+                                    : __('Companion output path'))
+                                ->options(fn (Get $get): array => $this->outputPathOptions($get))
+                                ->visible(fn (Get $get): bool => $this->outputPathPickerIsVisible($get))
+                                ->required(fn (Get $get): bool => $this->outputPathPickerIsVisible($get))
+                                ->searchable()
+                                ->columnSpanFull()
+                                ->helperText(fn (Get $get): string => $get('destination_mode') === 'existing'
+                                    ? __('Only Emby library paths inside a companion-confirmed writable root are available.')
+                                    : __('The companion confirmed that it can write managed files to these destinations.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('The companion writes STRM and NFO files here; m3u-editor never resolves this path on its own host.')),
+                            Callout::make()
+                                ->warning()
+                                ->description(fn (Get $get): string => $get('destination_mode') === 'existing'
+                                    ? __('No compatible writable destination is available. Register a writable root in the Emby companion, then refresh this integration.')
+                                    : __('No companion writable destination is available. Register a writable root in the Emby companion, then refresh this integration.'))
+                                ->visible(fn (Get $get): bool => $this->destinationIsUnavailable($get))
+                                ->columnSpanFull(),
+                        ]),
+                    ])
+                    ->columnSpanFull(),
                 Fieldset::make(__('Source'))
                     ->schema([
                         Grid::make(2)->schema([
@@ -85,19 +218,30 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                     'all' => __('All eligible items'),
                                 ])
                                 ->required()
+                                ->helperText(__('Choose the m3u-editor content to publish into this Emby library.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('The source controls which eligible movies or TV shows are included.'))
                                 ->live()
-                                ->afterStateUpdated(function (Set $set, ?string $state): void {
+                                ->afterStateUpdated(function (Set $set, Get $get, ?string $state): void {
                                     $set('source_identifier', $state === 'all' ? '*' : null);
                                     $set('source_label', $state === 'all' ? __('All eligible items') : null);
-                                    $set('collection_type', match ($state) {
-                                        'vod_group' => 'movies',
-                                        'series_category' => 'tvshows',
-                                        default => null,
-                                    });
+
+                                    // collection_type is owned by the selected existing library
+                                    // (see target_library_id's afterStateUpdated) once destination_mode
+                                    // is "existing" — guessing it from source_kind here would silently
+                                    // desync "Mapped group"'s options from the library actually chosen.
+                                    if ($get('destination_mode') !== 'existing') {
+                                        $set('collection_type', match ($state) {
+                                            'vod_group' => 'movies',
+                                            'series_category' => 'tvshows',
+                                            default => null,
+                                        });
+                                    }
                                 }),
                             Select::make('source_identifier')
                                 ->label(__('Source'))
                                 ->required()
+                                ->helperText(__('Choose the specific source whose eligible items should be published.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Only content owned by this integration user is available.'))
                                 ->searchable()
                                 ->live()
                                 // Async search rather than a static options() list: vod_group and
@@ -129,23 +273,6 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                     }
 
                                     $set('source_label', $this->sourceOptions($get('source_kind'))[$state] ?? null);
-                                }),
-                            Select::make('collection_type')
-                                ->label(__('Library type'))
-                                ->options([
-                                    'movies' => __('Movies'),
-                                    'tvshows' => __('TV shows'),
-                                ])
-                                ->required()
-                                ->live()
-                                ->afterStateUpdated(function (Set $set, Get $get): void {
-                                    // A group/category chosen for one collection type is not
-                                    // necessarily valid for the other (sourceLabelOptions() is
-                                    // scoped by collection_type — see below), so it can't just
-                                    // carry over silently.
-                                    if ($get('source_kind') === 'custom_playlist_group') {
-                                        $set('source_label', null);
-                                    }
                                 }),
                             Select::make('source_label')
                                 ->label(__('Mapped group'))
@@ -189,48 +316,6 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                         ]),
                     ])
                     ->columnSpanFull(),
-                Fieldset::make(__('Emby library'))
-                    ->schema([
-                        Grid::make(2)->schema([
-                            Select::make('target_library_id')
-                                ->label(__('Existing library'))
-                                ->placeholder(__('Create a managed library'))
-                                ->options(fn (): array => $this->libraryOptions())
-                                ->searchable()
-                                ->live()
-                                ->afterStateUpdated(function (Set $set, ?string $state): void {
-                                    if ($state === null) {
-                                        return;
-                                    }
-
-                                    $library = collect($this->ownerRecord->available_libraries ?? [])
-                                        ->firstWhere('id', $state);
-                                    if ($library) {
-                                        $set('target_library_name', $library['name'] ?? null);
-                                        $set('collection_type', $library['type'] ?? null);
-                                        $set('is_managed', false);
-                                    }
-                                }),
-                            TextInput::make('target_library_name')
-                                ->label(__('Library name'))
-                                ->required()
-                                ->maxLength(255),
-                            Select::make('output_path')
-                                ->label(__('Companion output path'))
-                                ->options(fn (): array => $this->writablePathOptions())
-                                ->required()
-                                ->searchable()
-                                ->columnSpanFull()
-                                ->helperText(__('Only paths validated and advertised by m3u-editor for Emby are available.')),
-                            Toggle::make('is_managed')
-                                ->label(__('Create and manage this Emby library'))
-                                ->default(true),
-                            Toggle::make('enabled')
-                                ->label(__('Enabled'))
-                                ->default(true),
-                        ]),
-                    ])
-                    ->columnSpanFull(),
                 Fieldset::make(__('Publishing options'))
                     ->schema([
                         Grid::make(2)->schema([
@@ -241,7 +326,9 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                     'title' => __('Title only'),
                                 ])
                                 ->default('media-year')
-                                ->required(),
+                                ->required()
+                                ->helperText(__('Choose how published files are named.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Including the year helps Emby match titles that share the same name.')),
                             Select::make('options.cleanup')
                                 ->label(__('Cleanup'))
                                 ->options([
@@ -250,17 +337,25 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                     'disabled' => __('Do not clean up files'),
                                 ])
                                 ->default('replace')
-                                ->required(),
+                                ->required()
+                                ->helperText(__('Choose what happens to managed files that are no longer in this source.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Cleanup affects only files managed for this mapping.')),
                             Toggle::make('options.nfo')
                                 ->label(__('Publish local NFO'))
-                                ->default(true),
+                                ->default(true)
+                                ->helperText(__('Write local metadata files alongside each STRM file.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('NFO files help Emby identify titles and retain m3u-editor metadata.')),
                             Toggle::make('options.versions')
                                 ->label(__('Publish visible versions'))
-                                ->default(true),
+                                ->default(true)
+                                ->helperText(__('Keep distinct visible versions when the source contains multiple variants.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Versions let Emby present multiple streams for the same title.')),
                             Toggle::make('options.refresh')
                                 ->label(__('Refresh Emby after successful sync'))
                                 ->columnSpanFull()
-                                ->default(true),
+                                ->default(true)
+                                ->helperText(__('Ask Emby to scan the library after the companion finishes writing files.'))
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Disable this only if Emby scans the destination on its own schedule.')),
                         ]),
                     ])
                     ->columnSpanFull(),
@@ -325,7 +420,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 CreateAction::make()
                     ->label(__('Create mapping'))
                     ->mutateDataUsing(fn (array $data): array => [
-                        ...$data,
+                        ...$this->prepareMappingData($data),
                         'media_server_integration_id' => $this->ownerRecord->id,
                         'user_id' => $this->ownerRecord->user_id,
                         'status' => 'idle',
@@ -341,6 +436,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                     ->button()
                     ->size('sm')
                     ->hiddenLabel()
+                    ->mutateDataUsing(fn (array $data, EmbyLibraryMapping $record): array => $this->prepareMappingData($data, $record))
                     ->slideOver(),
                 Action::make('reconcile')
                     ->label(__('Reconcile'))
@@ -538,12 +634,158 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             ->all();
     }
 
+    /** @return array<string, mixed>|null */
+    private function library(?string $libraryId): ?array
+    {
+        if ($libraryId === null) {
+            return null;
+        }
+
+        return collect($this->ownerRecord->available_libraries ?? [])
+            ->first(fn (array $library): bool => (string) ($library['id'] ?? '') === $libraryId);
+    }
+
+    /** @return array<string, string> */
+    private function compatibleLibraryPathOptions(?string $libraryId): array
+    {
+        $library = $this->library($libraryId);
+        $writableRoots = $this->ownerRecord->getEmbyPublisherWritablePaths();
+        $options = [];
+
+        $libraryPaths = is_array($library['paths'] ?? null) ? $library['paths'] : [];
+        foreach (array_slice($libraryPaths, 0, 50) as $path) {
+            if (! is_string($path) || ! MediaServerIntegration::isSafeWritablePath($path)) {
+                continue;
+            }
+
+            if (MediaServerIntegration::isPathWithinAnyWritableRoot($path, $writableRoots)) {
+                $options[$path] = $path;
+            }
+        }
+
+        return $options;
+    }
+
     /** @return array<string, string> */
     private function writablePathOptions(): array
     {
         $paths = $this->ownerRecord->getEmbyPublisherWritablePaths();
 
         return array_combine($paths, $paths) ?: [];
+    }
+
+    /**
+     * The output_path Select's option list for the current destination_mode,
+     * memoized per request since options()/visible()/required() (and the
+     * "unavailable" callout's visible()) would otherwise each recompute it.
+     *
+     * @return array<string, string>
+     */
+    private function outputPathOptions(Get $get): array
+    {
+        if ($get('destination_mode') === 'existing') {
+            $libraryId = $get('target_library_id');
+
+            return $this->outputPathOptionsCache['existing:'.$libraryId] ??= $this->compatibleLibraryPathOptions($libraryId);
+        }
+
+        return $this->outputPathOptionsCache['new'] ??= $this->writablePathOptions();
+    }
+
+    /**
+     * Whether the output_path picker itself should be shown (and required).
+     * In "existing" mode a single compatible path is auto-selected instead
+     * of shown, so the picker only appears once there's a real choice.
+     */
+    private function outputPathPickerIsVisible(Get $get): bool
+    {
+        $options = $this->outputPathOptions($get);
+
+        return $get('destination_mode') === 'existing'
+            ? count($options) > 1
+            : $options !== [];
+    }
+
+    /**
+     * Whether to show the "no destination available" callout in place of
+     * the output_path picker. Distinct from outputPathPickerIsVisible()'s
+     * negation: in "existing" mode a single auto-selected path means
+     * neither the picker nor this callout should show.
+     */
+    private function destinationIsUnavailable(Get $get): bool
+    {
+        if ($get('destination_mode') === 'new') {
+            return $this->outputPathOptions($get) === [];
+        }
+
+        return $get('target_library_id') !== null && $this->outputPathOptions($get) === [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function prepareMappingData(array $data, ?EmbyLibraryMapping $record = null): array
+    {
+        $destinationMode = $data['destination_mode'] ?? null;
+
+        if ($destinationMode === 'existing') {
+            $libraryId = is_string($data['target_library_id'] ?? null) ? $data['target_library_id'] : null;
+            $library = $this->library($libraryId);
+            $libraryName = $library['name'] ?? null;
+            $collectionType = $library['type'] ?? null;
+            if ($library === null || ! is_string($libraryName) || trim($libraryName) === ''
+                || mb_strlen($libraryName) > 255
+                || ! in_array($collectionType, EmbyLibraryMapping::COLLECTION_TYPES, true)) {
+                throw ValidationException::withMessages([
+                    'target_library_id' => __('Choose an available Emby library.'),
+                ]);
+            }
+
+            $compatiblePaths = array_keys($this->compatibleLibraryPathOptions($libraryId));
+            if ($compatiblePaths === []) {
+                throw ValidationException::withMessages([
+                    'output_path' => __('Register a compatible writable root in the Emby companion, then refresh this integration.'),
+                ]);
+            }
+
+            $outputPath = is_string($data['output_path'] ?? null) ? $data['output_path'] : null;
+            if (! in_array($outputPath, $compatiblePaths, true)) {
+                $isUnchangedStaleTarget = $record !== null
+                    && $record->target_library_id === $libraryId;
+
+                if (count($compatiblePaths) !== 1 || $isUnchangedStaleTarget) {
+                    throw ValidationException::withMessages([
+                        'output_path' => __('Choose an available compatible library path.'),
+                    ]);
+                }
+
+                $outputPath = $compatiblePaths[0];
+            }
+
+            $data['target_library_name'] = $libraryName;
+            $data['collection_type'] = $collectionType;
+            $data['output_path'] = $outputPath;
+            $data['is_managed'] = false;
+        } elseif ($destinationMode === 'new') {
+            $writablePaths = $this->ownerRecord->getEmbyPublisherWritablePaths();
+            if (! in_array($data['output_path'] ?? null, $writablePaths, true)) {
+                throw ValidationException::withMessages([
+                    'output_path' => __('Choose a destination confirmed writable by the Emby companion.'),
+                ]);
+            }
+
+            $data['target_library_id'] = $record?->is_managed ? $record->target_library_id : null;
+            $data['is_managed'] = true;
+        } else {
+            throw ValidationException::withMessages([
+                'destination_mode' => __('Choose an Emby library destination.'),
+            ]);
+        }
+
+        unset($data['destination_mode']);
+
+        return $data;
     }
 
     private function reconcile(EmbyLibraryMapping $mapping): void
@@ -608,7 +850,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             Notification::make()
                 ->warning()
                 ->title(__('Managed library configuration drifted'))
-                ->body(__('The existing Emby library\'s name, type, or paths no longer match this mapping. Update it manually in Emby, or delete it there to let reconcile recreate it.'))
+                ->body(__('The existing Emby library\'s name, type, selected path, or ID no longer matches this mapping. Choose an available destination in the mapping or update the library in Emby.'))
                 ->send();
 
             return;
