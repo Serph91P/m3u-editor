@@ -292,7 +292,7 @@ class XtreamStreamController extends Controller
                 $streamUrl = PlaylistUrlService::getChannelUrl($channel, $playlist);
                 if ($utcPresent || $xtreamTimeshiftPresent) {
                     // Timeshift stream request
-                    $streamUrl = PlaylistService::generateTimeshiftUrl($request, $streamUrl, $playlist);
+                    $streamUrl = PlaylistService::generateTimeshiftUrl($request, $streamUrl, $playlist, $channel);
                 }
 
                 // Regular live stream request, redirect to the stream URL (via MediaFlow Proxy if enabled)

@@ -711,13 +711,14 @@ class PlaylistService
         // Xtream API sends timeshift_duration (minutes) and timeshift_date (YYYY-MM-DD:HH-MM-SS)
         $xtreamTimeshiftPresent = $request->filled('timeshift_duration') && $request->filled('timeshift_date');
 
-        // Use the portal/provider timezone (DST-aware). Prefer per-playlist; last resort UTC.
-        $providerTz = $playlist?->server_timezone ?? null;
-
-        // If no provider timezone set, attempt to get it from the Xtream config
-        if (! $providerTz) {
-            $providerTz = $playlist?->xtream_status['server_info']['timezone'] ?? 'Etc/UTC';
-        }
+        // Use the portal/provider timezone (DST-aware). Standard playlists carry their own
+        // server_timezone; Custom/Merged/Alias playlists can be composed of channels from
+        // several different source playlists, so resolve via the channel's own originating
+        // playlist instead. Last resort UTC.
+        $timezoneSource = $playlist instanceof Playlist ? $playlist : $channel?->playlist;
+        $providerTz = $timezoneSource?->server_timezone
+            ?? $timezoneSource?->xtream_status['server_info']['timezone']
+            ?? 'Etc/UTC';
 
         /* ── Timeshift SETUP (TiviMate → portal format) ───────────────────── */
         if ($utcPresent && ! $xtreamTimeshiftPresent) {

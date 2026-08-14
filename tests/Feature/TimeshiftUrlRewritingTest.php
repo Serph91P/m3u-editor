@@ -2,6 +2,7 @@
 
 use App\Models\Channel;
 use App\Models\ChannelFailover;
+use App\Models\CustomPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\User;
@@ -307,6 +308,41 @@ it('still prefers the standard Xtream rewrite over catchup_source when the upstr
     expect($result)
         ->toContain('/timeshift/')
         ->not->toContain('should-not-be-used');
+});
+
+it('resolves the provider timezone from the channel own source playlist for Custom playlists', function () {
+    // Custom/Merged/Alias playlists can be composed of channels from several different source
+    // playlists, so they no longer carry their own server_timezone. The channel's originating
+    // Playlist (Channel::playlist()) is the source of truth instead.
+    $this->playlist->update(['server_timezone' => 'UTC']);
+
+    $customPlaylist = CustomPlaylist::factory()->for($this->user)->create();
+
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'url' => 'https://provider.domain/live/user/pass/464938.ts',
+    ]);
+    $customPlaylist->channels()->attach($channel);
+
+    $request = Request::create('/timeshift/user/pass/30/2024-12-01:21-00-00/464938.ts');
+    $request->merge([
+        'timeshift_duration' => 30,
+        'timeshift_date' => '2024-12-01:21-00-00',
+    ]);
+
+    config(['app.timezone' => 'Australia/Melbourne']);
+    app('config')->set('app.timezone', 'Australia/Melbourne');
+    date_default_timezone_set('Australia/Melbourne');
+
+    $result = PlaylistService::generateTimeshiftUrl($request, $channel->url, $customPlaylist, $channel);
+
+    // 21:00 Melbourne (AEDT = UTC+11 in December) converted to UTC = 10:00, using the source
+    // playlist's UTC server_timezone rather than any value on the Custom playlist itself.
+    expect($result)->toContain('2024-12-01:10-00');
+
+    date_default_timezone_set('UTC');
 });
 
 it('preserves original URL when timeshift parameters are absent', function () {

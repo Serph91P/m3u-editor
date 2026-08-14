@@ -406,11 +406,6 @@ class MergedPlaylistResource extends Resource implements CopilotResource
                         ->type('number')
                         ->default(1) // Default to 1 stream
                         ->required(),
-                    TextInput::make('server_timezone')
-                        ->label(__('Provider Timezone'))
-                        ->helperText(__('The portal/provider timezone (DST-aware). Needed to correctly use timeshift functionality.'))
-                        ->placeholder(__('Etc/UTC')),
-
                     Grid::make()
                         ->columns(3)
                         ->schema([
