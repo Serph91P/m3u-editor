@@ -1174,6 +1174,28 @@ class XtreamApiController extends Controller
                 }
             }
 
+            // Gate on an episode actually carrying a dvr_recording_id rather
+            // than on $isDvrSeries: DvrVodIntegrationService::findOrCreateSeries
+            // matches by tmdb/tvmaze id or name without filtering on
+            // import_batch_no, so a recording of a show already in the library
+            // attaches its episode to that existing non-DVR series. The check
+            // runs over the already-loaded seasons.episodes, so ordinary series
+            // still cost no extra query.
+            $hasDvrEpisodes = $seriesItem->seasons->contains(
+                fn ($season) => $season->episodes->contains(
+                    fn ($episode) => $episode->dvr_recording_id !== null
+                )
+            );
+
+            $dvrGranted = $hasDvrEpisodes
+                && $this->canAdvertiseDvrFeature($playlist, $authMethod, $playlistAuth);
+
+            if ($dvrGranted) {
+                $seriesItem->load([
+                    'seasons.episodes.dvrRecording' => fn ($query) => $query->with(['dvrSetting', 'recordingRule']),
+                ]);
+            }
+
             $cover = $seriesItem->cover ? (filter_var($seriesItem->cover, FILTER_VALIDATE_URL) ? $seriesItem->cover : $baseUrl."/$seriesItem->cover") : LogoCacheService::getPlaceholderUrl('poster');
             $backdropPaths = $seriesItem->backdrop_path ?? [];
             if (is_string($backdropPaths)) {
@@ -1250,6 +1272,12 @@ class XtreamApiController extends Controller
                                     : $episode->info['cover_big'];
                             }
 
+                            $episodeEdlUrl = $dvrGranted
+                                && $episode->dvrRecording
+                                && $this->dvrRecordingVisibleToCaller($episode->dvrRecording, $authMethod, $playlistAuth)
+                                ? $this->dvrEdlUrl($episode->dvrRecording, $username, $password)
+                                : null;
+
                             $seasonEpisodes[] = [
                                 'id' => (string) $episode->id,
                                 'episode_num' => $episode->episode_num,
@@ -1265,6 +1293,11 @@ class XtreamApiController extends Controller
                                 'custom_sid' => $episode->custom_sid ?? '',
                                 'stream_id' => $episode->id,
                                 'direct_source' => '',
+                                // Omitted for ordinary episodes — see get_vod_info.
+                                ...($episodeEdlUrl !== null ? [
+                                    'dvr_uuid' => $episode->dvrRecording->uuid,
+                                    'edl_url' => $episodeEdlUrl,
+                                ] : []),
                             ];
                         }
                     }
@@ -1685,10 +1718,31 @@ class XtreamApiController extends Controller
                 'duration_secs' => $info['duration_secs'] ?? 0,
                 'duration' => $info['duration'] ?? '00:00:00',
                 'bitrate' => $info['bitrate'] ?? 0,
-                'rating' => $channel->rating ?? $info['rating'],
+                // Both sides can legitimately be absent — DVR-integrated movies
+                // carry neither a channel rating nor a 'rating' key in info,
+                // which made this a 500 for exactly those items.
+                'rating' => $channel->rating ?? $info['rating'] ?? '',
                 'releasedate' => $info['releasedate'] ?? $channel->year,
                 'subtitles' => $info['subtitles'] ?? [],
             ];
+
+            // When this library item was integrated from a DVR recording, hand
+            // back the recording's commercial-skip EDL so playback from Movies
+            // gets the same comskip support as playback from the Recordings
+            // screen — same file, so the EDL offsets apply unchanged. Keys are
+            // omitted entirely for ordinary VOD, keeping those payloads
+            // byte-identical to before.
+            if ($channel->dvr_recording_id && $this->canAdvertiseDvrFeature($playlist, $authMethod, $playlistAuth)) {
+                $dvrRecording = $channel->dvrRecording()->with(['dvrSetting', 'recordingRule'])->first();
+                $dvrEdlUrl = $dvrRecording && $this->dvrRecordingVisibleToCaller($dvrRecording, $authMethod, $playlistAuth)
+                    ? $this->dvrEdlUrl($dvrRecording, $username, $password)
+                    : null;
+
+                if ($dvrEdlUrl !== null) {
+                    $defaultInfo['dvr_uuid'] = $dvrRecording->uuid;
+                    $defaultInfo['edl_url'] = $dvrEdlUrl;
+                }
+            }
 
             // Build movie_data section - use channel's movie_data field if available, otherwise build from channel data
             $movieData = $channel->movie_data ?? [];
@@ -3492,6 +3546,23 @@ class XtreamApiController extends Controller
     }
 
     /**
+     * Whether a specific recording's EDL/DVR metadata may be surfaced to the
+     * caller. DVR recording listings (getDvrRecordings/getDvrRecording) scope
+     * their query by playlist_auth_id, but the VOD/series library items a
+     * recording gets integrated into are playlist-wide, not per-guest - so
+     * advertising edl_url there needs its own ownership check, mirroring the
+     * scoping DvrStreamController::edl() enforces when actually serving it.
+     */
+    private function dvrRecordingVisibleToCaller(DvrRecording $recording, string $authMethod, ?PlaylistAuth $playlistAuth): bool
+    {
+        if ($authMethod === 'playlist_auth') {
+            return $recording->playlist_auth_id === $playlistAuth?->id;
+        }
+
+        return true;
+    }
+
+    /**
      * Single source of truth for whether DVR is usable at all: global config,
      * the effective playlist's DvrSetting, and (for guest credentials) the
      * PlaylistAuth's own dvr_enabled flag. Both feature advertisement and every
@@ -3612,7 +3683,7 @@ class XtreamApiController extends Controller
 
         $query = DvrRecording::where('dvr_setting_id', $dvrSetting->id)
             ->when($playlistAuth, fn ($q) => $q->where('playlist_auth_id', $playlistAuth->id))
-            ->with('channel')
+            ->with(['channel', 'dvrSetting', 'recordingRule'])
             ->orderByDesc('scheduled_start');
 
         if ($status) {
@@ -3647,7 +3718,7 @@ class XtreamApiController extends Controller
         $recording = DvrRecording::where('dvr_setting_id', $dvrSetting->id)
             ->where('uuid', $uuid)
             ->when($playlistAuth, fn ($q) => $q->where('playlist_auth_id', $playlistAuth->id))
-            ->with('channel')
+            ->with(['channel', 'dvrSetting', 'recordingRule'])
             ->first();
 
         if (! $recording) {
@@ -4311,6 +4382,29 @@ class XtreamApiController extends Controller
     }
 
     /**
+     * Build the commercial-skip (EDL) URL for a completed recording, or null
+     * when comskip did not run for it.
+     *
+     * Shared by the DVR actions and by the VOD/series payloads that surface
+     * the same recording once it has been integrated into the library, so both
+     * sides advertise the EDL under identical conditions. Gated on
+     * shouldRunComskip() rather than the DvrSetting flag alone because a
+     * per-rule enable_comskip overrides the setting — checking only the
+     * setting advertises an EDL that was never produced (rule off, setting on)
+     * and hides one that was (rule on, setting off).
+     */
+    private function dvrEdlUrl(DvrRecording $recording, string $username, string $password): ?string
+    {
+        if ($recording->status !== DvrRecordingStatus::Completed || ! $recording->shouldRunComskip()) {
+            return null;
+        }
+
+        $baseUrl = config('app.url');
+
+        return "{$baseUrl}/dvr/{$username}/{$password}/{$recording->uuid}/edl";
+    }
+
+    /**
      * Format a DvrRecording into the API response shape.
      */
     private function formatDvrRecording(DvrRecording $recording, string $username, string $password, bool $full = false): array
@@ -4332,10 +4426,8 @@ class XtreamApiController extends Controller
             ? "{$baseUrl}/dvr/{$username}/{$password}/{$recording->uuid}/live.m3u8"
             : null;
 
-        $hasEdl = $isCompleted && ($recording->dvrSetting?->enable_comskip ?? false);
-        $edlUrl = $hasEdl
-            ? "{$baseUrl}/dvr/{$username}/{$password}/{$recording->uuid}/edl"
-            : null;
+        $edlUrl = $this->dvrEdlUrl($recording, $username, $password);
+        $hasEdl = $edlUrl !== null;
 
         $data = [
             'uuid' => $recording->uuid,
