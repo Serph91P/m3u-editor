@@ -103,6 +103,34 @@ it('uses the group display name as tag in original mode', function () {
         ->and($tagNames)->not->toContain('provider_internal_name');
 });
 
+it('does not skip a group literally named "0" in original mode', function () {
+    $group = Group::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'name' => '0',
+        'name_internal' => 'zero_internal',
+    ]);
+
+    $channel = Channel::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'group_id' => $group->id,
+    ]);
+
+    (new AddGroupsToCustomPlaylist(
+        userId: $this->user->id,
+        groupIds: [$group->id],
+        customPlaylistId: $this->customPlaylist->id,
+        data: ['mode' => 'original', 'playlist' => $this->customPlaylist->id],
+        type: 'channel',
+    ))->handle();
+
+    $channel->refresh();
+
+    expect($this->customPlaylist->channels()->where('channels.id', $channel->id)->exists())->toBeTrue()
+        ->and($channel->tags->pluck('name')->all())->toContain('0');
+});
+
 it('attaches a selected existing tag to all channels in select mode', function () {
     $group = Group::factory()->create([
         'user_id' => $this->user->id,

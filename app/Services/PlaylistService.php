@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Jobs\AddGroupsToCustomPlaylist;
+use App\Jobs\AddItemsToCustomPlaylist;
 use App\Jobs\MergeChannels;
 use App\Jobs\MergeEpisodes;
 use App\Jobs\UnmergeChannels;
@@ -15,6 +16,7 @@ use App\Models\MergedPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
+use App\Models\Series;
 use App\Settings\GeneralSettings;
 use Carbon\Carbon;
 use Exception;
@@ -32,12 +34,12 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Support\Enums\Width;
 use Illuminate\Contracts\Bus\Dispatcher;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Spatie\Tags\Tag;
@@ -908,6 +910,8 @@ class PlaylistService
 
             Select::make('category')
                 ->label("Select $groupLabel")
+                ->native(false)
+                ->placeholder("Select a $groupLabel")
                 ->required(fn (Get $get) => $get('mode') === 'select')
                 ->visible(fn (Get $get) => $get('playlist') && $get('mode') === 'select')
                 ->options(function (Get $get) use ($tagFunction) {
@@ -931,80 +935,90 @@ class PlaylistService
     }
 
     /**
-     * Add items to a custom playlist and optionally tag them.
+     * Resolve the CustomPlaylist relation, tag, and pivot metadata for a given item type.
+     * Centralizes the isSeries/relation/tagType/pivot resolution duplicated across the
+     * custom-playlist add/detach/sync jobs.
      *
-     * @param  iterable|Relation|Builder  $items
-     * @param  array|string|null  $data
+     * @return array{isSeries: bool, relation: string, syncRelation: string, tagFunction: string, tagType: string, itemModel: string, pivotTable: string, pivotForeignKey: string, pivotRelatedKey: string}
      */
-    public static function addItemsToPlaylist(CustomPlaylist $playlist, $items, $data, string $type = 'channel'): void
+    public static function resolveCustomPlaylistRelationMeta(CustomPlaylist $playlist, string $type = 'channel'): array
     {
         $isSeries = $type === 'series';
-        $tagFunction = $isSeries ? 'categoryTags' : 'groupTags';
         $relation = $isSeries ? 'series' : 'channels';
+        $tagFunction = $isSeries ? 'categoryTags' : 'groupTags';
         $tagType = $isSeries ? $playlist->uuid.'-category' : $playlist->uuid;
+        $itemModel = $isSeries ? Series::class : Channel::class;
 
-        // Get IDs for syncing
-        $ids = [];
-        if ($items instanceof Relation || $items instanceof Builder) {
-            $ids = $items->pluck('id');
-        } elseif ($items instanceof Collection) {
-            $ids = $items->pluck('id');
-        } else {
-            foreach ($items as $item) {
-                $ids[] = $item->id;
-            }
+        $relationInstance = $playlist->$relation();
+
+        return [
+            'isSeries' => $isSeries,
+            'relation' => $relation,
+            'syncRelation' => $relation,
+            'tagFunction' => $tagFunction,
+            'tagType' => $tagType,
+            'itemModel' => $itemModel,
+            'pivotTable' => $relationInstance->getTable(),
+            'pivotForeignKey' => $relationInstance->getForeignPivotKeyName(),
+            'pivotRelatedKey' => $relationInstance->getRelatedPivotKeyName(),
+        ];
+    }
+
+    /**
+     * Resolve (creating if needed) the shared tag for 'select'/'create' mode form data,
+     * attaching it to the playlist. Returns null for 'original' mode (or when no tag name
+     * was given), signaling the caller to resolve a tag per item from each item's own
+     * group/category name instead of a single shared tag for the whole operation.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public static function resolveSharedTagForMode(CustomPlaylist $playlist, array $data, string $tagType): ?Tag
+    {
+        $mode = $data['mode'] ?? 'select';
+        $tagName = match ($mode) {
+            'select' => $data['category'] ?? null,
+            'create' => $data['new_category'] ?? null,
+            default => null,
+        };
+
+        if ($mode === 'original' || $tagName === null || trim((string) $tagName) === '') {
+            return null;
         }
 
-        $playlist->$relation()->syncWithoutDetaching($ids);
+        $tag = Tag::findOrCreate($tagName, $tagType);
+        $playlist->attachTag($tag);
 
-        // Parse data
-        $mode = 'select';
-        $tagName = null;
+        return $tag;
+    }
 
-        if (is_array($data)) {
-            $mode = $data['mode'] ?? 'select';
-            if ($mode === 'select') {
-                $tagName = $data['category'] ?? null;
-            } elseif ($mode === 'create') {
-                $tagName = $data['new_category'] ?? null;
-            }
-        } else {
-            $tagName = $data;
+    /**
+     * Retag a set of items with a single tag using set-based SQL, without hydrating any
+     * models. Removes any existing tag of the playlist's tag type from the given items
+     * first, so each item keeps at most one group/category tag per custom playlist.
+     *
+     * @param  array<string, mixed>  $meta  From resolveCustomPlaylistRelationMeta()
+     * @param  array<int>  $playlistTagIds  All tag IDs of the playlist's tag type
+     * @param  array<int>  $itemIds
+     */
+    public static function retagItems(array $meta, array $playlistTagIds, Tag $tag, array $itemIds): void
+    {
+        if (empty($itemIds)) {
+            return;
         }
 
-        $playlistTags = $playlist->$tagFunction()->get();
-        // Get iterator for tagging
-        $cursor = ($items instanceof Builder || $items instanceof Relation)
-            ? $items->cursor()
-            : $items;
+        DB::table('taggables')
+            ->where('taggable_type', $meta['itemModel'])
+            ->whereIn('taggable_id', $itemIds)
+            ->whereIn('tag_id', $playlistTagIds)
+            ->delete();
 
-        if ($mode === 'original') {
-            foreach ($cursor as $item) {
-                // Determine original name
-                $originalName = null;
-                if ($isSeries) {
-                    $originalName = $item->category->name ?? null;
-                } else {
-                    $originalName = $item->group;
-                }
-
-                if ($originalName) {
-                    $tag = Tag::findOrCreate($originalName, $tagType);
-                    $playlist->attachTag($tag);
-
-                    $item->detachTags($playlistTags);
-                    $item->attachTag($tag);
-                }
-            }
-        } elseif ($tagName) {
-            $tag = Tag::findOrCreate($tagName, $tagType);
-            $playlist->attachTag($tag);
-
-            foreach ($cursor as $item) {
-                $item->detachTags($playlistTags);
-                $item->attachTag($tag);
-            }
-        }
+        DB::table('taggables')->insertOrIgnore(
+            array_map(fn (int $id): array => [
+                'tag_id' => $tag->id,
+                'taggable_id' => $id,
+                'taggable_type' => $meta['itemModel'],
+            ], $itemIds)
+        );
     }
 
     /**
@@ -1455,30 +1469,30 @@ class PlaylistService
     }
 
     /**
-     * Get the BulkAction for adding items to a custom playlist.
+     * Get the BulkAction for adding items to a custom playlist via a background job.
      *
-     * @param  \Closure|null  $resolveRecordsCallback  Returns the items to add from the records: fn($records) => $records->flatMap->channels
+     * Dispatches a queued job to avoid HTTP timeouts on large selections, and fetches only
+     * the selected record IDs (not hydrated models) to keep the request itself cheap.
      */
-    public static function getAddToPlaylistBulkAction(string $name = 'add', string $type = 'channel', ?\Closure $resolveRecordsCallback = null): BulkAction
+    public static function getAddToPlaylistBulkAction(string $name = 'add', string $type = 'channel'): BulkAction
     {
         return BulkAction::make($name)
             ->label('Add to Custom Playlist')
             ->schema(self::getAddToPlaylistSchema($type))
-            ->action(function (Collection $records, array $data) use ($type, $resolveRecordsCallback): void {
-                $playlist = CustomPlaylist::findOrFail($data['playlist']);
+            ->fetchSelectedRecords(false)
+            ->action(function (SupportCollection $itemIds, array $data) use ($type): void {
+                AddItemsToCustomPlaylist::dispatch(
+                    userId: auth()->id(),
+                    itemIds: $itemIds->all(),
+                    customPlaylistId: (int) $data['playlist'],
+                    data: $data,
+                    type: $type,
+                );
 
-                $items = $records;
-                if ($resolveRecordsCallback) {
-                    $items = $resolveRecordsCallback($records);
-                }
-
-                self::addItemsToPlaylist($playlist, $items, $data, $type);
-            })
-            ->after(function () {
                 Notification::make()
-                    ->success()
-                    ->title('Items added to custom playlist')
-                    ->body('The selected items have been added to the chosen custom playlist.')
+                    ->info()
+                    ->title(__('Adding items to custom playlist'))
+                    ->body(__('The selected items are being added to the chosen custom playlist in the background. You will be notified when complete.'))
                     ->send();
             })
             ->deselectRecordsAfterCompletion()
@@ -1490,30 +1504,26 @@ class PlaylistService
     }
 
     /**
-     * Get the Action for adding items to a custom playlist.
-     *
-     * @param  \Closure|null  $resolveRecordsCallback  Returns the items to add from the record: fn($record) => $record->channels()
+     * Get the Action for adding an item to a custom playlist via a background job.
      */
-    public static function getAddToPlaylistAction(string $name = 'add', string $type = 'channel', ?\Closure $resolveRecordsCallback = null): Action
+    public static function getAddToPlaylistAction(string $name = 'add', string $type = 'channel'): Action
     {
         return Action::make($name)
             ->label('Add to Custom Playlist')
             ->schema(self::getAddToPlaylistSchema($type))
-            ->action(function ($record, array $data) use ($type, $resolveRecordsCallback): void {
-                $playlist = CustomPlaylist::findOrFail($data['playlist']);
+            ->action(function ($record, array $data) use ($type): void {
+                AddItemsToCustomPlaylist::dispatch(
+                    userId: auth()->id(),
+                    itemIds: [$record->id],
+                    customPlaylistId: (int) $data['playlist'],
+                    data: $data,
+                    type: $type,
+                );
 
-                $items = $record;
-                if ($resolveRecordsCallback) {
-                    $items = $resolveRecordsCallback($record);
-                }
-
-                self::addItemsToPlaylist($playlist, $items, $data, $type);
-            })
-            ->after(function () {
                 Notification::make()
-                    ->success()
-                    ->title('Items added to custom playlist')
-                    ->body('The selected items have been added to the chosen custom playlist.')
+                    ->info()
+                    ->title(__('Adding items to custom playlist'))
+                    ->body(__('The selected item is being added to the chosen custom playlist in the background. You will be notified when complete.'))
                     ->send();
             })
             ->requiresConfirmation()

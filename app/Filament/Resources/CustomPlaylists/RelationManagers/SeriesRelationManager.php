@@ -4,6 +4,8 @@ namespace App\Filament\Resources\CustomPlaylists\RelationManagers;
 
 use App\Filament\Resources\CustomPlaylists\RelationManagers\Concerns\ReordersCustomPlaylistPivotSort;
 use App\Filament\Resources\Series\SeriesResource;
+use App\Jobs\AddItemsToCustomPlaylist;
+use App\Jobs\DetachItemsFromCustomPlaylist;
 use App\Models\Series;
 use App\Traits\AppliesTmdbSelection;
 use Filament\Actions\AttachAction;
@@ -23,8 +25,8 @@ use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Grouping\Group;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 
 class SeriesRelationManager extends RelationManager
@@ -250,17 +252,19 @@ class SeriesRelationManager extends RelationManager
                 ...SeriesResource::getTableBulkActions(addToCustom: false),
                 BulkAction::make('detach')
                     ->label(__('Detach Selected'))
-                    ->action(function (Collection $records) use ($ownerRecord): void {
-                        $tags = $ownerRecord->categoryTags()->get();
-                        foreach ($records as $record) {
-                            $record->detachTags($tags);
-                        }
-                        $ownerRecord->series()->detach($records->pluck('id'));
-                    })->after(function () {
+                    ->fetchSelectedRecords(false)
+                    ->action(function (SupportCollection $itemIds) use ($ownerRecord): void {
+                        DetachItemsFromCustomPlaylist::dispatch(
+                            userId: auth()->id(),
+                            itemIds: $itemIds->all(),
+                            customPlaylistId: $ownerRecord->id,
+                            type: 'series',
+                        );
+
                         Notification::make()
-                            ->success()
-                            ->title(__('Detached from playlist'))
-                            ->body(__('The selected series have been detached from the custom playlist.'))
+                            ->info()
+                            ->title(__('Detaching from playlist'))
+                            ->body(__('The selected series are being detached from the custom playlist in the background. You will be notified when complete.'))
                             ->send();
                     })
                     ->color('danger')
@@ -286,19 +290,20 @@ class SeriesRelationManager extends RelationManager
                             ->searchable()
                             ->required(),
                     ])
-                    ->action(function (Collection $records, $data) use ($ownerRecord): void {
-                        $tags = $ownerRecord->categoryTags()->get();
-                        $tag = $ownerRecord->categoryTags()->where('name->en', $data['category'])->first();
-                        foreach ($records as $record) {
-                            // Need to detach any existing tags from this playlist first
-                            $record->detachTags($tags);
-                            $record->attachTag($tag);
-                        }
-                    })->after(function () {
+                    ->fetchSelectedRecords(false)
+                    ->action(function (SupportCollection $itemIds, array $data) use ($ownerRecord): void {
+                        AddItemsToCustomPlaylist::dispatch(
+                            userId: auth()->id(),
+                            itemIds: $itemIds->all(),
+                            customPlaylistId: $ownerRecord->id,
+                            data: ['mode' => 'select', 'category' => $data['category']],
+                            type: 'series',
+                        );
+
                         Notification::make()
-                            ->success()
-                            ->title(__('Added to category'))
-                            ->body(__('The selected series have been added to the custom category.'))
+                            ->info()
+                            ->title(__('Adding to category'))
+                            ->body(__('The selected series are being added to the custom category in the background. You will be notified when complete.'))
                             ->send();
                     })
                     ->deselectRecordsAfterCompletion()

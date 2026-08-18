@@ -6,14 +6,21 @@ use App\Models\Category;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
 use App\Models\User;
+use App\Services\PlaylistService;
 use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\DB;
 use Spatie\Tags\Tag;
 
 class AddGroupsToCustomPlaylist implements ShouldQueue
 {
     use Queueable;
+
+    /**
+     * The number of seconds the job can run before timing out.
+     */
+    public int $timeout = 900;
 
     /**
      * Create a new job instance.
@@ -27,7 +34,9 @@ class AddGroupsToCustomPlaylist implements ShouldQueue
         public int $customPlaylistId,
         public array $data,
         public string $type = 'channel',
-    ) {}
+    ) {
+        $this->onQueue('import');
+    }
 
     /**
      * Execute the job.
@@ -37,31 +46,14 @@ class AddGroupsToCustomPlaylist implements ShouldQueue
         $playlist = CustomPlaylist::findOrFail($this->customPlaylistId);
         $user = User::findOrFail($this->userId);
 
-        $isSeries = $this->type === 'series';
-        $tagType = $isSeries ? $playlist->uuid.'-category' : $playlist->uuid;
-        $relation = $isSeries ? 'series' : 'channels';
-        $syncRelation = $isSeries ? 'series' : 'channels';
-
+        $meta = PlaylistService::resolveCustomPlaylistRelationMeta($playlist, $this->type);
+        $sharedTag = PlaylistService::resolveSharedTagForMode($playlist, $this->data, $meta['tagType']);
         $mode = $this->data['mode'] ?? 'select';
-        $tagName = null;
 
-        if ($mode === 'select') {
-            $tagName = $this->data['category'] ?? null;
-        } elseif ($mode === 'create') {
-            $tagName = $this->data['new_category'] ?? null;
-        }
-
-        // For select/create modes, create the tag once upfront for all groups
-        $sharedTag = null;
-        if ($mode !== 'original' && $tagName) {
-            $sharedTag = Tag::findOrCreate($tagName, $tagType);
-            $playlist->attachTag($sharedTag);
-        }
-
-        $playlistTags = $playlist->tagsWithType($tagType);
+        $playlistTagIds = $playlist->{$meta['tagFunction']}()->pluck('tags.id')->all();
 
         foreach ($this->groupIds as $groupId) {
-            $group = $isSeries
+            $group = $meta['isSeries']
                 ? Category::find($groupId)
                 : Group::find($groupId);
 
@@ -73,23 +65,26 @@ class AddGroupsToCustomPlaylist implements ShouldQueue
             $tag = $sharedTag;
             if ($mode === 'original') {
                 $originalName = $group->name ?? $group->name_internal ?? null;
-                if (! $originalName) {
+                if ($originalName === null || trim((string) $originalName) === '') {
                     continue;
                 }
-                $tag = Tag::findOrCreate($originalName, $tagType);
+                $tag = Tag::findOrCreate($originalName, $meta['tagType']);
                 $playlist->attachTag($tag);
             }
 
             // Chunk through the group's items to avoid memory exhaustion on large groups
-            $group->$relation()->chunkById(1000, function ($items) use ($playlist, $syncRelation, $playlistTags, $tag): void {
+            $group->{$meta['relation']}()->chunkById(1000, function ($items) use ($meta, $playlistTagIds, $tag): void {
                 $ids = $items->pluck('id')->all();
-                $playlist->$syncRelation()->syncWithoutDetaching($ids);
+
+                DB::table($meta['pivotTable'])->insertOrIgnore(
+                    array_map(fn (int $id): array => [
+                        $meta['pivotForeignKey'] => $this->customPlaylistId,
+                        $meta['pivotRelatedKey'] => $id,
+                    ], $ids)
+                );
 
                 if ($tag) {
-                    foreach ($items as $item) {
-                        $item->detachTags($playlistTags);
-                        $item->attachTag($tag);
-                    }
+                    PlaylistService::retagItems($meta, $playlistTagIds, $tag, $ids);
                 }
             });
         }

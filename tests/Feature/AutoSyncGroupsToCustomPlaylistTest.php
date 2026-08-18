@@ -393,6 +393,36 @@ it('applies the group name as a tag in original mode', function () {
     expect($tagNames)->toContain($this->group->name);
 });
 
+it('does not skip a group literally named "0" in original mode', function () {
+    $zeroGroup = Group::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'type' => 'live',
+        'name' => '0',
+    ]);
+
+    $channel = Channel::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'group_id' => $zeroGroup->id,
+    ]);
+
+    (new AutoSyncGroupsToCustomPlaylist(
+        userId: $this->user->id,
+        playlistId: $this->playlist->id,
+        groupIds: [$zeroGroup->id],
+        customPlaylistId: $this->customPlaylist->id,
+        data: ['mode' => 'original'],
+        type: 'channel',
+        syncMode: 'add_only',
+    ))->handle();
+
+    $channel->refresh();
+
+    expect($this->customPlaylist->channels()->where('channels.id', $channel->id)->exists())->toBeTrue()
+        ->and($channel->tags->pluck('name')->all())->toContain('0');
+});
+
 it('applies a custom tag in create mode', function () {
     Channel::factory()->count(2)->create([
         'user_id' => $this->user->id,

@@ -5,6 +5,8 @@ namespace App\Filament\Resources\CustomPlaylists\RelationManagers;
 use App\Facades\SortFacade;
 use App\Filament\Resources\Channels\ChannelResource;
 use App\Filament\Resources\CustomPlaylists\RelationManagers\Concerns\ReordersCustomPlaylistPivotSort;
+use App\Jobs\AddItemsToCustomPlaylist;
+use App\Jobs\DetachItemsFromCustomPlaylist;
 use App\Jobs\SyncPlexDvrJob;
 use App\Models\Channel;
 use Filament\Actions\AttachAction;
@@ -27,6 +29,7 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 
 class ChannelsRelationManager extends RelationManager
@@ -383,17 +386,19 @@ class ChannelsRelationManager extends RelationManager
                     ->modalSubmitActionLabel(__('Sort now')),
                 BulkAction::make('detach')
                     ->label(__('Detach Selected'))
-                    ->action(function (Collection $records) use ($ownerRecord): void {
-                        $tags = $ownerRecord->groupTags()->get();
-                        foreach ($records as $record) {
-                            $record->detachTags($tags);
-                        }
-                        $ownerRecord->channels()->detach($records->pluck('id'));
-                    })->after(function () {
+                    ->fetchSelectedRecords(false)
+                    ->action(function (SupportCollection $itemIds) use ($ownerRecord): void {
+                        DetachItemsFromCustomPlaylist::dispatch(
+                            userId: auth()->id(),
+                            itemIds: $itemIds->all(),
+                            customPlaylistId: $ownerRecord->id,
+                            type: 'channel',
+                        );
+
                         Notification::make()
-                            ->success()
-                            ->title(__('Detached from playlist'))
-                            ->body(__('The selected channels have been detached from the custom playlist.'))
+                            ->info()
+                            ->title(__('Detaching from playlist'))
+                            ->body(__('The selected channels are being detached from the custom playlist in the background. You will be notified when complete.'))
                             ->send();
                     })
                     ->color('danger')
@@ -419,19 +424,20 @@ class ChannelsRelationManager extends RelationManager
                             ->searchable()
                             ->required(),
                     ])
-                    ->action(function (Collection $records, $data) use ($ownerRecord): void {
-                        $tags = $ownerRecord->groupTags()->get();
-                        $tag = $ownerRecord->groupTags()->where('name->en', $data['group'])->first();
-                        foreach ($records as $record) {
-                            // Need to detach any existing tags from this playlist first
-                            $record->detachTags($tags);
-                            $record->attachTag($tag);
-                        }
-                    })->after(function () {
+                    ->fetchSelectedRecords(false)
+                    ->action(function (SupportCollection $itemIds, array $data) use ($ownerRecord): void {
+                        AddItemsToCustomPlaylist::dispatch(
+                            userId: auth()->id(),
+                            itemIds: $itemIds->all(),
+                            customPlaylistId: $ownerRecord->id,
+                            data: ['mode' => 'select', 'category' => $data['group']],
+                            type: 'channel',
+                        );
+
                         Notification::make()
-                            ->success()
-                            ->title(__('Added to group'))
-                            ->body(__('The selected channels have been added to the custom group.'))
+                            ->info()
+                            ->title(__('Adding to group'))
+                            ->body(__('The selected channels are being added to the custom group in the background. You will be notified when complete.'))
                             ->send();
                     })
                     ->deselectRecordsAfterCompletion()

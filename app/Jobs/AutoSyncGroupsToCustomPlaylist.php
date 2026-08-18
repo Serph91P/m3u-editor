@@ -4,12 +4,11 @@ namespace App\Jobs;
 
 use App\Events\SyncCompleted;
 use App\Models\Category;
-use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
 use App\Models\Playlist;
-use App\Models\Series;
 use App\Models\User;
+use App\Services\PlaylistService;
 use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -50,32 +49,17 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
         $playlist = CustomPlaylist::findOrFail($this->customPlaylistId);
         $user = User::findOrFail($this->userId);
 
-        $isSeries = $this->type === 'series';
-        $tagType = $isSeries ? $playlist->uuid.'-category' : $playlist->uuid;
-        $syncRelation = $isSeries ? 'series' : 'channels';
-
+        $meta = PlaylistService::resolveCustomPlaylistRelationMeta($playlist, $this->type);
+        $isSeries = $meta['isSeries'];
+        $sharedTag = PlaylistService::resolveSharedTagForMode($playlist, $this->data, $meta['tagType']);
         $mode = $this->data['mode'] ?? 'original';
-        $tagName = match ($mode) {
-            'select' => $this->data['category'] ?? null,
-            'create' => $this->data['new_category'] ?? null,
-            default => null,
-        };
 
-        // For select/create modes, create or find the shared tag once upfront for all groups
-        $sharedTag = null;
-        if ($mode !== 'original' && $tagName) {
-            $sharedTag = Tag::findOrCreate($tagName, $tagType);
-            $playlist->attachTag($sharedTag);
-        }
+        $playlistTagIds = $playlist->{$meta['tagFunction']}()->pluck('tags.id')->all();
 
-        $playlistTags = $playlist->tagsWithType($tagType);
-
-        // Resolve pivot table metadata once so we can use insertOrIgnore inside
-        // the chunk loop — avoids loading the entire pivot table on every chunk.
-        $relation = $playlist->$syncRelation();
-        $pivotTable = $relation->getTable();
-        $pivotForeignKey = $relation->getForeignPivotKeyName();
-        $pivotRelatedKey = $relation->getRelatedPivotKeyName();
+        // Resolved once here for reuse in the full-sync cleanup below.
+        $pivotTable = $meta['pivotTable'];
+        $pivotForeignKey = $meta['pivotForeignKey'];
+        $pivotRelatedKey = $meta['pivotRelatedKey'];
 
         foreach ($this->groupIds as $groupId) {
             $group = $isSeries
@@ -90,10 +74,10 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             $tag = $sharedTag;
             if ($mode === 'original') {
                 $originalName = $group->name ?? $group->name_internal ?? null;
-                if (! $originalName) {
+                if ($originalName === null || trim((string) $originalName) === '') {
                     continue;
                 }
-                $tag = Tag::findOrCreate($originalName, $tagType);
+                $tag = Tag::findOrCreate($originalName, $meta['tagType']);
                 $playlist->attachTag($tag);
             }
 
@@ -101,19 +85,18 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             // Use insertOrIgnore instead of syncWithoutDetaching so we never load the
             // entire pivot table into PHP memory on each iteration, and existing pivot
             // values (channel_number, sort) are preserved by the conflict-ignore path.
-            $group->$syncRelation()->chunkById(1000, function ($items) use ($pivotTable, $pivotForeignKey, $pivotRelatedKey, $playlistTags, $tag): void {
-                DB::table($pivotTable)->insertOrIgnore(
-                    $items->map(fn ($item): array => [
-                        $pivotForeignKey => $this->customPlaylistId,
-                        $pivotRelatedKey => $item->id,
-                    ])->all()
+            $group->{$meta['relation']}()->chunkById(1000, function ($items) use ($meta, $playlistTagIds, $tag): void {
+                $ids = $items->pluck('id')->all();
+
+                DB::table($meta['pivotTable'])->insertOrIgnore(
+                    array_map(fn (int $id): array => [
+                        $meta['pivotForeignKey'] => $this->customPlaylistId,
+                        $meta['pivotRelatedKey'] => $id,
+                    ], $ids)
                 );
 
                 if ($tag) {
-                    foreach ($items as $item) {
-                        $item->detachTags($playlistTags);
-                        $item->attachTag($tag);
-                    }
+                    PlaylistService::retagItems($meta, $playlistTagIds, $tag, $ids);
                 }
             });
         }
@@ -160,9 +143,9 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             // This removes "ghost" groups left behind when channels are removed.
             // Checking against actual pivot membership means a tag shared across two source
             // playlists (same group name) is only detached once both playlists' channels are gone.
-            $itemMorphClass = $isSeries ? Series::class : Channel::class;
+            $itemMorphClass = $meta['itemModel'];
 
-            $playlist->tagsWithType($tagType)->each(function (Tag $tag) use ($playlist, $itemMorphClass, $pivotTable, $pivotForeignKey, $pivotRelatedKey): void {
+            $playlist->tagsWithType($meta['tagType'])->each(function (Tag $tag) use ($playlist, $itemMorphClass, $pivotTable, $pivotForeignKey, $pivotRelatedKey): void {
                 $stillHasItems = DB::table('taggables')
                     ->where('tag_id', $tag->id)
                     ->where('taggable_type', $itemMorphClass)
