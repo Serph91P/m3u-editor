@@ -197,11 +197,12 @@ return [
             'autoScalingStrategy' => 'time',
             // Set maxProcesses to 1 if using SQLite to avoid database locks
             'maxProcesses' => $horizonIntEnv('HORIZON_QUEUE_MAX_PROCESSES', env('DB_CONNECTION', 'sqlite') === 'sqlite' ? 1 : 12),
-            'maxTime' => $horizonIntEnv('HORIZON_QUEUE_MAX_TIME', 0),
-            'maxJobs' => $horizonIntEnv('HORIZON_QUEUE_MAX_JOBS', 0),
-            'memory' => $horizonIntEnv('HORIZON_QUEUE_MEMORY', 512), // MB
+            // maxTime/maxJobs recycle a worker between jobs (never mid-job) to bound long-running memory growth.
+            'maxTime' => $horizonIntEnv('HORIZON_QUEUE_MAX_TIME', 3600), // recycle worker hourly
+            'maxJobs' => $horizonIntEnv('HORIZON_QUEUE_MAX_JOBS', 250),
+            'memory' => $horizonIntEnv('HORIZON_QUEUE_MEMORY', 256), // MB
             'tries' => 3, // Number of times to attempt a job before marking it as failed
-            'timeout' => 60 * 125, // Should be longer than the retry_after value set in queue.php
+            'timeout' => 60 * 125, // Must stay shorter than the retry_after value set in queue.php
             'nice' => 0,
         ],
 
@@ -214,9 +215,9 @@ return [
             'queue' => ['schedules-direct'],
             'balance' => 'simple',
             'maxProcesses' => $horizonIntEnv('HORIZON_SD_MAX_PROCESSES', 1),
-            'maxTime' => $horizonIntEnv('HORIZON_SD_MAX_TIME', 0),
-            'maxJobs' => $horizonIntEnv('HORIZON_SD_MAX_JOBS', 0),
-            'memory' => $horizonIntEnv('HORIZON_SD_MEMORY', 512), // MB
+            'maxTime' => $horizonIntEnv('HORIZON_SD_MAX_TIME', 3600), // recycle worker hourly
+            'maxJobs' => $horizonIntEnv('HORIZON_SD_MAX_JOBS', 250),
+            'memory' => $horizonIntEnv('HORIZON_SD_MEMORY', 256), // MB
             'tries' => 3,
             'timeout' => 60 * 125,
             'nice' => 0,
@@ -229,9 +230,11 @@ return [
             'autoScalingStrategy' => 'time',
             // Set maxProcesses to 1 if using SQLite to avoid database locks
             'maxProcesses' => $horizonIntEnv('HORIZON_DVR_MAX_PROCESSES', env('DB_CONNECTION', 'sqlite') === 'sqlite' ? 1 : 4),
-            'maxTime' => $horizonIntEnv('HORIZON_DVR_MAX_TIME', 0),
-            'maxJobs' => $horizonIntEnv('HORIZON_DVR_MAX_JOBS', 0),
-            'memory' => $horizonIntEnv('HORIZON_DVR_MEMORY', 512), // MB
+            // Recordings can run up to the 1-hour timeout below, so maxTime is set to survive
+            // two back-to-back recordings before recycling rather than churning after every job.
+            'maxTime' => $horizonIntEnv('HORIZON_DVR_MAX_TIME', 7200),
+            'maxJobs' => $horizonIntEnv('HORIZON_DVR_MAX_JOBS', 50),
+            'memory' => $horizonIntEnv('HORIZON_DVR_MEMORY', 256), // MB
             'tries' => 2, // DVR jobs get fewer retries to avoid duplicate recordings
             'timeout' => 60 * 60, // 1 hour (long-running recordings)
             'nice' => 5,
@@ -247,9 +250,9 @@ return [
             'queue' => ['aiostreams-resolve'],
             'balance' => 'simple',
             'maxProcesses' => $horizonIntEnv('HORIZON_AIOSTREAMS_MAX_PROCESSES', 2),
-            'maxTime' => $horizonIntEnv('HORIZON_AIOSTREAMS_MAX_TIME', 0),
-            'maxJobs' => $horizonIntEnv('HORIZON_AIOSTREAMS_MAX_JOBS', 0),
-            'memory' => $horizonIntEnv('HORIZON_AIOSTREAMS_MEMORY', 512), // MB
+            'maxTime' => $horizonIntEnv('HORIZON_AIOSTREAMS_MAX_TIME', 1800), // recycle every 30 min, jobs are short
+            'maxJobs' => $horizonIntEnv('HORIZON_AIOSTREAMS_MAX_JOBS', 300),
+            'memory' => $horizonIntEnv('HORIZON_AIOSTREAMS_MEMORY', 256), // MB
             'tries' => 1, // jobs handle their own empty-result retry/backoff internally
             'timeout' => 60 * 5,
             'nice' => 5,
