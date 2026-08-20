@@ -211,6 +211,39 @@ class Series extends Model
         return ! empty($ids['tmdb']) || ! empty($ids['tvdb']) || ! empty($ids['imdb']);
     }
 
+    /**
+     * Whether this series' provider metadata can be considered fresh, i.e.
+     * we fetched it after the provider's last_modified and episodes exist.
+     * Shared by fetchMetadata() and scopeNeedsMetadataRefresh() so the
+     * freshness check has a single source of truth.
+     */
+    public function isMetadataFresh(bool $refresh = false): bool
+    {
+        return ! $refresh && $this->last_metadata_fetch && $this->last_modified
+            && $this->last_metadata_fetch >= $this->last_modified
+            && $this->episodes()->exists();
+    }
+
+    /**
+     * Filter to series whose metadata is not fresh, i.e. those that
+     * fetchMetadata()/isMetadataFresh() would actually act on. Mirrors
+     * isMetadataFresh() as a SQL predicate so batch sync jobs can skip
+     * fresh series without loading them or calling the provider at all.
+     */
+    public function scopeNeedsMetadataRefresh(Builder $query, bool $refresh = false): Builder
+    {
+        if ($refresh) {
+            return $query;
+        }
+
+        return $query->where(function (Builder $q) {
+            $q->whereNull('last_metadata_fetch')
+                ->orWhereNull('last_modified')
+                ->orWhereColumn('last_metadata_fetch', '<', 'last_modified')
+                ->orWhereDoesntHave('episodes');
+        });
+    }
+
     public function fetchMetadata($refresh = false, $sync = true, bool $dispatchTmdb = true)
     {
         // AIOStreams-backed series are resolved via ResolveAioStreamsSeries, not Xtream.
@@ -219,9 +252,7 @@ class Series extends Model
         }
 
         // Skip the provider call if data is still fresh (unless a forced refresh is requested).
-        $isFresh = ! $refresh && $this->last_metadata_fetch && $this->last_modified
-            && $this->last_metadata_fetch >= $this->last_modified
-            && $this->episodes()->exists();
+        $isFresh = $this->isMetadataFresh($refresh);
 
         try {
             if (! $isFresh) {

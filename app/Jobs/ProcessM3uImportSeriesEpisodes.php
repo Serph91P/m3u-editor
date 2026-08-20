@@ -91,7 +91,11 @@ class ProcessM3uImportSeriesEpisodes implements ShouldQueue
      */
     private function dispatchBatches(GeneralSettings $settings): void
     {
-        // Count total series to process
+        // Count total series to process. Series whose metadata is already
+        // fresh (last_metadata_fetch after the provider's last_modified, and
+        // episodes exist) are excluded entirely so their batch jobs never pay
+        // the throttle slot + delay for a provider call that would be skipped
+        // anyway — see Series::isMetadataFresh()/scopeNeedsMetadataRefresh().
         $totalCount = Series::query()
             ->where([
                 ['enabled', true],
@@ -100,6 +104,7 @@ class ProcessM3uImportSeriesEpisodes implements ShouldQueue
             ->when($this->playlist_id, function ($query) {
                 $query->where('playlist_id', $this->playlist_id);
             })
+            ->needsMetadataRefresh($this->overwrite_existing)
             ->count();
 
         if ($totalCount === 0) {
@@ -206,7 +211,9 @@ class ProcessM3uImportSeriesEpisodes implements ShouldQueue
             'batch_size' => self::BATCH_SIZE,
         ]);
 
-        // Get series IDs for this batch (using offset/limit instead of chunkById)
+        // Get series IDs for this batch (using offset/limit instead of chunkById).
+        // Filtered the same way as dispatchBatches()'s count so the offsets stay
+        // aligned with totalBatches/totalCount.
         $seriesIds = Series::query()
             ->where([
                 ['enabled', true],
@@ -215,6 +222,7 @@ class ProcessM3uImportSeriesEpisodes implements ShouldQueue
             ->when($this->playlist_id, function ($query) {
                 $query->where('playlist_id', $this->playlist_id);
             })
+            ->needsMetadataRefresh($this->overwrite_existing)
             ->orderBy('id')
             ->skip($this->batchOffset)
             ->take(self::BATCH_SIZE)
@@ -259,6 +267,16 @@ class ProcessM3uImportSeriesEpisodes implements ShouldQueue
     {
         // Get the playlist
         $playlist = $series->playlist;
+
+        // Bulk mode fast path: skip the throttled provider round-trip entirely
+        // for custom series (no Xtream fetch) and for series whose metadata is
+        // still fresh. The batch queries already exclude these via
+        // needsMetadataRefresh(), but this also covers callers that pass an
+        // individual series directly without going through that filter.
+        if (! $dispatchSync && ! $dispatchTmdb
+            && ($series->is_custom || $series->isMetadataFresh($this->overwrite_existing))) {
+            return;
+        }
 
         // In bulk mode (dispatchSync=false), don't trigger per-series sync
         $shouldSync = $dispatchSync && $this->sync_stream_files;
