@@ -212,6 +212,8 @@ class GeneralSettings extends Settings
 
     public ?int $auto_backup_database_max_backups = 5;
 
+    public ?int $auto_backup_database_delete_after_days = 0;
+
     // Provider request delay options
     public ?bool $enable_provider_request_delay = false;
 
