@@ -1739,6 +1739,7 @@ class Preferences extends SettingsPage
                                         TextInput::make('tmdb_min_vote_count')
                                             ->label(__('Minimum Vote Count'))
                                             ->placeholder(__('25'))
+                                            ->columnSpanFull()
                                             ->numeric()
                                             ->minValue(0)
                                             ->maxValue(10000)
