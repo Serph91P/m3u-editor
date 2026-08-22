@@ -80,6 +80,9 @@ class MediaServerIntegration extends Model
         'aiostreams_selected_catalog_ids' => 'array',
         'emby_publisher_writable_paths' => 'array',
         'emby_publisher_capabilities_updated_at' => 'datetime',
+        'emby_managed_setup_binding_id' => 'integer',
+        'emby_managed_setup_capability_version' => 'integer',
+        'emby_managed_setup_contract_version' => 'integer',
     ];
 
     /**
@@ -193,8 +196,11 @@ class MediaServerIntegration extends Model
     public function getBaseUrlAttribute(): string
     {
         $protocol = $this->ssl ? 'https' : 'http';
+        $host = str_contains((string) $this->host, ':')
+            ? '['.trim((string) $this->host, '[]').']'
+            : $this->host;
 
-        return "{$protocol}://{$this->host}:{$this->port}";
+        return "{$protocol}://{$host}:{$this->port}";
     }
 
     /**
@@ -361,6 +367,12 @@ class MediaServerIntegration extends Model
      */
     public function getEmbyPublisherWritablePaths(): array
     {
+        if (is_string($this->emby_managed_setup_root)) {
+            $managedRoot = trim($this->emby_managed_setup_root);
+
+            return static::isSafeWritablePath($managedRoot) ? [$managedRoot] : [];
+        }
+
         $paths = [];
 
         foreach (array_slice($this->emby_publisher_writable_paths ?? [], 0, 50) as $path) {
