@@ -17,6 +17,7 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redirect;
 
 class XtreamStreamController extends Controller
@@ -162,10 +163,25 @@ class XtreamStreamController extends Controller
         // Live and VOD streams are handled the same
         if ($streamType === 'live' || $streamType === 'vod' || $streamType === 'timeshift') {
             // Assuming all playlist types have a 'channels' relationship defined.
-            return $playlist->channels()
+            $channel = $playlist->channels()
                 ->where('channels.id', $streamId) // Qualify column name if pivot table involved
                 ->where('enabled', true)
                 ->first();
+
+            // Intentionally does not log the channel's URL - for M3U-sourced channels
+            // it embeds the upstream provider's plaintext credentials.
+            Log::debug('getValidatedStreamFromPlaylist lookup', [
+                'stream_id' => $streamId,
+                'stream_type' => $streamType,
+                'playlist_type' => get_class($playlist),
+                'playlist_id' => $playlist->id,
+                'playlist_uuid' => $playlist->uuid ?? null,
+                'playlist_name' => $playlist->name ?? null,
+                'channel_found' => $channel !== null,
+                'channel_id' => $channel->id ?? null,
+            ]);
+
+            return $channel;
         }
 
         if ($streamType === 'episode') {
