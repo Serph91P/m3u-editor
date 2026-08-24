@@ -319,7 +319,7 @@ class ChannelsRelationManager extends RelationManager
             ->toolbarActions([
                 ...ChannelResource::getTableBulkActions(addToCustom: false, includeRecount: false),
                 BulkAction::make('recount_custom')
-                    ->label(__('Recount Channels'))
+                    ->label(__('Renumber Channels'))
                     ->icon('heroicon-o-hashtag')
                     ->schema([
                         Forms\Components\TextInput::make('start')
@@ -336,14 +336,14 @@ class ChannelsRelationManager extends RelationManager
                     ->after(function () {
                         Notification::make()
                             ->success()
-                            ->title(__('Custom Playlist Channels Recounted'))
-                            ->body(__('The selected channels were recounted for this custom playlist only.'))
+                            ->title(__('Custom Playlist Channels Renumbered'))
+                            ->body(__('The selected channels were renumbered for this custom playlist only.'))
                             ->send();
                     })
                     ->requiresConfirmation()
                     ->modalIcon('heroicon-o-hashtag')
-                    ->modalDescription(__('Recount the selected channels only inside this custom playlist. The original channel numbers will not change.'))
-                    ->modalSubmitActionLabel(__('Recount now')),
+                    ->modalDescription(__('Renumber the selected channels only inside this custom playlist. The original channel numbers will not change.'))
+                    ->modalSubmitActionLabel(__('Renumber now')),
                 BulkAction::make('sort_alpha_custom')
                     ->label(__('Sort Alpha'))
                     ->icon('heroicon-o-bars-arrow-down')

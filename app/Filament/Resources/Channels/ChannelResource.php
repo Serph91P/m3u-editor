@@ -612,7 +612,7 @@ class ChannelResource extends Resource implements CopilotResource
                     ->modalSubmitActionLabel(__('Move now')),
                 ...($includeRecount ? [
                     BulkAction::make('recount')
-                        ->label(__('Recount Channels'))
+                        ->label(__('Renumber Channels'))
                         ->icon('heroicon-o-hashtag')
                         ->schema([
                             TextInput::make('start')
@@ -629,13 +629,13 @@ class ChannelResource extends Resource implements CopilotResource
                         ->after(function ($livewire) {
                             Notification::make()
                                 ->success()
-                                ->title(__('Channels Recounted'))
-                                ->body(__('The selected channels have been recounted.'))
+                                ->title(__('Channels Renumbered'))
+                                ->body(__('The selected channels have been renumbered.'))
                                 ->send();
                         })
                         ->requiresConfirmation()
                         ->modalIcon('heroicon-o-hashtag')
-                        ->modalDescription(__('Recount the selected channels sequentially? Channel numbers will be assigned based on the current sort order.')),
+                        ->modalDescription(__('Renumber the selected channels sequentially? Channel numbers will be assigned based on the current sort order.')),
                 ] : []),
             ]),
 

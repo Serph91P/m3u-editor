@@ -254,7 +254,7 @@ class CustomPlaylistResource extends Resource implements CopilotResource
     {
         $processingActions = [
             'sort_alpha' => __('Sort Alpha'),
-            'recount' => __('Recount Channels'),
+            'recount' => __('Renumber Channels'),
         ];
         $processingTargets = [
             'all' => __('All Channels'),
@@ -820,7 +820,7 @@ class CustomPlaylistResource extends Resource implements CopilotResource
                                                         return null;
                                                     }
 
-                                                    $actionLabel = $processingActions[$action] ?? __('Recount Channels');
+                                                    $actionLabel = $processingActions[$action] ?? __('Renumber Channels');
                                                     $typeLabel = match ($state['type'] ?? 'all') {
                                                         'live' => 'Live',
                                                         'vod' => 'VOD',

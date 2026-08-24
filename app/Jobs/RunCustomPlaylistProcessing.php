@@ -31,7 +31,7 @@ class RunCustomPlaylistProcessing implements ShouldQueue
 
         $start = now();
         $sortRulesRun = 0;
-        $recountRulesRun = 0;
+        $renumberRulesRun = 0;
 
         try {
             foreach ($rules as $rule) {
@@ -71,7 +71,7 @@ class RunCustomPlaylistProcessing implements ShouldQueue
                 } elseif ($action === 'recount') {
                     $startNumber = (int) ($rule['start'] ?? 1);
                     SortFacade::bulkRecountCustomPlaylistChannels($this->customPlaylist, $channels, $startNumber);
-                    $recountRulesRun++;
+                    $renumberRulesRun++;
                 }
             }
         } catch (Throwable $e) {
@@ -92,8 +92,8 @@ class RunCustomPlaylistProcessing implements ShouldQueue
         if ($sortRulesRun > 0) {
             $parts[] = "{$sortRulesRun} sort ".($sortRulesRun === 1 ? 'rule' : 'rules');
         }
-        if ($recountRulesRun > 0) {
-            $parts[] = "{$recountRulesRun} recount ".($recountRulesRun === 1 ? 'rule' : 'rules');
+        if ($renumberRulesRun > 0) {
+            $parts[] = "{$renumberRulesRun} renumber ".($renumberRulesRun === 1 ? 'rule' : 'rules');
         }
         $summary = implode(' and ', $parts);
 
