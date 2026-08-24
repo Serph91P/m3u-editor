@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\PlaylistUrlService;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -242,6 +243,10 @@ class PlaylistProfile extends Model
      */
     public function transformChannelUrl(Channel $channel): string
     {
+        if ($resolved = $this->resolveInternalUrl($channel)) {
+            return $resolved;
+        }
+
         $originalUrl = $channel->url_custom ?? $channel->url ?? '';
 
         return $this->transformUrl($originalUrl);
@@ -252,9 +257,77 @@ class PlaylistProfile extends Model
      */
     public function transformEpisodeUrl(Episode $episode): string
     {
+        if ($resolved = $this->resolveInternalUrl($episode)) {
+            return $resolved;
+        }
+
         $originalUrl = $episode->url ?? '';
 
         return $this->transformUrl($originalUrl);
+    }
+
+    /**
+     * When this profile's URL points at another playlist hosted by THIS
+     * m3u-editor instance (e.g. a user importing a provider as a plain M3U
+     * playlist and then using that playlist's own auto-generated Xtream
+     * credentials as a "secondary" profile), resolve directly to the
+     * matching channel/episode on the target playlist and return its real
+     * upstream URL.
+     *
+     * Without this, the generic transformUrl() string-swap would send the
+     * request back through this app's own Xtream stream controller with the
+     * SOURCE playlist's channel/episode PK, which the TARGET playlist has no
+     * way to resolve (PKs are playlist-local) - an extra hop that also
+     * requires PK-to-PK translation via source_id.
+     *
+     * Returns null for the common case (profile holds direct remote
+     * provider credentials, or a genuinely different, non-local provider
+     * URL), leaving the existing string-swap path completely unaffected.
+     */
+    private function resolveInternalUrl(Channel|Episode $model): ?string
+    {
+        if (! $this->url || ! str_starts_with(rtrim($this->url, '/'), rtrim(url('/'), '/'))) {
+            return null;
+        }
+
+        $isEpisode = $model instanceof Episode;
+
+        // Channel's provider-native ID column is `source_id`; Episode's is
+        // `source_episode_id` - they are not interchangeable columns.
+        $sourceId = $isEpisode ? $model->source_episode_id : $model->source_id;
+        if (! $sourceId) {
+            return null;
+        }
+
+        $targetPlaylist = Playlist::where('uuid', $this->password)->first();
+        if (! $targetPlaylist || $targetPlaylist->id === $this->playlist_id) {
+            return null;
+        }
+
+        $targetModel = $isEpisode
+            ? Episode::where('playlist_id', $targetPlaylist->id)
+                ->where('source_episode_id', $sourceId)
+                ->where('enabled', true)
+                ->first()
+            : $targetPlaylist->channels()
+                ->where('source_id', $sourceId)
+                ->where('enabled', true)
+                ->first();
+
+        if (! $targetModel) {
+            Log::warning('Could not resolve internal profile URL to target playlist', [
+                'profile_id' => $this->id,
+                'model_type' => $isEpisode ? 'episode' : 'channel',
+                'source_id' => $sourceId,
+                'target_playlist_id' => $targetPlaylist->id,
+            ]);
+
+            return null;
+        }
+
+        return $isEpisode
+            ? PlaylistUrlService::getEpisodeUrl($targetModel, $targetPlaylist)
+            : PlaylistUrlService::getChannelUrl($targetModel, $targetPlaylist);
     }
 
     /**
@@ -262,6 +335,10 @@ class PlaylistProfile extends Model
      *
      * Replaces the playlist's primary credentials with this profile's credentials.
      * If the profile has a custom URL, the entire base URL is replaced as well.
+     *
+     * Only reached for direct-to-provider profiles; profiles pointing at a
+     * locally-hosted playlist are resolved by resolveInternalUrl() before this
+     * is ever called (see transformChannelUrl()/transformEpisodeUrl()).
      */
     public function transformUrl(string $originalUrl): string
     {
@@ -312,6 +389,7 @@ class PlaylistProfile extends Model
             Log::debug('Profile URL transformation matched', [
                 'profile_id' => $this->id,
                 'profile_name' => $this->name ?? 'N/A',
+                'playlist_id' => $playlist->id,
                 'stream_type' => $streamType,
                 'source_base_url' => $sourceBaseUrl,
                 'profile_base_url' => $profileUrl,

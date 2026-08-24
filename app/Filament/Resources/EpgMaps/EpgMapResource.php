@@ -8,6 +8,7 @@ use App\Filament\Concerns\HasCopilotSupport;
 use App\Filament\Resources\EpgMaps\Pages\ListEpgMaps;
 use App\Filament\Resources\EpgMaps\Pages\ViewEpgMap;
 use App\Filament\Resources\EpgMaps\RelationManagers\CandidatesRelationManager;
+use App\Filament\Resources\EpgMaps\RelationManagers\MappedChannelsRelationManager;
 use App\Jobs\MapPlaylistChannelsToEpg;
 use App\Models\Epg;
 use App\Models\EpgMap;
@@ -274,6 +275,7 @@ class EpgMapResource extends Resource implements CopilotResource
     {
         return [
             CandidatesRelationManager::class,
+            MappedChannelsRelationManager::class,
         ];
     }
 

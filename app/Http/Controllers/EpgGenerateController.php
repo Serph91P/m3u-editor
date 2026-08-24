@@ -375,7 +375,7 @@ class EpgGenerateController extends Controller
                                     $progXml .= '    <episode-num'.$systemAttribute.'>'.$this->escapeXml($episodeNumber['value']).'</episode-num>'.PHP_EOL;
                                 }
                                 if ($programme['icon']) {
-                                    $icon = $logoProxyEnabled
+                                    $icon = $logoProxyEnabled && ! $this->isSchedulesDirectImageUrl($programme['icon'], $epg)
                                         ? LogoProxyController::generateProxyUrl($programme['icon'])
                                         : $programme['icon'];
                                     $progXml .= '    <icon src="'.$this->escapeXml($icon).'"/>'.PHP_EOL;
@@ -384,7 +384,7 @@ class EpgGenerateController extends Controller
                                 if (! empty($programme['images'] ?? null) && is_array($programme['images'])) {
                                     foreach ($programme['images'] as $image) {
                                         $rawUrl = $image['url'] ?? '';
-                                        $proxiedUrl = $logoProxyEnabled && $rawUrl
+                                        $proxiedUrl = $logoProxyEnabled && $rawUrl && ! $this->isSchedulesDirectImageUrl($rawUrl, $epg)
                                             ? LogoProxyController::generateProxyUrl($rawUrl)
                                             : $rawUrl;
 
@@ -848,6 +848,41 @@ class EpgGenerateController extends Controller
         } catch (Exception $e) {
             return null;
         }
+    }
+
+    /**
+     * Determine whether an artwork URL is the current EPG's first-party
+     * Schedules Direct image proxy route.
+     *
+     * Matched on path shape alone (not host/scheme/port): the cached URL is
+     * built by SchedulesDirectService::buildImageUrl() during the queued
+     * import job, while this is evaluated during a live HTTP request, and
+     * those two contexts can legitimately resolve the app's base URL
+     * differently (e.g. APP_URL vs. the request's actual Host header).
+     * The epg-scoped uuid in the path already makes the match unambiguous.
+     */
+    private function isSchedulesDirectImageUrl(string $url, Epg $epg): bool
+    {
+        if (! $epg->isSchedulesDirect()) {
+            return false;
+        }
+
+        $parts = parse_url($url);
+
+        if ($parts === false
+            || isset($parts['user']) || isset($parts['pass'])
+            || isset($parts['query']) || isset($parts['fragment'])
+            || ! isset($parts['path'])) {
+            return false;
+        }
+
+        $pattern = '#/schedules-direct/'.preg_quote($epg->uuid, '#').'/image/([A-Za-z0-9._-]+)$#D';
+
+        if (preg_match($pattern, $parts['path'], $matches) !== 1) {
+            return false;
+        }
+
+        return ! in_array($matches[1], ['.', '..'], true);
     }
 
     /**

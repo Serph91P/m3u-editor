@@ -255,7 +255,7 @@ class VodGroupResource extends Resource implements CopilotResource
                         ->modalSubmitActionLabel(__('Apply')),
 
                     Action::make('recount')
-                        ->label(__('Recount This Group'))
+                        ->label(__('Renumber This Group'))
                         ->icon('heroicon-o-hashtag')
                         ->schema([
                             TextInput::make('start')
@@ -274,13 +274,13 @@ class VodGroupResource extends Resource implements CopilotResource
                         ->after(function () {
                             Notification::make()
                                 ->success()
-                                ->title(__('Channels Recounted'))
-                                ->body(__('The channels in this group have been recounted.'))
+                                ->title(__('Channels Renumbered'))
+                                ->body(__('The channels in this group have been renumbered.'))
                                 ->send();
                         })
                         ->requiresConfirmation()
                         ->modalIcon('heroicon-o-hashtag')
-                        ->modalDescription(__('Recount channels only in this group sequentially. Channel numbers will be assigned based on the current sort order of this group.')),
+                        ->modalDescription(__('Renumber channels only in this group sequentially. Channel numbers will be assigned based on the current sort order of this group.')),
                     Action::make('sort_alpha')
                         ->label(__('Sort Alpha'))
                         ->icon('heroicon-o-bars-arrow-down')
@@ -705,7 +705,7 @@ class VodGroupResource extends Resource implements CopilotResource
                         ->modalDescription(__('Disable the selected group(s) now?'))
                         ->modalSubmitActionLabel(__('Yes, disable now')),
                     BulkAction::make('recount_channels')
-                        ->label(__('Recount Selected Groups'))
+                        ->label(__('Renumber Selected Groups'))
                         ->icon('heroicon-o-hashtag')
                         ->schema([
                             TextInput::make('start')
@@ -728,14 +728,14 @@ class VodGroupResource extends Resource implements CopilotResource
                         ->after(function () {
                             Notification::make()
                                 ->success()
-                                ->title(__('Channels Recounted'))
-                                ->body(__('The channels in the selected groups have been recounted sequentially.'))
+                                ->title(__('Channels Renumbered'))
+                                ->body(__('The channels in the selected groups have been renumbered sequentially.'))
                                 ->send();
                         })
                         ->deselectRecordsAfterCompletion()
                         ->requiresConfirmation()
                         ->modalIcon('heroicon-o-hashtag')
-                        ->modalDescription(__('Recount channels across the selected groups. Groups are processed by sort order, then name, then id, while channels in each group are processed by sort.')),
+                        ->modalDescription(__('Renumber channels across the selected groups. Groups are processed by sort order, then name, then id, while channels in each group are processed by sort.')),
                     BulkAction::make('find-replace')
                         ->label(__('Find & Replace'))
                         ->schema(fn () => FindReplaceService::getBulkActionSchema('vod_groups'))

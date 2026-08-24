@@ -67,6 +67,7 @@ use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -186,6 +187,16 @@ class AppServiceProvider extends ServiceProvider
 
         // Apply user-defined timezone (when TZ env var is not set)
         $this->applyTimezoneFromSettings();
+
+        // Queue workers (Horizon) boot the application once and stay alive
+        // for days, so a timezone change made in Preferences after a worker
+        // started would otherwise never be picked up by that worker. Re-apply
+        // it before every job so queued jobs (e.g. CreateBackup, whose
+        // filename is generated from the current timezone) stay in sync with
+        // what's configured, without requiring a worker restart.
+        Event::listen(JobProcessing::class, function (): void {
+            $this->applyTimezoneFromSettings();
+        });
 
         // Inject Copilot API key from settings into the Laravel AI config
         $this->applyCopilotApiKeyFromSettings();

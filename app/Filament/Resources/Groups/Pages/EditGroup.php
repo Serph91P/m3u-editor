@@ -61,7 +61,7 @@ class EditGroup extends EditRecord
                     ->modalSubmitActionLabel(__('Move now')),
 
                 Action::make('recount')
-                    ->label(__('Recount This Group'))
+                    ->label(__('Renumber This Group'))
                     ->icon('heroicon-o-hashtag')
                     ->schema([
                         TextInput::make('start')
@@ -81,13 +81,13 @@ class EditGroup extends EditRecord
                         $livewire->dispatch('refreshRelation');
                         Notification::make()
                             ->success()
-                            ->title(__('Channels Recounted'))
-                            ->body(__('The channels in this group have been recounted.'))
+                            ->title(__('Channels Renumbered'))
+                            ->body(__('The channels in this group have been renumbered.'))
                             ->send();
                     })
                     ->requiresConfirmation()
                     ->modalIcon('heroicon-o-hashtag')
-                    ->modalDescription(__('Recount channels only in this group sequentially. Channel numbers will be assigned based on the current sort order of this group.')),
+                    ->modalDescription(__('Renumber channels only in this group sequentially. Channel numbers will be assigned based on the current sort order of this group.')),
                 Action::make('sort_alpha')
                     ->label(__('Sort Alpha'))
                     ->icon('heroicon-o-bars-arrow-down')
