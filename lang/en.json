@@ -6134,5 +6134,14 @@
     "veryfast": "veryfast",
     "vs.": "vs.",
     "your-api-key-here": "your-api-key-here",
-    "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist": "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist"
+    "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist": "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist",
+    "Mapped channels": "Mapped channels",
+    "Channels in this map's scope that already have an EPG mapping, whether applied automatically, via candidate review, or set before this map existed.": "Channels in this map's scope that already have an EPG mapping, whether applied automatically, via candidate review, or set before this map existed.",
+    "Mapped EPG channel": "Mapped EPG channel",
+    "EPG channel no longer available": "EPG channel no longer available",
+    "Unmap": "Unmap",
+    "Clear the EPG mapping for :channel?": "Clear the EPG mapping for :channel?",
+    "Unmap selected": "Unmap selected",
+    "Clear the EPG mapping for the selected channels?": "Clear the EPG mapping for the selected channels?",
+    ":count mapping cleared.|:count mappings cleared.": ":count mapping cleared.|:count mappings cleared."
 }

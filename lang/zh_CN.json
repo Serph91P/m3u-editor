@@ -5070,5 +5070,14 @@
     "veryfast": "veryfast",
     "vs.": "与",
     "your-api-key-here": "在此输入您的 API 密钥",
-    "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist": "yt-dlp 格式选择器后跟可选标志。示例：bestvideo+bestaudio/best --no-playlist"
+    "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist": "yt-dlp 格式选择器后跟可选标志。示例：bestvideo+bestaudio/best --no-playlist",
+    "Mapped channels": "已映射频道",
+    "Channels in this map's scope that already have an EPG mapping, whether applied automatically, via candidate review, or set before this map existed.": "此映射范围内已具有 EPG 映射的频道，无论是自动应用、通过候选审核应用，还是在此映射存在之前设置的。",
+    "Mapped EPG channel": "已映射的 EPG 频道",
+    "EPG channel no longer available": "EPG 频道已不可用",
+    "Unmap": "取消映射",
+    "Clear the EPG mapping for :channel?": "清除 :channel 的 EPG 映射？",
+    "Unmap selected": "取消选中项的映射",
+    "Clear the EPG mapping for the selected channels?": "清除所选频道的 EPG 映射？",
+    ":count mapping cleared.|:count mappings cleared.": ":count 个映射已清除。|:count 个映射已清除。"
 }

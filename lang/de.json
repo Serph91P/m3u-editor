@@ -5073,5 +5073,14 @@
     "veryfast": "sehr schnell",
     "vs.": "vs.",
     "your-api-key-here": "Ihr-API-Schlüssel-hier",
-    "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist": "yt-dlp-Formatauswahl, gefolgt von optionalen Flags. Beispiel: bestvideo+bestaudio/best --no-playlist"
+    "yt-dlp format selector followed by optional flags. Example: bestvideo+bestaudio/best --no-playlist": "yt-dlp-Formatauswahl, gefolgt von optionalen Flags. Beispiel: bestvideo+bestaudio/best --no-playlist",
+    "Mapped channels": "Zugeordnete Kanäle",
+    "Channels in this map's scope that already have an EPG mapping, whether applied automatically, via candidate review, or set before this map existed.": "Kanäle im Geltungsbereich dieser Zuordnung, die bereits eine EPG-Zuordnung haben, egal ob automatisch angewendet, über die Kandidatenüberprüfung oder vor dieser Zuordnung festgelegt.",
+    "Mapped EPG channel": "Zugeordneter EPG-Kanal",
+    "EPG channel no longer available": "EPG-Kanal nicht mehr verfügbar",
+    "Unmap": "Zuordnung aufheben",
+    "Clear the EPG mapping for :channel?": "Die EPG-Zuordnung für :channel aufheben?",
+    "Unmap selected": "Ausgewählte aufheben",
+    "Clear the EPG mapping for the selected channels?": "Die EPG-Zuordnung für die ausgewählten Kanäle aufheben?",
+    ":count mapping cleared.|:count mappings cleared.": ":count Zuordnung aufgehoben.|:count Zuordnungen aufgehoben."
 }

@@ -5,6 +5,7 @@ use App\Filament\CopilotTools\EpgMappingApplyTool;
 use App\Filament\Resources\EpgMaps\Pages\ListEpgMaps;
 use App\Filament\Resources\EpgMaps\Pages\ViewEpgMap;
 use App\Filament\Resources\EpgMaps\RelationManagers\CandidatesRelationManager;
+use App\Filament\Resources\EpgMaps\RelationManagers\MappedChannelsRelationManager;
 use App\Jobs\BuildEpgMapCandidatesJob;
 use App\Models\Channel;
 use App\Models\Epg;
@@ -384,6 +385,113 @@ it('does not expose candidate review for an epg source owned by another user', f
     // ownerMatchesAuth/ canReview.
     Livewire::test(ListEpgMaps::class)
         ->assertActionHidden(TestAction::make('reviewCandidates')->table($map));
+});
+
+it('shows counts on the Mapped and Review Candidates tab badges', function () {
+    $this->actingAs($this->user);
+    $epgChannel = candidateReviewEpgChannel([
+        'name' => 'ESPNews',
+        'display_name' => 'ESPNews',
+        'channel_id' => 'espnews.us',
+    ]);
+    $mapped = candidateReviewChannel('ESPN News');
+    $mapped->update(['epg_channel_id' => $epgChannel->id]);
+    candidateReviewChannel('Unrelated Channel');
+    $map = EpgMap::factory()->create([
+        'user_id' => $this->user->id,
+        'epg_id' => $this->epg->id,
+        'playlist_id' => $this->playlist->id,
+        'status' => 'completed',
+        'settings' => [],
+    ]);
+
+    (new BuildEpgMapCandidatesJob($map->id))->handle();
+
+    expect(MappedChannelsRelationManager::getBadge($map, ViewEpgMap::class))->toBe('1')
+        ->and(CandidatesRelationManager::getBadge($map, ViewEpgMap::class))->toBe((string) $map->candidates()->count());
+});
+
+it('shows currently mapped channels regardless of how they were mapped', function () {
+    $this->actingAs($this->user);
+    $epgChannel = candidateReviewEpgChannel([
+        'name' => 'ESPNews',
+        'display_name' => 'ESPNews',
+        'channel_id' => 'espnews.us',
+    ]);
+    $mapped = candidateReviewChannel('ESPN News');
+    $mapped->update(['epg_channel_id' => $epgChannel->id]);
+    $unmapped = candidateReviewChannel('Unrelated Channel');
+    $map = EpgMap::factory()->create([
+        'user_id' => $this->user->id,
+        'epg_id' => $this->epg->id,
+        'playlist_id' => $this->playlist->id,
+        'status' => 'completed',
+        'current_mapped_count' => 1,
+        'settings' => [],
+    ]);
+
+    Livewire::test(MappedChannelsRelationManager::class, [
+        'ownerRecord' => $map,
+        'pageClass' => ViewEpgMap::class,
+    ])
+        ->loadTable()
+        ->assertCanSeeTableRecords([$mapped])
+        ->assertCanNotSeeTableRecords([$unmapped]);
+});
+
+it('unmaps a currently mapped channel from the mapped relation manager', function () {
+    $this->actingAs($this->user);
+    $epgChannel = candidateReviewEpgChannel([
+        'name' => 'ESPNews',
+        'display_name' => 'ESPNews',
+        'channel_id' => 'espnews.us',
+    ]);
+    $mapped = candidateReviewChannel('ESPN News');
+    $mapped->update(['epg_channel_id' => $epgChannel->id]);
+    $map = EpgMap::factory()->create([
+        'user_id' => $this->user->id,
+        'epg_id' => $this->epg->id,
+        'playlist_id' => $this->playlist->id,
+        'status' => 'completed',
+        'settings' => [],
+    ]);
+
+    Livewire::test(MappedChannelsRelationManager::class, [
+        'ownerRecord' => $map,
+        'pageClass' => ViewEpgMap::class,
+    ])
+        ->loadTable()
+        ->callAction(TestAction::make('unmap')->table($mapped))
+        ->assertNotified();
+
+    expect($mapped->refresh()->epg_channel_id)->toBeNull();
+});
+
+it('does not allow unmapping for an epg source owned by another user', function () {
+    $this->actingAs($this->user);
+    $otherUser = User::factory()->create();
+    $otherEpg = Epg::withoutEvents(fn () => Epg::factory()->for($otherUser)->create());
+    $epgChannel = candidateReviewEpgChannel([
+        'name' => 'ESPNews',
+        'display_name' => 'ESPNews',
+        'channel_id' => 'espnews.us',
+    ]);
+    $mapped = candidateReviewChannel('ESPN News');
+    $mapped->update(['epg_channel_id' => $epgChannel->id]);
+    $map = EpgMap::factory()->create([
+        'user_id' => $this->user->id,
+        'epg_id' => $otherEpg->id,
+        'playlist_id' => $this->playlist->id,
+        'status' => 'completed',
+        'settings' => [],
+    ]);
+
+    Livewire::test(MappedChannelsRelationManager::class, [
+        'ownerRecord' => $map,
+        'pageClass' => ViewEpgMap::class,
+    ])
+        ->loadTable()
+        ->assertActionHidden(TestAction::make('unmap')->table($mapped));
 });
 
 it('keeps copilot confirmation source scoped and does not overwrite mappings', function () {

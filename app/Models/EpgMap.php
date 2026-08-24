@@ -49,4 +49,21 @@ class EpgMap extends Model
     {
         return $this->hasMany(EpgMapCandidate::class);
     }
+
+    /**
+     * Channels already mapped to an EPG entry within this map's scope
+     * (playlist, optionally narrowed to specific channels/groups). Mirrors
+     * the scoping used to compute `current_mapped_count` in
+     * MapPlaylistChannelsToEpg so the two stay consistent.
+     */
+    public function mappedChannels(): HasMany
+    {
+        return $this->hasMany(Channel::class, 'playlist_id', 'playlist_id')
+            ->where('channels.user_id', $this->user_id)
+            ->when($this->playlist_id === null, fn ($query) => $query->whereRaw('1 = 0'))
+            ->eligibleForEpgMapping()
+            ->whereNotNull('epg_channel_id')
+            ->when($this->channels, fn ($query) => $query->whereIn('id', $this->channels))
+            ->when(! $this->channels && $this->group_ids, fn ($query) => $query->whereIn('group_id', $this->group_ids));
+    }
 }
