@@ -146,6 +146,7 @@ class BrowseShows extends Page
                         ->searchable()
                         ->options(fn () => DvrSetting::with(['playlist', 'customPlaylist', 'mergedPlaylist'])
                             ->where('user_id', Auth::id())
+                            ->where('enabled', true)
                             ->get()
                             ->mapWithKeys(fn (DvrSetting $s) => [$s->id => $s->owner()?->name ?? "DVR #{$s->id}"])
                             ->all())
