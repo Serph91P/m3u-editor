@@ -119,7 +119,7 @@ class StatsOverview extends BaseWidget
                 ->chart($stats->epg_trend)
                 ->color(match (true) {
                     $mappedPct < 25 => 'danger',
-                    $mappedPct < 75 => 'warning',
+                    $mappedPct < 70 => 'warning',
                     default => 'success',
                 })
                 ->url(EpgMapResource::getUrl()),
