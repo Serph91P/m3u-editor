@@ -28,11 +28,16 @@ class StatsOverview extends BaseWidget
         $isAdmin = auth()->user()?->isAdmin() ?? false;
 
         $stats = Cache::remember("dashboard_kpi_stats_{$userId}", $this->cacheDuration, function () use ($userId) {
+            // "EPG-mappable" mirrors Channel::scopeEligibleForEpgMapping():
+            // a live channel (not VOD) that has not opted out via epg_map_enabled.
+            // VOD and mapping-disabled channels are excluded from EPG Coverage so
+            // the percentage reflects channels that can actually carry a guide.
             $channels = DB::table('channels')
                 ->selectRaw('
                     COUNT(*) as total,
                     COUNT(CASE WHEN enabled = true THEN 1 END) as enabled,
-                    COUNT(CASE WHEN enabled = true AND epg_channel_id IS NOT NULL THEN 1 END) as enabled_mapped,
+                    COUNT(CASE WHEN enabled = true AND is_vod = false AND epg_map_enabled = true THEN 1 END) as epg_mappable,
+                    COUNT(CASE WHEN enabled = true AND is_vod = false AND epg_map_enabled = true AND epg_channel_id IS NOT NULL THEN 1 END) as epg_mapped,
                     COUNT(CASE WHEN is_vod = true THEN 1 END) as vod
                 ')
                 ->where('user_id', $userId)
@@ -60,7 +65,8 @@ class StatsOverview extends BaseWidget
             return (object) [
                 'total_channels' => (int) ($channels->total ?? 0),
                 'enabled_channels' => (int) ($channels->enabled ?? 0),
-                'enabled_mapped_channels' => (int) ($channels->enabled_mapped ?? 0),
+                'epg_mappable_channels' => (int) ($channels->epg_mappable ?? 0),
+                'epg_mapped_channels' => (int) ($channels->epg_mapped ?? 0),
                 'vod_channels' => (int) ($channels->vod ?? 0),
                 'series' => DB::table('series')->where('user_id', $userId)->count(),
                 'series_with_episodes' => DB::table('episodes')
@@ -80,8 +86,8 @@ class StatsOverview extends BaseWidget
             ? (int) round($stats->enabled_channels / $stats->total_channels * 100)
             : 0;
 
-        $mappedPct = $stats->enabled_channels > 0
-            ? (int) round($stats->enabled_mapped_channels / $stats->enabled_channels * 100)
+        $mappedPct = $stats->epg_mappable_channels > 0
+            ? (int) round($stats->epg_mapped_channels / $stats->epg_mappable_channels * 100)
             : 0;
 
         $cards = [
@@ -105,9 +111,9 @@ class StatsOverview extends BaseWidget
                 ->url(ChannelResource::getUrl()),
 
             Stat::make(__('EPG Coverage'), $mappedPct.'%')
-                ->description(__(':mapped of :total enabled channels mapped', [
-                    'mapped' => number_format($stats->enabled_mapped_channels),
-                    'total' => number_format($stats->enabled_channels),
+                ->description(__(':mapped of :total mappable channels mapped', [
+                    'mapped' => number_format($stats->epg_mapped_channels),
+                    'total' => number_format($stats->epg_mappable_channels),
                 ]))
                 ->descriptionIcon('heroicon-m-calendar-days')
                 ->chart($stats->epg_trend)

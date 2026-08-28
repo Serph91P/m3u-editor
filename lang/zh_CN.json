@@ -1149,7 +1149,7 @@
     ":failed of :total chunks failed to process. Check the logs for details.": ":total 个分块中有 :failed 个处理失败。请查看日志了解详情。",
     ":from-:to of :total shows": ":from-:to（共 :total 个节目）",
     ":images images": ":images 图片",
-    ":mapped of :total enabled channels mapped": ":total 个已启用频道中已映射 :mapped 个",
+    ":mapped of :total mappable channels mapped": ":total 个可映射频道中已映射 :mapped 个",
     ":name - :confidence% - :reason": ":name - :confidence% - :reason",
     ":name installed": ":name 已安装",
     ":name updated": ":name 已更新",

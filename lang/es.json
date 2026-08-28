@@ -1149,7 +1149,7 @@
     ":failed of :total chunks failed to process. Check the logs for details.": ":failed de :total fragmentos no se pudieron procesar. Consulte los registros para más detalles.",
     ":from-:to of :total shows": ":from-:to de :total programas",
     ":images images": ":images imágenes",
-    ":mapped of :total enabled channels mapped": ":mapped de :total canales habilitados asignados",
+    ":mapped of :total mappable channels mapped": ":mapped de :total canales asignables asignados",
     ":name - :confidence% - :reason": ":name - :confidence% - :reason",
     ":name installed": ":name instalado",
     ":name updated": ":name actualizado",

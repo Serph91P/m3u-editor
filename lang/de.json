@@ -1149,7 +1149,7 @@
     ":failed of :total chunks failed to process. Check the logs for details.": ":failed von :total Teilaufgaben konnten nicht verarbeitet werden. Details siehe Protokolle.",
     ":from-:to of :total shows": ":from-:to von :total Sendungen",
     ":images images": ":images Bilder",
-    ":mapped of :total enabled channels mapped": ":mapped von :total aktivierten Kanälen zugeordnet",
+    ":mapped of :total mappable channels mapped": ":mapped von :total zuordenbaren Kanälen zugeordnet",
     ":name - :confidence% - :reason": ":name - :confidence% - :reason",
     ":name installed": ":name installiert",
     ":name updated": ":name aktualisiert",

@@ -2166,7 +2166,7 @@
     ":from-:to of :total shows": ":from-:to of :total shows",
     ":images images": ":images images",
     ":mapped of :total channels mapped": ":mapped of :total channels mapped",
-    ":mapped of :total enabled channels mapped": ":mapped of :total enabled channels mapped",
+    ":mapped of :total mappable channels mapped": ":mapped of :total mappable channels mapped",
     ":name - :confidence% - :reason": ":name - :confidence% - :reason",
     ":name installed": ":name installed",
     ":name updated": ":name updated",

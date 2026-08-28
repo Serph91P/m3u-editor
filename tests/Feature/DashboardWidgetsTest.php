@@ -17,6 +17,7 @@ use App\Filament\Widgets\SystemHealthWidget;
 use App\Filament\Widgets\UpcomingRecordingsWidget;
 use App\Models\Channel;
 use App\Models\Epg;
+use App\Models\EpgChannel;
 use App\Models\Playlist;
 use App\Models\SyncRun;
 use App\Models\User;
@@ -99,6 +100,33 @@ it('builds KPI stats scoped to the current user', function () {
     Cache::flush();
 
     expect(invade(app(StatsOverview::class))->getStats())->toHaveCount(6);
+});
+
+it('scopes EPG Coverage to enabled, live, mapping-enabled channels', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->create();
+    $epg = Epg::factory()->for($user)->create();
+    $epgChannelId = fn () => EpgChannel::factory()->for($user)->for($epg)->create()->id;
+    $live = ['is_vod' => false, 'enabled' => true, 'epg_map_enabled' => true];
+
+    // Mappable + actually mapped.
+    Channel::factory()->for($user)->for($playlist)->create([...$live, 'epg_channel_id' => $epgChannelId()]);
+    Channel::factory()->for($user)->for($playlist)->create([...$live, 'epg_channel_id' => $epgChannelId()]);
+    // Mappable but not yet mapped.
+    Channel::factory()->count(2)->for($user)->for($playlist)->create([...$live, 'epg_channel_id' => null]);
+    // Excluded: mapping disabled, VOD, and disabled channel (all carry a mapping).
+    Channel::factory()->for($user)->for($playlist)->create([...$live, 'epg_map_enabled' => false, 'epg_channel_id' => $epgChannelId()]);
+    Channel::factory()->for($user)->for($playlist)->create([...$live, 'is_vod' => true, 'epg_channel_id' => $epgChannelId()]);
+    Channel::factory()->for($user)->for($playlist)->create([...$live, 'enabled' => false, 'epg_channel_id' => $epgChannelId()]);
+
+    $this->actingAs($user);
+
+    $coverage = collect(invade(app(StatsOverview::class))->getStats())
+        ->first(fn ($stat) => $stat->getLabel() === __('EPG Coverage'));
+
+    // 2 mapped of 4 mappable = 50%, VOD/disabled/opted-out channels ignored.
+    expect($coverage->getValue())->toBe('50%')
+        ->and($coverage->getDescription())->toBe(__(':mapped of :total mappable channels mapped', ['mapped' => '2', 'total' => '4']));
 });
 
 it('surfaces a failed sync in the needs-attention widget', function () {

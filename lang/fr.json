@@ -1149,7 +1149,7 @@
     ":failed of :total chunks failed to process. Check the logs for details.": ":failed sur :total lots n'ont pas pu être traités. Consultez les journaux pour plus de détails.",
     ":from-:to of :total shows": ":from-:to sur :total émissions",
     ":images images": ":images images",
-    ":mapped of :total enabled channels mapped": ":mapped sur :total canaux activés associés",
+    ":mapped of :total mappable channels mapped": ":mapped sur :total canaux mappables associés",
     ":name - :confidence% - :reason": ":name - :confidence% - :reason",
     ":name installed": ":name installé",
     ":name updated": ":name mis à jour",
