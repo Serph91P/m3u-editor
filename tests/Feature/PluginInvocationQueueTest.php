@@ -18,7 +18,10 @@ use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
 use Carbon\Carbon;
 use Filament\Actions\Testing\TestAction;
+use Illuminate\Contracts\Cache\Lock;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Livewire\Livewire;
@@ -610,4 +613,31 @@ it('releases a resume claim when dispatch fails', function () {
 
     expect($run->status)->toBe('stale')
         ->and($run->progress_message)->toBe('Waiting for operator.');
+});
+
+it('surfaces a friendly error when another resume for the same run holds the lock', function () {
+    $plugin = createPluginForInvocationQueueTests();
+    $run = PluginRun::query()->create([
+        'extension_plugin_id' => $plugin->id,
+        'status' => 'stale',
+        'invocation_type' => 'action',
+        'action' => 'resume_scan',
+        'trigger' => 'manual',
+        'dry_run' => true,
+        'payload' => [],
+        'progress_message' => 'Waiting for operator.',
+        'started_at' => now()->subHours(7),
+        'stale_at' => now(),
+    ]);
+
+    $lock = Mockery::mock(Lock::class);
+    $lock->shouldReceive('block')->once()->andThrow(new LockTimeoutException);
+    Cache::shouldReceive('lock')->once()->with("plugins:resume-run:{$run->id}", 30)->andReturn($lock);
+
+    expect(fn () => app(PluginManager::class)->resumeRun($run))
+        ->toThrow(RuntimeException::class, 'Another resume for this run is already in progress. Try again in a moment.');
+
+    expect($run->fresh()->status)->toBe('stale')
+        ->and($run->fresh()->progress_message)->toBe('Waiting for operator.')
+        ->and($run->logs()->count())->toBe(0);
 });

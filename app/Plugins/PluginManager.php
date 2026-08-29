@@ -18,6 +18,7 @@ use App\Plugins\Support\PluginSelectOptionsContext;
 use App\Plugins\Support\PluginUninstallContext;
 use App\Plugins\Support\PluginValidationResult;
 use Carbon\CarbonInterface;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Bus;
@@ -1035,59 +1036,68 @@ class PluginManager
 
     public function resumeRun(PluginRun $run, ?int $userId = null): PluginRun
     {
-        return Cache::lock("plugins:resume-run:{$run->id}", 30)->block(5, function () use ($run, $userId): PluginRun {
-            $claimedRun = PluginRun::query()->findOrFail($run->id);
+        try {
+            return Cache::lock("plugins:resume-run:{$run->id}", 30)->block(5, function () use ($run, $userId): PluginRun {
+                return $this->dispatchResumedRun($run, $userId);
+            });
+        } catch (LockTimeoutException) {
+            throw new RuntimeException('Another resume for this run is already in progress. Try again in a moment.');
+        }
+    }
 
-            if (! in_array($claimedRun->status, ['cancelled', 'stale', 'failed'], true)) {
-                return $claimedRun;
-            }
+    private function dispatchResumedRun(PluginRun $run, ?int $userId): PluginRun
+    {
+        $claimedRun = PluginRun::query()->findOrFail($run->id);
 
-            if (! in_array($claimedRun->invocation_type, ['action', 'hook'], true)) {
-                throw new RuntimeException('Run cannot be resumed with an invalid invocation type.');
-            }
+        if (! in_array($claimedRun->status, ['cancelled', 'stale', 'failed'], true)) {
+            return $claimedRun;
+        }
 
-            $name = $claimedRun->invocation_type === 'action' ? $claimedRun->action : $claimedRun->hook;
-            if (! is_string($name) || $name === '') {
-                throw new RuntimeException('Run cannot be resumed without an action or hook name.');
-            }
+        if (! in_array($claimedRun->invocation_type, ['action', 'hook'], true)) {
+            throw new RuntimeException('Run cannot be resumed with an invalid invocation type.');
+        }
 
-            $plugin = $claimedRun->plugin()->firstOrFail();
-            $originalStatus = $claimedRun->status;
-            $originalProgressMessage = $claimedRun->progress_message;
+        $name = $claimedRun->invocation_type === 'action' ? $claimedRun->action : $claimedRun->hook;
+        if (! is_string($name) || $name === '') {
+            throw new RuntimeException('Run cannot be resumed without an action or hook name.');
+        }
 
-            $claimedRun->update([
-                'status' => 'pending',
-                'progress_message' => 'Run queued and waiting for the worker to resume.',
-            ]);
+        $plugin = $claimedRun->plugin()->firstOrFail();
+        $originalStatus = $claimedRun->status;
+        $originalProgressMessage = $claimedRun->progress_message;
 
-            try {
-                Bus::dispatch(new ExecutePluginInvocation(
-                    pluginId: $plugin->id,
-                    invocationType: $claimedRun->invocation_type,
-                    name: $name,
-                    payload: $claimedRun->payload ?? [],
-                    options: [
-                        'trigger' => $claimedRun->trigger,
-                        'dry_run' => $claimedRun->dry_run,
-                        'user_id' => $userId ?? $claimedRun->user_id,
-                        'existing_run_id' => $claimedRun->id,
-                        'resume' => true,
-                    ],
-                ));
-            } catch (Throwable $exception) {
-                PluginRun::query()
-                    ->whereKey($claimedRun->id)
-                    ->where('status', 'pending')
-                    ->update([
-                        'status' => $originalStatus,
-                        'progress_message' => $originalProgressMessage,
-                    ]);
+        $claimedRun->update([
+            'status' => 'pending',
+            'progress_message' => 'Run queued and waiting for the worker to resume.',
+        ]);
 
-                throw $exception;
-            }
+        try {
+            Bus::dispatch(new ExecutePluginInvocation(
+                pluginId: $plugin->id,
+                invocationType: $claimedRun->invocation_type,
+                name: $name,
+                payload: $claimedRun->payload ?? [],
+                options: [
+                    'trigger' => $claimedRun->trigger,
+                    'dry_run' => $claimedRun->dry_run,
+                    'user_id' => $userId ?? $claimedRun->user_id,
+                    'existing_run_id' => $claimedRun->id,
+                    'resume' => true,
+                ],
+            ));
+        } catch (Throwable $exception) {
+            PluginRun::query()
+                ->whereKey($claimedRun->id)
+                ->where('status', 'pending')
+                ->update([
+                    'status' => $originalStatus,
+                    'progress_message' => $originalProgressMessage,
+                ]);
 
-            return $claimedRun->fresh();
-        });
+            throw $exception;
+        }
+
+        return $claimedRun->fresh();
     }
 
     public function recoverStaleRuns(?int $heartbeatMinutes = null, ?int $minimumRuntimeMinutes = null): int
@@ -1107,9 +1117,14 @@ class PluginManager
 
         $heartbeatCutoff = now()->subMinutes($heartbeatMinutes);
         $runtimeCutoff = now()->subMinutes($minimumRuntimeMinutes);
-        $staleRuns = PluginRun::query()
-            ->where(function ($query) use ($heartbeatCutoff, $runtimeCutoff) {
-                $query
+
+        // Single source of truth for "this run has been abandoned". Applied both to the
+        // bulk candidate query and to the per-row re-check under a row lock below, so a
+        // worker that checks in (or a resumed run a worker claims) between the two reads
+        // is not stomped back to stale.
+        $abandonedRunCriteria = function ($query) use ($heartbeatCutoff, $runtimeCutoff): void {
+            $query->where(function ($outer) use ($heartbeatCutoff, $runtimeCutoff) {
+                $outer
                     // Running invocations that have stopped checking in.
                     ->where(function ($runningQuery) use ($heartbeatCutoff, $runtimeCutoff) {
                         $runningQuery
@@ -1137,44 +1152,58 @@ class PluginManager
                             ->where('status', 'pending')
                             ->where('updated_at', '<', $runtimeCutoff);
                     });
-            })
-            ->lazyById();
+            });
+        };
 
         $recovered = 0;
 
-        foreach ($staleRuns as $run) {
-            $wasPending = $run->status === 'pending';
-            $summary = $wasPending
-                ? 'Run was queued to resume but no worker picked it up. Marked stale so it can be resumed again.'
-                : ($run->progress_message ?: $run->summary ?: 'Run lost its heartbeat and was marked stale.');
+        foreach (PluginRun::query()->tap($abandonedRunCriteria)->lazyById() as $candidate) {
+            $recovered += DB::transaction(function () use ($candidate, $abandonedRunCriteria): int {
+                $run = PluginRun::query()
+                    ->whereKey($candidate->getKey())
+                    ->tap($abandonedRunCriteria)
+                    ->lockForUpdate()
+                    ->first();
 
-            $run->logs()->create([
-                'level' => 'warning',
-                'message' => $wasPending
-                    ? 'Resumed run was never claimed by a worker. Marking it stale so an operator can resume or rerun it.'
-                    : 'Run heartbeat expired. Marking the run as stale so an operator can resume or rerun it.',
-                'context' => [
-                    'previous_status' => $run->status,
-                    'last_heartbeat_at' => optional($run->last_heartbeat_at)->toDateTimeString(),
-                ],
-            ]);
+                // A worker sent a heartbeat, finished, or claimed the resumed run between
+                // the candidate query and this lock - it is no longer abandoned.
+                if (! $run) {
+                    return 0;
+                }
 
-            $run->update([
-                'status' => 'stale',
-                'summary' => $summary,
-                'stale_at' => now(),
-                'finished_at' => $run->finished_at ?? now(),
-                'result' => [
-                    'status' => 'stale',
-                    'success' => false,
-                    'summary' => $summary,
-                    'data' => [
-                        'run_state' => $run->run_state ?? [],
+                $wasPending = $run->status === 'pending';
+                $summary = $wasPending
+                    ? 'Run was queued to resume but no worker picked it up. Marked stale so it can be resumed again.'
+                    : ($run->progress_message ?: $run->summary ?: 'Run lost its heartbeat and was marked stale.');
+
+                $run->logs()->create([
+                    'level' => 'warning',
+                    'message' => $wasPending
+                        ? 'Resumed run was never claimed by a worker. Marking it stale so an operator can resume or rerun it.'
+                        : 'Run heartbeat expired. Marking the run as stale so an operator can resume or rerun it.',
+                    'context' => [
+                        'previous_status' => $run->status,
+                        'last_heartbeat_at' => optional($run->last_heartbeat_at)->toDateTimeString(),
                     ],
-                ],
-            ]);
+                ]);
 
-            $recovered++;
+                $run->update([
+                    'status' => 'stale',
+                    'summary' => $summary,
+                    'stale_at' => now(),
+                    'finished_at' => $run->finished_at ?? now(),
+                    'result' => [
+                        'status' => 'stale',
+                        'success' => false,
+                        'summary' => $summary,
+                        'data' => [
+                            'run_state' => $run->run_state ?? [],
+                        ],
+                    ],
+                ]);
+
+                return 1;
+            });
         }
 
         return $recovered;

@@ -4910,6 +4910,7 @@
     "Run a plugin action to see step-by-step activity appear here.": "Run a plugin action to see step-by-step activity appear here.",
     "Run automatically after each playlist sync.": "Run automatically after each playlist sync.",
     "Run comskip after recording to detect and mark commercials. Produces .edl files that Kodi, Jellyfin, and Emby can use for automatic commercial skipping. The Emby.ComSkiper plugin for Emby is available at <a href=\"https://github.com/BillOatmanWork/Emby.ComSkipper\" class=\"underline\" target=\"_blank\" rel=\"noopener\">GitHub/BillOatmanWork/Emby.ComSkipper</a>.": "Run comskip after recording to detect and mark commercials. Produces .edl files that Kodi, Jellyfin, and Emby can use for automatic commercial skipping. The Emby.ComSkiper plugin for Emby is available at <a href=\"https://github.com/BillOatmanWork/Emby.ComSkipper\" class=\"underline\" target=\"_blank\" rel=\"noopener\">GitHub/BillOatmanWork/Emby.ComSkipper</a>.",
+    "Run not resumed": "Run not resumed",
     "Run resumed": "Run resumed",
     "Run status": "Run status",
     "Run the selected scrubbers now? This will not modify the \"Recurring\" setting.": "Run the selected scrubbers now? This will not modify the \"Recurring\" setting.",
