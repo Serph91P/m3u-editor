@@ -44,6 +44,7 @@ use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
 use App\Services\VodFileNameService;
+use App\Services\XtreamCategoryService;
 use App\Settings\GeneralSettings;
 use App\Support\SeriesKey;
 use App\Support\TmdbRating;
@@ -811,7 +812,7 @@ class XtreamApiController extends Controller
                     });
                 } else {
                     // A merged group's category_id also matches every child folded into it.
-                    $channelsQuery->whereIn('group_id', $this->resolveCategoryGroupIds($categoryId));
+                    $channelsQuery->whereIn('group_id', XtreamCategoryService::resolveGroupFilterIds($categoryId));
                 }
             }
 
@@ -848,9 +849,9 @@ class XtreamApiController extends Controller
                         } elseif ($channel->group_id) {
                             $channelCategoryId = (string) $channel->group_id;
                         }
-                    } elseif ($channel->merged_group_id ?? $channel->group_id) {
-                        // A group folded into a merged group reports the merged group's id.
-                        $channelCategoryId = (string) ($channel->merged_group_id ?? $channel->group_id);
+                    } else {
+                        // Non-custom playlist: a group folded into a merged group reports the merged group's id.
+                        $channelCategoryId = XtreamCategoryService::channelStreamCategoryId($channel);
                     }
 
                     $channelNo = ($isCustomPlaylist && ! empty($channel->ccp_channel_number))
@@ -940,7 +941,7 @@ class XtreamApiController extends Controller
                     });
                 } else {
                     // A merged group's category_id also matches every child folded into it.
-                    $channelsQuery->whereIn('group_id', $this->resolveCategoryGroupIds($categoryId));
+                    $channelsQuery->whereIn('group_id', XtreamCategoryService::resolveGroupFilterIds($categoryId));
                 }
             }
 
@@ -979,9 +980,9 @@ class XtreamApiController extends Controller
                         } elseif ($channel->group_id) {
                             $channelCategoryId = (string) $channel->group_id;
                         }
-                    } elseif ($channel->merged_group_id ?? $channel->group_id) {
-                        // A group folded into a merged group reports the merged group's id.
-                        $channelCategoryId = (string) ($channel->merged_group_id ?? $channel->group_id);
+                    } else {
+                        // Non-custom playlist: a group folded into a merged group reports the merged group's id.
+                        $channelCategoryId = XtreamCategoryService::channelStreamCategoryId($channel);
                     }
 
                     $tmdb = $channel->info['tmdb_id'] ?? $channel->movie_data['tmdb_id'] ?? 0;
@@ -1058,7 +1059,7 @@ class XtreamApiController extends Controller
                 } else {
                     // For regular Playlist and MergedPlaylist, filter by category_id.
                     // A merged category's id also matches every child folded into it.
-                    $seriesQuery->whereIn('category_id', $this->resolveSeriesCategoryIds($categoryId));
+                    $seriesQuery->whereIn('category_id', XtreamCategoryService::resolveSeriesCategoryFilterIds($categoryId));
                 }
             }
 
@@ -1108,9 +1109,9 @@ class XtreamApiController extends Controller
                         } elseif ($seriesItem->category_id) {
                             $seriesCategoryId = (string) $seriesItem->category_id;
                         }
-                    } elseif ($seriesItem->category_id) {
-                        // A category folded into a merged category reports the parent's id.
-                        $seriesCategoryId = (string) ($seriesItem->category?->parent_id ?? $seriesItem->category_id);
+                    } else {
+                        // Non-custom playlist: a category folded into a merged category reports the parent's id.
+                        $seriesCategoryId = XtreamCategoryService::seriesStreamCategoryId($seriesItem);
                     }
 
                     $tmdb = $seriesItem->metadata['tmdb_id'] ?? $seriesItem->metadata['tmdb'] ?? $seriesItem->tmdb_id ?? '';
@@ -1452,7 +1453,7 @@ class XtreamApiController extends Controller
                 $liveCategories = self::filterCategoriesByName($liveCategories, $aliasLiveGroupFilter);
             } else {
                 // For regular Playlist and MergedPlaylist, use the groups() relationship
-                $liveCategories = $this->mergedAwareGroupCategories($playlist, false, $aliasLiveGroupFilter);
+                $liveCategories = XtreamCategoryService::groupCategories($playlist, false, $aliasLiveGroupFilter);
             }
 
             // Add a default "All" category if no specific groups exist
@@ -1547,7 +1548,7 @@ class XtreamApiController extends Controller
                 $vodCategories = self::filterCategoriesByName($vodCategories, $aliasVodGroupFilter);
             } else {
                 // For regular Playlist and MergedPlaylist, use the groups() relationship
-                $vodCategories = $this->mergedAwareGroupCategories($playlist, true, $aliasVodGroupFilter);
+                $vodCategories = XtreamCategoryService::groupCategories($playlist, true, $aliasVodGroupFilter);
             }
 
             // Add a default "All" category if no specific categories exist
@@ -1643,27 +1644,7 @@ class XtreamApiController extends Controller
                 // Get categories from series only — the series() relationship on PlaylistAlias
                 // automatically applies any alias category filter, so no extra scoping needed.
                 // Merged categories stand in for their children, which never appear alone.
-                $seriesCategories = $playlist->series()
-                    ->where('enabled', true)
-                    ->with('category.parent')
-                    ->get()
-                    ->pluck('category')
-                    ->filter()
-                    ->map(fn (Category $category): array => [
-                        'category_id' => (string) ($category->parent_id ?? $category->id),
-                        'category_name' => $category->parent?->name ?? $category->name,
-                        'parent_id' => 0,
-                        '_sort' => $category->parent?->sort_order ?? $category->sort_order ?? 999999,
-                    ])
-                    ->unique('category_id')
-                    ->sortBy('_sort')
-                    ->map(function (array $category): array {
-                        unset($category['_sort']);
-
-                        return $category;
-                    })
-                    ->values()
-                    ->all();
+                $seriesCategories = XtreamCategoryService::seriesCategories($playlist);
             }
 
             // Add a default "All" category if no specific categories exist
@@ -2377,84 +2358,6 @@ class XtreamApiController extends Controller
             ->unique()
             ->mapWithKeys(fn (string $name) => [$name => 'network-group-'.($index++)])
             ->all();
-    }
-
-    /**
-     * Live or VOD categories for a standard Playlist/MergedPlaylist, with merged
-     * groups folded in: a merged group stands in for its children (which never
-     * appear on their own), and a child group's channels are what make the parent
-     * category eligible.
-     *
-     * @param  Playlist|MergedPlaylist|PlaylistAlias  $playlist
-     * @param  array<int, string>  $aliasGroupFilter  provider group names an alias is limited to
-     * @return array<int, array{category_id: string, category_name: string, parent_id: int}>
-     */
-    private function mergedAwareGroupCategories($playlist, bool $isVod, array $aliasGroupFilter): array
-    {
-        $channelConstraint = function ($query) use ($isVod, $aliasGroupFilter): void {
-            $query->where('enabled', true)->where('is_vod', $isVod);
-            if (! empty($aliasGroupFilter)) {
-                $query->whereIn('group_internal', $aliasGroupFilter);
-            }
-        };
-
-        $groups = $playlist->groups()
-            ->with('parent')
-            ->where(function ($query) use ($channelConstraint): void {
-                $query->whereHas('channels', $channelConstraint)
-                    ->orWhereHas('children.channels', $channelConstraint);
-            })
-            ->get();
-
-        $categories = [];
-        foreach ($groups as $group) {
-            $id = (string) ($group->parent_id ?? $group->id);
-            if (isset($categories[$id])) {
-                continue;
-            }
-            $categories[$id] = [
-                'category_id' => $id,
-                'category_name' => $group->parent?->name ?? $group->name,
-                'parent_id' => 0,
-                '_sort' => $group->parent?->sort_order ?? $group->sort_order ?? 999999,
-            ];
-        }
-
-        $categories = array_values($categories);
-        usort($categories, fn ($a, $b) => $a['_sort'] <=> $b['_sort']);
-
-        return array_map(function (array $category): array {
-            unset($category['_sort']);
-
-            return $category;
-        }, $categories);
-    }
-
-    /**
-     * All group ids a requested Xtream category_id resolves to for a standard
-     * playlist: the id itself plus, when it is a merged group, every child folded
-     * into it.
-     *
-     * @return array<int, int|string>
-     */
-    private function resolveCategoryGroupIds(int|string $categoryId): array
-    {
-        $childIds = Group::query()->where('parent_id', $categoryId)->pluck('id')->all();
-
-        return array_merge([$categoryId], $childIds);
-    }
-
-    /**
-     * The series-category equivalent of {@see resolveCategoryGroupIds()}: a merged
-     * category id also resolves to every child category folded into it.
-     *
-     * @return array<int, int|string>
-     */
-    private function resolveSeriesCategoryIds(int|string $categoryId): array
-    {
-        $childIds = Category::query()->where('parent_id', $categoryId)->pluck('id')->all();
-
-        return array_merge([$categoryId], $childIds);
     }
 
     /**
