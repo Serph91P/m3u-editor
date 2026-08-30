@@ -6,7 +6,6 @@ use App\Models\Epg;
 use App\Services\SchedulesDirectService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class SchedulesDirectImageProxyController extends Controller
@@ -56,20 +55,7 @@ class SchedulesDirectImageProxyController extends Controller
                 return response($cachedResponse['body'], 200, $cachedResponse['headers']);
             }
 
-            // Ensure we have a valid token
-            if (! $epg->hasValidSchedulesDirectToken()) {
-                $this->schedulesDirectService->authenticateFromEpg($epg);
-                $epg->refresh();
-            }
-
-            // Build the SchedulesDirect image URL
-            $imageUrl = "https://json.schedulesdirect.org/20141201/image/{$imageHash}";
-
-            // Fetch the image with authentication
-            $response = Http::withHeaders([
-                'User-Agent' => 'm3u-editor/'.config('dev.version'),
-                'token' => $epg->sd_token,
-            ])->timeout(30)->get($imageUrl);
+            $response = $this->schedulesDirectService->getImage($epg, $imageHash);
 
             if ($response->successful()) {
                 $body = $response->body();
@@ -99,14 +85,16 @@ class SchedulesDirectImageProxyController extends Controller
                 return response($body, 200, $headers);
             } else {
                 $errorData = $response->json() ?: [];
-                $sdCode = $errorData['code'] ?? null;
+                $sdCode = isset($errorData['code']) && is_numeric($errorData['code'])
+                    ? (int) $errorData['code']
+                    : null;
 
                 Log::warning('Failed to fetch SchedulesDirect image', [
                     'epg_id' => $epgId,
                     'image_hash' => $imageHash,
                     'status' => $response->status(),
                     'sd_code' => $sdCode,
-                    'response' => $response->body(),
+                    'response_bytes' => strlen($response->body()),
                 ]);
 
                 // Image does not exist — cache the not-found state so we never re-request it
@@ -133,8 +121,7 @@ class SchedulesDirectImageProxyController extends Controller
             Log::error('Exception in SchedulesDirect image proxy', [
                 'epg_id' => $epgId,
                 'image_hash' => $imageHash,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'error_class' => $e::class,
             ]);
 
             return response()->json([

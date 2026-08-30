@@ -90,6 +90,12 @@ class ProcessEpgImport implements ShouldQueue
      */
     public function handle(SchedulesDirectService $service): void
     {
+        $this->epg->refresh();
+
+        if ($this->epg->isSchedulesDirect() && $this->epg->hasActiveSchedulesDirectLoginCooldown()) {
+            return;
+        }
+
         if (! $this->force) {
             // Don't update if currently processing
             if ($this->epg->processing) {

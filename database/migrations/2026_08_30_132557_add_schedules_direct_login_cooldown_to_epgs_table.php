@@ -121,7 +121,9 @@ return new class extends Migration
         Schema::dropIfExists('schedules_direct_login_cooldowns');
 
         if (DB::connection()->getDriverName() === 'pgsql') {
-            DB::statement('DROP INDEX IF EXISTS epgs_sd_account_identifier_index');
+            DB::statement(DB::transactionLevel() > 0
+                ? 'DROP INDEX IF EXISTS epgs_sd_account_identifier_index'
+                : 'DROP INDEX CONCURRENTLY IF EXISTS epgs_sd_account_identifier_index');
         } elseif (Schema::hasIndex('epgs', 'epgs_sd_account_identifier_index')) {
             Schema::table('epgs', function (Blueprint $table): void {
                 $table->dropIndex(['sd_account_identifier']);

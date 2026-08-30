@@ -12,7 +12,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection as SupportCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class Epg extends Model
@@ -76,17 +78,22 @@ class Epg extends Model
             }
         });
         static::saving(function (Epg $epg): void {
-            if (! $epg->isDirty('sd_username')) {
-                return;
-            }
-
             $normalizedUsername = filled($epg->sd_username) ? mb_strtolower(trim($epg->sd_username)) : null;
             $originalUsername = filled($epg->getOriginal('sd_username')) ? mb_strtolower(trim($epg->getOriginal('sd_username'))) : null;
-            $epg->sd_account_identifier = $normalizedUsername
-                ? self::schedulesDirectAccountIdentifier($normalizedUsername)
+            $accountIdentifier = $epg->user_id && $normalizedUsername && filled($epg->sd_password)
+                ? self::schedulesDirectAccountIdentifier((int) $epg->user_id, $normalizedUsername, (string) $epg->sd_password)
+                : null;
+            $originalAccountIdentifier = $epg->getOriginal('user_id') && $originalUsername && filled($epg->getOriginal('sd_password'))
+                ? self::schedulesDirectAccountIdentifier(
+                    (int) $epg->getOriginal('user_id'),
+                    $originalUsername,
+                    (string) $epg->getOriginal('sd_password'),
+                )
                 : null;
 
-            if ($epg->exists && $normalizedUsername !== $originalUsername) {
+            $epg->sd_account_identifier = $accountIdentifier;
+
+            if ($epg->exists && $accountIdentifier !== $originalAccountIdentifier) {
                 $epg->sd_token = null;
                 $epg->sd_token_expires_at = null;
                 $epg->sd_login_cooldown_started_at = null;
@@ -137,13 +144,26 @@ class Epg extends Model
             $this->sd_token_expires_at->greaterThan(now()->addSeconds(self::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS));
     }
 
-    public static function schedulesDirectAccountIdentifier(string $username): string
+    public static function schedulesDirectAccountIdentifier(int $userId, string $username, string $password): string
     {
-        return hash_hmac('sha256', mb_strtolower(trim($username)), (string) config('app.key'));
+        $credentialState = $userId."\0".mb_strtolower(trim($username))."\0".$password;
+
+        return hash_hmac('sha256', $credentialState, (string) config('app.key'));
     }
 
     public function hasActiveSchedulesDirectLoginCooldown(): bool
     {
+        if ($this->sd_account_identifier) {
+            $canonicalCooldown = DB::table('schedules_direct_login_cooldowns')
+                ->where('account_identifier', $this->sd_account_identifier)
+                ->first(['cooldown_until']);
+
+            if ($canonicalCooldown) {
+                return $canonicalCooldown->cooldown_until
+                    && Carbon::parse($canonicalCooldown->cooldown_until)->isFuture();
+            }
+        }
+
         return $this->sd_login_cooldown_until?->isFuture() ?? false;
     }
 
