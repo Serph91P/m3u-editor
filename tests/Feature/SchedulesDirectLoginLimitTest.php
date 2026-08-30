@@ -177,6 +177,29 @@ it('does not create a recipient claim for unauthenticated rowless cooldowns', fu
         ->and(DB::table('schedules_direct_login_cooldown_claims')->count())->toBe(0);
 });
 
+it('starts the canonical cooldown for a string only too many logins response', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response([
+            'response' => 'TOO_MANY_LOGINS',
+        ], 429),
+    ]);
+
+    $service = new SchedulesDirectService;
+
+    expect(fn () => $service->authenticate('rowless@example.com', 'rowless-password'))
+        ->toThrow(SchedulesDirectLoginCooldownException::class);
+    expect(fn () => $service->authenticate('rowless@example.com', 'rowless-password'))
+        ->toThrow(SchedulesDirectLoginCooldownException::class);
+
+    $cooldown = DB::table('schedules_direct_login_cooldowns')->sole();
+
+    expect(Carbon::parse($cooldown->started_at)->equalTo(now()))->toBeTrue()
+        ->and(Carbon::parse($cooldown->cooldown_until)->equalTo(now()->addDay()))->toBeTrue()
+        ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+});
+
 it('does not reuse or mutate arbitrary EPG rows during unauthenticated bare authentication', function () {
     $epg = makeSchedulesDirectEpgForLoginLimitTests([
         'sd_token' => 'another-users-token',
@@ -391,6 +414,63 @@ it('expires a rowless authentication handoff at the token validity guard', funct
 
     expect($authentication['token'])->toBe('replacement-handoff-token')
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(2);
+});
+
+it('replaces and reuses a rowless authentication handoff after 4006', function () {
+    $expires = now()->addHours(23)->timestamp;
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::sequence()
+            ->push(schedulesDirectTokenPayload('rejected-rowless-token', $expires))
+            ->push(schedulesDirectTokenPayload('replacement-rowless-token', $expires)),
+        'json.schedulesdirect.org/20141201/headends*' => Http::sequence()
+            ->push(['code' => 4006, 'message' => 'TOKEN_EXPIRED'], 401)
+            ->push([[
+                'headend' => 'Antenna',
+                'lineups' => [],
+            ]]),
+    ]);
+
+    $service = new SchedulesDirectService;
+    $authentication = $service->authenticate('rowless@example.com', 'rowless-password');
+    $headends = $service->getHeadends($authentication['token'], 'USA', '10001');
+    $reusedAuthentication = (new SchedulesDirectService)->authenticate('rowless@example.com', 'rowless-password');
+    $headendRequests = Http::recorded(fn (Request $request): bool => str_contains($request->url(), '/headends'));
+
+    expect($headends)->toHaveCount(1)
+        ->and($headendRequests)->toHaveCount(2)
+        ->and($headendRequests->first()[0]->header('token'))->toBe(['rejected-rowless-token'])
+        ->and($headendRequests->last()[0]->header('token'))->toBe(['replacement-rowless-token'])
+        ->and($reusedAuthentication['token'])->toBe('replacement-rowless-token')
+        ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(2);
+});
+
+it('does not repeat rowless 4006 recovery more than once for a request', function () {
+    $expires = now()->addHours(23)->timestamp;
+    $handoffKey = 'schedules-direct:authentication-handoff:'.Epg::schedulesDirectAccountIdentifier(
+        0,
+        'rowless@example.com',
+        'rowless-password',
+    );
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::sequence()
+            ->push(schedulesDirectTokenPayload('rejected-rowless-token', $expires))
+            ->push(schedulesDirectTokenPayload('replacement-rowless-token', $expires)),
+        'json.schedulesdirect.org/20141201/headends*' => Http::sequence()
+            ->push(['code' => 4006, 'message' => 'TOKEN_EXPIRED'], 401)
+            ->push(['code' => 4006, 'message' => 'TOKEN_EXPIRED'], 401),
+    ]);
+
+    $service = new SchedulesDirectService;
+    $authentication = $service->authenticate('rowless@example.com', 'rowless-password');
+
+    expect(fn () => $service->getHeadends($authentication['token'], 'USA', '10001'))
+        ->toThrow(SchedulesDirectTokenExpiredException::class, 'Schedules Direct token remained expired after one recovery attempt.');
+
+    expect(Http::recorded(fn (Request $request): bool => str_contains($request->url(), '/headends')))->toHaveCount(2)
+        ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(2)
+        ->and(Cache::has($handoffKey))->toBeFalse();
 });
 
 it('reuses a persisted account token when authenticating credentials', function () {
@@ -792,7 +872,11 @@ it('acquires and releases the PostgreSQL provider advisory lock on success', fun
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
-        ->andReturn((object) ['acquired' => true]);
+        ->andReturn((object) ['acquired' => true, 'session_id' => 101]);
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
@@ -815,7 +899,11 @@ it('releases the provider advisory lock when the critical section throws', funct
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
-        ->andReturn((object) ['acquired' => true]);
+        ->andReturn((object) ['acquired' => true, 'session_id' => 101]);
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
@@ -865,8 +953,15 @@ it('keeps a persistence stall fenced after the cache lease can be reacquired', f
         ->andReturnUsing(function () use (&$acquisitionAttempt): object {
             $acquisitionAttempt++;
 
-            return (object) ['acquired' => $acquisitionAttempt === 1];
+            return (object) [
+                'acquired' => $acquisitionAttempt === 1,
+                'session_id' => 101,
+            ];
         });
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
@@ -968,6 +1063,38 @@ it('persists successful authentication after the cache lease expires while the P
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
 });
 
+it('fails closed before provider login when the PostgreSQL advisory lock session is lost', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL-only advisory lock ownership assertion.');
+    }
+
+    $advisorySessionDisconnected = false;
+    $handoffKey = 'schedules-direct:authentication-handoff:'.Epg::schedulesDirectAccountIdentifier(
+        0,
+        'rowless@example.com',
+        'rowless-password',
+    );
+
+    DB::listen(function ($query) use (&$advisorySessionDisconnected): void {
+        if (! $advisorySessionDisconnected && str_contains($query->sql, 'pg_try_advisory_lock')) {
+            $advisorySessionDisconnected = true;
+            DB::disconnect();
+        }
+    });
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response(
+            schedulesDirectTokenPayload('must-not-persist', now()->addHours(23)->timestamp),
+        ),
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->authenticate('rowless@example.com', 'rowless-password'))
+        ->toThrow(Exception::class, 'Schedules Direct authentication lock ownership was lost. Please try again shortly.');
+
+    expect($advisorySessionDisconnected)->toBeTrue()
+        ->and(Cache::has($handoffKey))->toBeFalse();
+    Http::assertNothingSent();
+});
+
 it('fails closed when the cache lease expires without a database advisory fence', function () {
     if (in_array(DB::connection()->getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
         $this->markTestSkipped('Requires a database driver without advisory lock support.');
@@ -1030,7 +1157,11 @@ it('uses a bounded MySQL provider advisory lock and releases it', function () {
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'GET_LOCK')), Mockery::on(fn (array $bindings): bool => $bindings[1] === 5))
-        ->andReturn((object) ['acquired' => 1]);
+        ->andReturn((object) ['acquired' => 1, 'session_id' => 101]);
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'IS_USED_LOCK')), Mockery::type('array'))
+        ->andReturn((object) ['session_id' => 101, 'owner_session_id' => 101]);
     DB::shouldReceive('selectOne')
         ->once()
         ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'RELEASE_LOCK')), Mockery::type('array'))
@@ -1044,6 +1175,31 @@ it('uses a bounded MySQL provider advisory lock and releases it', function () {
     );
 
     expect($result)->toBe(['persisted' => true]);
+});
+
+it('fails closed when advisory lock release cannot be verified', function () {
+    $connection = Mockery::mock();
+    $connection->shouldReceive('getDriverName')->once()->andReturn('pgsql');
+    DB::shouldReceive('connection')->once()->andReturn($connection);
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
+        ->andReturn((object) ['acquired' => true, 'session_id' => 101]);
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
+    DB::shouldReceive('selectOne')
+        ->once()
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
+        ->andReturn((object) ['released' => false]);
+    $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
+
+    expect(fn () => $method->invoke(
+        new SchedulesDirectService,
+        Epg::schedulesDirectProviderAccountIdentifier('account@example.com'),
+        fn (): array => ['persisted' => true],
+    ))->toThrow(Exception::class, 'Schedules Direct authentication lock release could not be verified. Please try again shortly.');
 });
 
 it('invalidates and reauthenticates once when an authenticated request returns 4006', function () {
@@ -2379,6 +2535,46 @@ it('returns a side effect free quiet image 429 when cooldown begins between cont
         ->and($epg->sd_login_cooldown_until)->toBeNull()
         ->and($epg->sd_login_cooldown_notified_at)->toBeNull()
         ->and(DB::table('schedules_direct_login_cooldown_claims')->count())->toBe(0)
+        ->and($loggedWarningsAndErrors)->toBe([]);
+    NotificationFacade::assertNothingSent();
+    Http::assertNothingSent();
+});
+
+it('returns a side effect free quiet image 429 when cooldown begins during a lock timeout', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $retryAt = now()->addMinutes(10);
+    $lock = Mockery::mock(Lock::class);
+    $lock->shouldReceive('block')
+        ->once()
+        ->with(5, Mockery::type(Closure::class))
+        ->andReturnUsing(function () use ($epg, $retryAt): never {
+            DB::table('schedules_direct_login_cooldowns')->insert([
+                'account_identifier' => Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username),
+                'started_at' => now(),
+                'cooldown_until' => $retryAt,
+                'notified_at' => null,
+            ]);
+
+            throw new LockTimeoutException;
+        });
+    Cache::shouldReceive('has')->once()->andReturnFalse();
+    Cache::shouldReceive('get')->zeroOrMoreTimes()->andReturnNull();
+    Cache::shouldReceive('lock')->once()->andReturn($lock);
+    NotificationFacade::fake();
+    $loggedWarningsAndErrors = [];
+    Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$loggedWarningsAndErrors): void {
+        if (in_array($event->level, ['warning', 'error'], true)) {
+            $loggedWarningsAndErrors[] = [$event->message, $event->context];
+        }
+    });
+
+    $this->get(route('schedules-direct.image.proxy', [
+        'epg' => $epg->uuid,
+        'imageHash' => 'lock-timeout-cooldown-image',
+    ]))->assertTooManyRequests()->assertHeader('Retry-After', '600');
+
+    expect(DB::table('schedules_direct_login_cooldown_claims')->count())->toBe(0)
         ->and($loggedWarningsAndErrors)->toBe([]);
     NotificationFacade::assertNothingSent();
     Http::assertNothingSent();
