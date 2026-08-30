@@ -2,9 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\SchedulesDirectLoginCooldownException;
 use App\Models\Epg;
 use App\Services\SchedulesDirectService;
+use DateTimeInterface;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -39,6 +43,10 @@ class SchedulesDirectImageProxyController extends Controller
             // Short-circuit if this EPG already hit its daily download limit
             if (Cache::has("sd_download_limit_{$epgId}")) {
                 return response()->json(['error' => 'Daily image download limit reached'], 429);
+            }
+
+            if (! $epg->hasValidSchedulesDirectToken() && $retryAt = $epg->activeSchedulesDirectLoginCooldownUntil()) {
+                return $this->loginCooldownResponse($retryAt);
             }
 
             // Check cache first (cache for 24 hours)
@@ -117,6 +125,8 @@ class SchedulesDirectImageProxyController extends Controller
                     'status' => $response->status(),
                 ], $response->status());
             }
+        } catch (SchedulesDirectLoginCooldownException $exception) {
+            return $this->loginCooldownResponse($exception->retryAt);
         } catch (\Exception $e) {
             Log::error('Exception in SchedulesDirect image proxy', [
                 'epg_id' => $epgId,
@@ -128,5 +138,16 @@ class SchedulesDirectImageProxyController extends Controller
                 'error' => 'Internal server error while proxying image',
             ], 500);
         }
+    }
+
+    private function loginCooldownResponse(DateTimeInterface $retryAt): JsonResponse
+    {
+        $retryAfter = max(1, $retryAt->getTimestamp() - now()->timestamp);
+
+        return response()->json(
+            ['error' => 'Schedules Direct authentication is temporarily paused'],
+            Response::HTTP_TOO_MANY_REQUESTS,
+            ['Retry-After' => (string) $retryAfter],
+        );
     }
 }

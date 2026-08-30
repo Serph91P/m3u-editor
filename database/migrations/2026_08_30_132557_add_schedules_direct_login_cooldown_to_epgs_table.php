@@ -14,8 +14,21 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (DB::connection()->getDriverName() === 'pgsql' && DB::transactionLevel() > 0) {
+            throw new RuntimeException('The Schedules Direct cooldown migration must run outside a transaction on PostgreSQL.');
+        }
+
         if (Schema::hasTable('schedules_direct_login_cooldowns') && ! Schema::hasColumn('schedules_direct_login_cooldowns', 'account_identifier')) {
             Schema::drop('schedules_direct_login_cooldowns');
+        }
+
+        if (! Schema::hasTable('schedules_direct_login_cooldown_claims')) {
+            Schema::create('schedules_direct_login_cooldown_claims', function (Blueprint $table): void {
+                $table->string('provider_account_identifier', 64);
+                $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+                $table->timestamp('notified_at');
+                $table->primary(['provider_account_identifier', 'user_id']);
+            });
         }
 
         if (! Schema::hasTable('schedules_direct_login_cooldowns')) {
@@ -95,13 +108,8 @@ return new class extends Migration
                 return;
             }
 
-            if (DB::transactionLevel() > 0) {
-                DB::statement('DROP INDEX IF EXISTS epgs_sd_account_identifier_index');
-                DB::statement('CREATE INDEX epgs_sd_account_identifier_index ON epgs (sd_account_identifier)');
-            } else {
-                DB::statement('DROP INDEX CONCURRENTLY IF EXISTS epgs_sd_account_identifier_index');
-                DB::statement('CREATE INDEX CONCURRENTLY epgs_sd_account_identifier_index ON epgs (sd_account_identifier)');
-            }
+            DB::statement('DROP INDEX CONCURRENTLY IF EXISTS epgs_sd_account_identifier_index');
+            DB::statement('CREATE INDEX CONCURRENTLY epgs_sd_account_identifier_index ON epgs (sd_account_identifier)');
 
             return;
         }
@@ -118,12 +126,15 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (DB::connection()->getDriverName() === 'pgsql' && DB::transactionLevel() > 0) {
+            throw new RuntimeException('The Schedules Direct cooldown migration must run outside a transaction on PostgreSQL.');
+        }
+
+        Schema::dropIfExists('schedules_direct_login_cooldown_claims');
         Schema::dropIfExists('schedules_direct_login_cooldowns');
 
         if (DB::connection()->getDriverName() === 'pgsql') {
-            DB::statement(DB::transactionLevel() > 0
-                ? 'DROP INDEX IF EXISTS epgs_sd_account_identifier_index'
-                : 'DROP INDEX CONCURRENTLY IF EXISTS epgs_sd_account_identifier_index');
+            DB::statement('DROP INDEX CONCURRENTLY IF EXISTS epgs_sd_account_identifier_index');
         } elseif (Schema::hasIndex('epgs', 'epgs_sd_account_identifier_index')) {
             Schema::table('epgs', function (Blueprint $table): void {
                 $table->dropIndex(['sd_account_identifier']);

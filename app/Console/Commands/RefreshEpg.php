@@ -35,7 +35,7 @@ class RefreshEpg extends Command
             $this->info("Refreshing EPG with ID: {$epgId}");
             $epg = Epg::findOrFail($epgId);
 
-            if ($epg->isSchedulesDirect() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
+            if ($epg->isSchedulesDirect() && ! $epg->hasValidSchedulesDirectToken() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
                 $this->info('Skipped EPG while Schedules Direct authentication is paused');
 
                 return;
@@ -89,7 +89,7 @@ class RefreshEpg extends Command
             $count = 0;
             $failedRetryCooldown = (int) config('dev.failed_retry_cooldown_minutes', 30);
             $epgs->get()->each(function (Epg $epg) use (&$count, $failedRetryCooldown) {
-                if ($epg->isSchedulesDirect() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
+                if ($epg->isSchedulesDirect() && ! $epg->hasValidSchedulesDirectToken() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
                     return;
                 }
 

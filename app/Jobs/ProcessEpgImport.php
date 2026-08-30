@@ -92,7 +92,7 @@ class ProcessEpgImport implements ShouldQueue
     {
         $this->epg->refresh();
 
-        if ($this->epg->isSchedulesDirect() && $this->epg->hasActiveSchedulesDirectLoginCooldown()) {
+        if ($this->epg->isSchedulesDirect() && ! $this->epg->hasValidSchedulesDirectToken() && $this->epg->hasActiveSchedulesDirectLoginCooldown()) {
             return;
         }
 
@@ -539,7 +539,7 @@ class ProcessEpgImport implements ShouldQueue
     {
         $epg->refresh();
 
-        if ($epg->isSchedulesDirect() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
+        if ($epg->isSchedulesDirect() && ! $epg->hasValidSchedulesDirectToken() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
             return false;
         }
 

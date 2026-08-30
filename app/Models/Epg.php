@@ -151,20 +151,35 @@ class Epg extends Model
         return hash_hmac('sha256', $credentialState, (string) config('app.key'));
     }
 
+    public static function schedulesDirectProviderAccountIdentifier(string $username): string
+    {
+        return hash_hmac('sha256', mb_strtolower(trim($username)), (string) config('app.key'));
+    }
+
     public function hasActiveSchedulesDirectLoginCooldown(): bool
     {
-        if ($this->sd_account_identifier) {
+        return $this->activeSchedulesDirectLoginCooldownUntil() !== null;
+    }
+
+    public function activeSchedulesDirectLoginCooldownUntil(): ?Carbon
+    {
+        if (filled($this->sd_username)) {
             $canonicalCooldown = DB::table('schedules_direct_login_cooldowns')
-                ->where('account_identifier', $this->sd_account_identifier)
+                ->where('account_identifier', self::schedulesDirectProviderAccountIdentifier($this->sd_username))
                 ->first(['cooldown_until']);
 
             if ($canonicalCooldown) {
-                return $canonicalCooldown->cooldown_until
-                    && Carbon::parse($canonicalCooldown->cooldown_until)->isFuture();
+                $cooldownUntil = $canonicalCooldown->cooldown_until
+                    ? Carbon::parse($canonicalCooldown->cooldown_until)
+                    : null;
+
+                return $cooldownUntil?->isFuture() ? $cooldownUntil : null;
             }
         }
 
-        return $this->sd_login_cooldown_until?->isFuture() ?? false;
+        return $this->sd_login_cooldown_until?->isFuture()
+            ? $this->sd_login_cooldown_until
+            : null;
     }
 
     public function hasSchedulesDirectCredentials(): bool

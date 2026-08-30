@@ -12,6 +12,7 @@ use Exception;
 use Generator;
 use Illuminate\Contracts\Cache\Lock as CacheLock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
@@ -20,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Sleep;
 use JsonMachine\Items;
 use Throwable;
 
@@ -53,12 +55,18 @@ class SchedulesDirectService
 
     private const AUTHENTICATION_HTTP_TIMEOUT_SECONDS = 45;
 
+    private const ADVISORY_LOCK_POLL_MICROSECONDS = 50000;
+
+    private const ADVISORY_LOCK_POLL_ATTEMPTS = 100;
+
     private const CREDENTIAL_LOCK_ATTEMPTS = 3;
 
     // Provider error objects are small; cap inspection at 4 KiB before rejecting them.
     private const STREAMED_ERROR_MAX_BYTES = 4096;
 
     private const LOGIN_COOLDOWNS_TABLE = 'schedules_direct_login_cooldowns';
+
+    private const LOGIN_COOLDOWN_CLAIMS_TABLE = 'schedules_direct_login_cooldown_claims';
 
     private const LINEUP_ALREADY_IN_ACCOUNT_CODE = 2101;
 
@@ -237,7 +245,7 @@ class SchedulesDirectService
             $password,
         );
 
-        return $this->withAuthenticationLock($credentialSnapshot['identifier'], function (Closure $assertLockOwned) use ($credentialSnapshot): array {
+        return $this->withAuthenticationLock($credentialSnapshot['provider_identifier'], function (Closure $assertLockOwned) use ($credentialSnapshot): array {
             $assertLockOwned();
             $this->claimCredentialRows($credentialSnapshot);
             $reusableAuthentication = $this->findReusableAuthentication($credentialSnapshot);
@@ -254,7 +262,7 @@ class SchedulesDirectService
 
             $authentication = $this->requestAuthentication($credentialSnapshot, $matchingEpg, $assertLockOwned);
             $assertLockOwned();
-            $this->persistAuthentication($credentialSnapshot, $authentication);
+            $this->persistAuthentication($credentialSnapshot, $authentication, storeHandoffWhenRowless: true);
 
             return $authentication;
         });
@@ -321,7 +329,11 @@ class SchedulesDirectService
             }
 
             $assertLockOwned();
-            $this->persistAuthentication($credentialSnapshot, $authentication);
+            if ($this->persistAuthentication($credentialSnapshot, $authentication) === 0) {
+                $epg->refresh();
+
+                return ['retry_with' => $this->credentialSnapshotFromEpg($epg)];
+            }
 
             return $authentication;
         });
@@ -331,23 +343,97 @@ class SchedulesDirectService
         return $authentication;
     }
 
-    private function withAuthenticationLock(string $accountIdentifier, Closure $callback): array
+    private function withAuthenticationLock(string $providerAccountIdentifier, Closure $callback): array
     {
         // This lease is not renewed. Its fixed work is at most two 45-second HTTP
         // attempts plus a bounded number of set-based database statements.
         try {
             $lock = Cache::lock(
-                'schedules-direct:authentication:'.$accountIdentifier,
+                'schedules-direct:authentication:'.$providerAccountIdentifier,
                 self::AUTHENTICATION_LOCK_TTL_SECONDS,
             );
 
             return $lock->block(
                 self::AUTHENTICATION_LOCK_WAIT_SECONDS,
-                fn (): array => $callback(fn () => $this->assertAuthenticationLockOwned($lock)),
+                fn (): array => $this->withProviderAccountAdvisoryLock(
+                    $providerAccountIdentifier,
+                    fn (): array => $callback(fn () => $this->assertAuthenticationLockOwned($lock)),
+                ),
             );
         } catch (LockTimeoutException) {
             throw new Exception('Schedules Direct authentication is already in progress. Please try again shortly.');
         }
+    }
+
+    private function withProviderAccountAdvisoryLock(string $providerAccountIdentifier, Closure $callback): mixed
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if (! in_array($driver, ['pgsql', 'mysql', 'mariadb'], true)) {
+            return $callback();
+        }
+
+        $acquired = false;
+
+        if ($driver === 'pgsql') {
+            $keys = $this->postgresAdvisoryLockKeys($providerAccountIdentifier);
+            $deadline = microtime(true) + self::AUTHENTICATION_LOCK_WAIT_SECONDS;
+
+            for ($attempt = 0; $attempt < self::ADVISORY_LOCK_POLL_ATTEMPTS; $attempt++) {
+                $result = DB::selectOne('SELECT pg_try_advisory_lock(?, ?) AS acquired', $keys);
+                $acquired = in_array($result?->acquired, [true, 1, '1', 't'], true);
+
+                if ($acquired) {
+                    break;
+                }
+
+                if ($attempt < self::ADVISORY_LOCK_POLL_ATTEMPTS - 1
+                    && microtime(true) + (self::ADVISORY_LOCK_POLL_MICROSECONDS / 1000000) < $deadline
+                ) {
+                    Sleep::usleep(self::ADVISORY_LOCK_POLL_MICROSECONDS);
+                } else {
+                    break;
+                }
+            }
+        } else {
+            $result = DB::selectOne('SELECT GET_LOCK(?, ?) AS acquired', [
+                $providerAccountIdentifier,
+                self::AUTHENTICATION_LOCK_WAIT_SECONDS,
+            ]);
+            $acquired = in_array($result?->acquired, [true, 1, '1'], true);
+        }
+
+        if (! $acquired) {
+            throw new Exception('Schedules Direct authentication is already in progress. Please try again shortly.');
+        }
+
+        try {
+            return $callback();
+        } finally {
+            if ($driver === 'pgsql') {
+                DB::selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys);
+            } else {
+                DB::selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier]);
+            }
+        }
+    }
+
+    /**
+     * @return array{int, int}
+     */
+    private function postgresAdvisoryLockKeys(string $providerAccountIdentifier): array
+    {
+        return [
+            $this->signedInt32(substr($providerAccountIdentifier, 0, 8)),
+            $this->signedInt32(substr($providerAccountIdentifier, 8, 8)),
+        ];
+    }
+
+    private function signedInt32(string $hex): int
+    {
+        $value = (int) hexdec($hex);
+
+        return $value > 0x7FFFFFFF ? $value - 0x100000000 : $value;
     }
 
     private function assertAuthenticationLockOwned(CacheLock $lock): void
@@ -358,7 +444,7 @@ class SchedulesDirectService
     }
 
     /**
-     * @param  array{owner_id: int, username: string, password: string, identifier: string}  $credentialSnapshot
+     * @param  array{owner_id: int, username: string, password: string, identifier: string, provider_identifier: string}  $credentialSnapshot
      */
     private function claimCredentialRows(array $credentialSnapshot): void
     {
@@ -382,7 +468,7 @@ class SchedulesDirectService
     }
 
     /**
-     * @return array{owner_id: int, username: string, password: string, identifier: string}
+     * @return array{owner_id: int, username: string, password: string, identifier: string, provider_identifier: string}
      */
     private function credentialSnapshot(int $ownerId, string $username, string $password): array
     {
@@ -393,11 +479,12 @@ class SchedulesDirectService
             'username' => $normalizedUsername,
             'password' => $password,
             'identifier' => Epg::schedulesDirectAccountIdentifier($ownerId, $normalizedUsername, $password),
+            'provider_identifier' => Epg::schedulesDirectProviderAccountIdentifier($normalizedUsername),
         ];
     }
 
     /**
-     * @return array{owner_id: int, username: string, password: string, identifier: string}
+     * @return array{owner_id: int, username: string, password: string, identifier: string, provider_identifier: string}
      */
     private function credentialSnapshotFromEpg(Epg $epg): array
     {
@@ -450,7 +537,7 @@ class SchedulesDirectService
 
         for ($attempt = 0; $attempt < self::CREDENTIAL_LOCK_ATTEMPTS; $attempt++) {
             $result = $this->withAuthenticationLock(
-                $credentialSnapshot['identifier'],
+                $credentialSnapshot['provider_identifier'],
                 function (Closure $assertLockOwned) use ($epg, $credentialSnapshot, $callback): array {
                     $epg->refresh();
                     $freshCredentialSnapshot = $this->credentialSnapshotFromEpg($epg);
@@ -484,7 +571,7 @@ class SchedulesDirectService
      */
     private function findActiveCooldown(array $credentialSnapshot): ?array
     {
-        $accountIdentifier = $credentialSnapshot['identifier'];
+        $accountIdentifier = $credentialSnapshot['provider_identifier'];
         $canonicalCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
             ->where('account_identifier', $accountIdentifier)
             ->first();
@@ -500,13 +587,7 @@ class SchedulesDirectService
             return null;
         }
 
-        if ($credentialSnapshot['owner_id'] === 0) {
-            return null;
-        }
-
-        $legacyCooldowns = Epg::query()
-            ->where('user_id', $credentialSnapshot['owner_id'])
-            ->where('sd_account_identifier', $accountIdentifier)
+        $legacyCooldowns = $this->providerAccountEpgQuery($credentialSnapshot)
             ->whereNotNull('sd_login_cooldown_started_at')
             ->where('sd_login_cooldown_until', '>', now());
         $legacyStartedAt = (clone $legacyCooldowns)->min('sd_login_cooldown_started_at');
@@ -572,38 +653,57 @@ class SchedulesDirectService
      */
     private function mirrorLoginCooldown(array $credentialSnapshot, array $cooldown): void
     {
-        if ($credentialSnapshot['owner_id'] === 0) {
-            return;
-        }
-
-        Epg::query()
-            ->where('user_id', $credentialSnapshot['owner_id'])
-            ->where('sd_account_identifier', $credentialSnapshot['identifier'])
+        $this->providerAccountEpgQuery($credentialSnapshot)
             ->update([
                 'sd_login_cooldown_started_at' => $cooldown['started_at'],
                 'sd_login_cooldown_until' => $cooldown['cooldown_until'],
-                'sd_login_cooldown_notified_at' => $cooldown['notified_at'],
             ]);
     }
 
+    private function providerAccountEpgQuery(array $credentialSnapshot): Builder
+    {
+        return Epg::query()
+            ->where('source_type', 'schedules_direct')
+            ->whereNotNull('sd_username')
+            ->whereRaw('LOWER(TRIM(sd_username)) = ?', [$credentialSnapshot['username']]);
+    }
+
     /**
-     * @return array{authentication: array{token: string, expires: int}, epg: Epg}|null
+     * @return array{authentication: array{token: string, expires: int}, epg: ?Epg}|null
      */
     private function findReusableAuthentication(array $credentialSnapshot): ?array
     {
         $epg = $this->findCredentialMatchingEpg($credentialSnapshot, requireValidToken: true);
 
-        if (! $epg) {
+        if ($epg) {
+            return [
+                'authentication' => [
+                    'token' => $epg->sd_token,
+                    'expires' => $epg->sd_token_expires_at->timestamp,
+                ],
+                'epg' => $epg,
+            ];
+        }
+
+        $authentication = Cache::get($this->authenticationHandoffKey($credentialSnapshot));
+
+        if (! is_array($authentication)
+            || ! is_string($authentication['token'] ?? null)
+            || ! is_int($authentication['expires'] ?? null)
+            || $authentication['expires'] <= now()->addSeconds(Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS)->timestamp
+        ) {
             return null;
         }
 
         return [
-            'authentication' => [
-                'token' => $epg->sd_token,
-                'expires' => $epg->sd_token_expires_at->timestamp,
-            ],
-            'epg' => $epg,
+            'authentication' => $authentication,
+            'epg' => null,
         ];
+    }
+
+    private function authenticationHandoffKey(array $credentialSnapshot): string
+    {
+        return 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
     }
 
     private function findCredentialMatchingEpg(array $credentialSnapshot, bool $requireValidToken = false): ?Epg
@@ -634,6 +734,16 @@ class SchedulesDirectService
         $debugRetried = false;
 
         do {
+            $assertLockOwned?->__invoke();
+
+            if ($reusableAuthentication = $this->findReusableAuthentication($credentialSnapshot)) {
+                return $reusableAuthentication['authentication'];
+            }
+
+            if ($activeCooldown = $this->findActiveCooldown($credentialSnapshot)) {
+                throw $this->activeLoginCooldownException($credentialSnapshot, $activeCooldown, $epg);
+            }
+
             $assertLockOwned?->__invoke();
             $response = Http::withHeaders($this->buildHeaders())
                 ->connectTimeout(10)
@@ -689,14 +799,26 @@ class SchedulesDirectService
         ];
     }
 
-    private function persistAuthentication(array $credentialSnapshot, array $authentication): void
+    private function persistAuthentication(array $credentialSnapshot, array $authentication, bool $storeHandoffWhenRowless = false): int
     {
-        DB::table(self::LOGIN_COOLDOWNS_TABLE)
-            ->where('account_identifier', $credentialSnapshot['identifier'])
-            ->delete();
+        $updatedRows = DB::transaction(function () use ($credentialSnapshot, $authentication): int {
+            DB::table(self::LOGIN_COOLDOWNS_TABLE)
+                ->where('account_identifier', $credentialSnapshot['provider_identifier'])
+                ->delete();
+            DB::table(self::LOGIN_COOLDOWN_CLAIMS_TABLE)
+                ->where('provider_account_identifier', $credentialSnapshot['provider_identifier'])
+                ->delete();
+            $this->providerAccountEpgQuery($credentialSnapshot)->update([
+                'sd_login_cooldown_started_at' => null,
+                'sd_login_cooldown_until' => null,
+                'sd_login_cooldown_notified_at' => null,
+            ]);
 
-        if ($credentialSnapshot['owner_id'] !== 0) {
-            Epg::query()
+            if ($credentialSnapshot['owner_id'] === 0) {
+                return 0;
+            }
+
+            return Epg::query()
                 ->where('user_id', $credentialSnapshot['owner_id'])
                 ->where('sd_account_identifier', $credentialSnapshot['identifier'])
                 ->update([
@@ -706,13 +828,24 @@ class SchedulesDirectService
                     'sd_token' => $authentication['token'],
                     'sd_token_expires_at' => Carbon::createFromTimestampUTC($authentication['expires']),
                 ]);
+        });
+
+        if ($updatedRows === 0 && $storeHandoffWhenRowless) {
+            Cache::put(
+                $this->authenticationHandoffKey($credentialSnapshot),
+                $authentication,
+                Carbon::createFromTimestampUTC($authentication['expires'])
+                    ->subSeconds(Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS),
+            );
         }
+
+        return $updatedRows;
     }
 
     private function startLoginCooldown(array $credentialSnapshot, ?Epg $requestingEpg): SchedulesDirectLoginCooldownException
     {
-        $accountIdentifier = $credentialSnapshot['identifier'];
-        $cooldown = DB::transaction(function () use ($accountIdentifier): array {
+        $accountIdentifier = $credentialSnapshot['provider_identifier'];
+        $result = DB::transaction(function () use ($accountIdentifier): array {
             $activeCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
                 ->where('account_identifier', $accountIdentifier)
                 ->whereNotNull('started_at')
@@ -720,8 +853,15 @@ class SchedulesDirectService
                 ->first();
 
             if ($activeCooldown) {
-                return $this->canonicalCooldownData($activeCooldown);
+                return [
+                    'cooldown' => $this->canonicalCooldownData($activeCooldown),
+                    'started' => false,
+                ];
             }
+
+            DB::table(self::LOGIN_COOLDOWN_CLAIMS_TABLE)
+                ->where('provider_account_identifier', $accountIdentifier)
+                ->delete();
 
             $startedAt = now();
             $endsAt = $startedAt->copy()->addDay();
@@ -749,8 +889,17 @@ class SchedulesDirectService
                 ->where('account_identifier', $accountIdentifier)
                 ->first();
 
-            return $this->canonicalCooldownData($canonicalCooldown);
+            return [
+                'cooldown' => $this->canonicalCooldownData($canonicalCooldown),
+                'started' => true,
+            ];
         });
+        $cooldown = $result['cooldown'];
+
+        if ($result['started']) {
+            $this->providerAccountEpgQuery($credentialSnapshot)
+                ->update(['sd_login_cooldown_notified_at' => null]);
+        }
 
         $this->mirrorLoginCooldown($credentialSnapshot, $cooldown);
 
@@ -771,11 +920,10 @@ class SchedulesDirectService
 
     private function sendLoginCooldownNotification(array $credentialSnapshot, Carbon $cooldownUntil, ?Epg $requestingEpg): void
     {
-        $accountIdentifier = $credentialSnapshot['identifier'];
+        $accountIdentifier = $credentialSnapshot['provider_identifier'];
         $notificationEpg = $requestingEpg && $credentialSnapshot['owner_id'] !== 0
-            ? Epg::query()
+            ? $this->providerAccountEpgQuery($credentialSnapshot)
                 ->where('user_id', $credentialSnapshot['owner_id'])
-                ->where('sd_account_identifier', $accountIdentifier)
                 ->find($requestingEpg->id)
             : null;
         $user = $notificationEpg?->user()->first();
@@ -791,19 +939,18 @@ class SchedulesDirectService
         try {
             DB::transaction(function () use ($accountIdentifier, $credentialSnapshot, $cooldownUntil, $user): void {
                 $claimedAt = now();
-                $notificationClaimed = DB::table(self::LOGIN_COOLDOWNS_TABLE)
-                    ->where('account_identifier', $accountIdentifier)
-                    ->where('cooldown_until', $cooldownUntil)
-                    ->whereNull('notified_at')
-                    ->update(['notified_at' => $claimedAt]);
+                $notificationClaimed = DB::table(self::LOGIN_COOLDOWN_CLAIMS_TABLE)->insertOrIgnore([
+                    'provider_account_identifier' => $accountIdentifier,
+                    'user_id' => $user->getKey(),
+                    'notified_at' => $claimedAt,
+                ]);
 
                 if ($notificationClaimed === 0) {
                     return;
                 }
 
-                Epg::query()
+                $this->providerAccountEpgQuery($credentialSnapshot)
                     ->where('user_id', $credentialSnapshot['owner_id'])
-                    ->where('sd_account_identifier', $accountIdentifier)
                     ->where('sd_login_cooldown_until', $cooldownUntil)
                     ->update(['sd_login_cooldown_notified_at' => $claimedAt]);
 
@@ -2052,6 +2199,10 @@ class SchedulesDirectService
 
     private function makeRequest(string $method, string $endpoint, array $data = [], ?string $token = null, bool $throwOnFailure = true): Response
     {
+        if ($token !== null && $this->currentEpg?->hasValidSchedulesDirectToken()) {
+            $token = $this->currentEpg->sd_token;
+        }
+
         $debugRetried = false;
         $tokenRetried = false;
 
@@ -2137,7 +2288,11 @@ class SchedulesDirectService
             }
 
             $assertLockOwned();
-            $this->persistAuthentication($credentialSnapshot, $authentication);
+            if ($this->persistAuthentication($credentialSnapshot, $authentication) === 0) {
+                $epg->refresh();
+
+                return ['retry_with' => $this->credentialSnapshotFromEpg($epg)];
+            }
 
             return $authentication;
         });
@@ -2148,6 +2303,8 @@ class SchedulesDirectService
 
     private function clearAuthenticationForCredentials(array $credentialSnapshot): void
     {
+        Cache::forget($this->authenticationHandoffKey($credentialSnapshot));
+
         Epg::query()
             ->where('user_id', $credentialSnapshot['owner_id'])
             ->where('sd_account_identifier', $credentialSnapshot['identifier'])
