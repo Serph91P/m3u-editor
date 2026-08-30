@@ -19,6 +19,8 @@ class Epg extends Model
 {
     use HasFactory;
 
+    public const SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS = 300;
+
     /**
      * The attributes that should be cast to native types.
      *
@@ -42,6 +44,9 @@ class Epg extends Model
         'sd_days_to_import' => 'integer',
         'sd_metadata' => 'array',
         'sd_debug' => 'boolean',
+        'sd_login_cooldown_started_at' => 'datetime',
+        'sd_login_cooldown_until' => 'datetime',
+        'sd_login_cooldown_notified_at' => 'datetime',
         'is_merged' => 'boolean',
         'auto_resync_on_failure' => 'boolean',
         'auto_resync_retries' => 'integer',
@@ -56,17 +61,37 @@ class Epg extends Model
     protected $hidden = [
         // 'sd_password',
         'sd_token',
+        'sd_account_identifier',
     ];
 
     /**
      * Boot function for model
      */
-    protected static function boot()
+    protected static function boot(): void
     {
         parent::boot();
-        static::creating(function ($epg) {
+        static::creating(function (Epg $epg): void {
             if (empty($epg->uuid)) {
                 $epg->uuid = Str::uuid();
+            }
+        });
+        static::saving(function (Epg $epg): void {
+            if (! $epg->isDirty('sd_username')) {
+                return;
+            }
+
+            $normalizedUsername = filled($epg->sd_username) ? mb_strtolower(trim($epg->sd_username)) : null;
+            $originalUsername = filled($epg->getOriginal('sd_username')) ? mb_strtolower(trim($epg->getOriginal('sd_username'))) : null;
+            $epg->sd_account_identifier = $normalizedUsername
+                ? self::schedulesDirectAccountIdentifier($normalizedUsername)
+                : null;
+
+            if ($epg->exists && $normalizedUsername !== $originalUsername) {
+                $epg->sd_token = null;
+                $epg->sd_token_expires_at = null;
+                $epg->sd_login_cooldown_started_at = null;
+                $epg->sd_login_cooldown_until = null;
+                $epg->sd_login_cooldown_notified_at = null;
             }
         });
     }
@@ -109,7 +134,17 @@ class Epg extends Model
     {
         return $this->sd_token &&
             $this->sd_token_expires_at &&
-            $this->sd_token_expires_at->isFuture();
+            $this->sd_token_expires_at->greaterThan(now()->addSeconds(self::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS));
+    }
+
+    public static function schedulesDirectAccountIdentifier(string $username): string
+    {
+        return hash_hmac('sha256', mb_strtolower(trim($username)), (string) config('app.key'));
+    }
+
+    public function hasActiveSchedulesDirectLoginCooldown(): bool
+    {
+        return $this->sd_login_cooldown_until?->isFuture() ?? false;
     }
 
     public function hasSchedulesDirectCredentials(): bool

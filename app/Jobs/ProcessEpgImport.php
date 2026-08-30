@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Enums\EpgSourceType;
 use App\Enums\Status;
 use App\Events\SyncCompleted;
+use App\Exceptions\SchedulesDirectLoginCooldownException;
 use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\Job;
@@ -492,17 +493,18 @@ class ProcessEpgImport implements ShouldQueue
             // Log the exception
             logger()->error("Error processing \"{$this->epg->name}\": {$e->getMessage()}");
 
-            // Send notification
-            Notification::make()
-                ->danger()
-                ->title("Error processing \"{$this->epg->name}\"")
-                ->body('Please view your notifications for details.')
-                ->broadcast($this->epg->user);
-            Notification::make()
-                ->danger()
-                ->title("Error processing \"{$this->epg->name}\"")
-                ->body($e->getMessage())
-                ->sendToDatabase($this->epg->user);
+            if (! $e instanceof SchedulesDirectLoginCooldownException) {
+                Notification::make()
+                    ->danger()
+                    ->title("Error processing \"{$this->epg->name}\"")
+                    ->body('Please view your notifications for details.')
+                    ->broadcast($this->epg->user);
+                Notification::make()
+                    ->danger()
+                    ->title("Error processing \"{$this->epg->name}\"")
+                    ->body($e->getMessage())
+                    ->sendToDatabase($this->epg->user);
+            }
 
             // Update the EPG
             $this->epg->update([
@@ -530,6 +532,10 @@ class ProcessEpgImport implements ShouldQueue
     public static function scheduleResyncIfNeeded(Epg $epg): bool
     {
         $epg->refresh();
+
+        if ($epg->isSchedulesDirect() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
+            return false;
+        }
 
         if (! $epg->auto_resync_on_failure || $epg->resync_attempt >= $epg->auto_resync_retries) {
             return false;

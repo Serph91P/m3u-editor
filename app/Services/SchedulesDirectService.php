@@ -2,17 +2,25 @@
 
 namespace App\Services;
 
+use App\Exceptions\SchedulesDirectLoginCooldownException;
 use App\Facades\ProxyFacade;
 use App\Models\Epg;
+use App\Notifications\Notification;
 use Carbon\Carbon;
+use Closure;
 use Exception;
 use Generator;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use JsonMachine\Items;
+use Throwable;
 
 /**
  * Service to interact with the SchedulesDirect API for EPG data.
@@ -32,6 +40,17 @@ class SchedulesDirectService
      * When received, we must disable debug mode to prevent the user from being blocked.
      */
     private const DEBUG_NOT_ENABLED_CODE = 2055;
+
+    private const TOKEN_EXPIRED_CODE = 4006;
+
+    private const TOO_MANY_LOGINS_CODE = 4009;
+
+    // Covers two bounded 60-second /token attempts after 2055 plus persistence headroom.
+    private const AUTHENTICATION_LOCK_TTL_SECONDS = 180;
+
+    private const AUTHENTICATION_LOCK_WAIT_SECONDS = 5;
+
+    private const LOGIN_COOLDOWNS_TABLE = 'schedules_direct_login_cooldowns';
 
     private const LINEUP_ALREADY_IN_ACCOUNT_CODE = 2101;
 
@@ -185,6 +204,8 @@ class SchedulesDirectService
                     } else {
                         throw new Exception('Empty or invalid response received');
                     }
+                } catch (SchedulesDirectLoginCooldownException $exception) {
+                    throw $exception;
                 } catch (Exception $e) {
                     if ($retry === self::MAX_RETRIES - 1) {
                         Log::error("Max retries exceeded for chunk {$chunkNumber}, skipping");
@@ -202,28 +223,28 @@ class SchedulesDirectService
      */
     public function authenticate(string $username, string $password): array
     {
-        $passwordHash = hash('sha1', $password);
-        $response = Http::withHeaders([
-            'User-Agent' => self::$USER_AGENT,
-        ])->post(self::BASE_URL.'/'.self::API_VERSION.'/token', [
-            'username' => $username,
-            'password' => $passwordHash,
-        ]);
+        $this->setCurrentEpg(null);
+        $accountIdentifier = Epg::schedulesDirectAccountIdentifier($username);
 
-        if ($response->failed()) {
-            throw new Exception('Authentication failed: '.$response->body());
-        }
+        return $this->withAuthenticationLock($accountIdentifier, function () use ($username, $password, $accountIdentifier): array {
+            $this->claimAccountRows($username, $accountIdentifier);
+            $reusableAuthentication = $this->findReusableAuthentication($accountIdentifier, $password);
+            $matchingEpg = $reusableAuthentication['epg'] ?? $this->findCredentialMatchingEpg($accountIdentifier, $password);
+            $this->setCurrentEpg($matchingEpg);
 
-        $data = $response->json();
+            if ($reusableAuthentication) {
+                return $reusableAuthentication['authentication'];
+            }
 
-        if (isset($data['code']) && $data['code'] !== 0) {
-            throw new Exception('Authentication error: '.($data['message'] ?? 'Unknown error'));
-        }
+            if ($activeCooldown = $this->findActiveCooldown($accountIdentifier)) {
+                throw $this->activeLoginCooldownException($accountIdentifier, $activeCooldown, $matchingEpg);
+            }
 
-        return [
-            'token' => $data['token'],
-            'expires' => strtotime($data['datetime']),
-        ];
+            $authentication = $this->requestAuthentication($username, $password, $accountIdentifier, $matchingEpg);
+            $this->persistAuthentication($accountIdentifier, $password, $authentication);
+
+            return $authentication;
+        });
     }
 
     /**
@@ -235,47 +256,406 @@ class SchedulesDirectService
             throw new Exception('SchedulesDirect credentials not configured');
         }
 
-        // Set the current EPG for debug header tracking
         $this->setCurrentEpg($epg);
+        $accountIdentifier = Epg::schedulesDirectAccountIdentifier($epg->sd_username);
 
-        $response = Http::withHeaders($this->buildHeaders())->post(self::BASE_URL.'/'.self::API_VERSION.'/token', [
-            'username' => $epg->sd_username,
-            'password' => hash('sha1', $epg->sd_password),
-        ]);
+        $authentication = $this->withAuthenticationLock($accountIdentifier, function () use ($epg, $accountIdentifier): array {
+            $this->claimAccountRows($epg->sd_username, $accountIdentifier);
+            $epg->refresh();
 
-        $data = $response->json();
+            if ($epg->hasValidSchedulesDirectToken()) {
+                return [
+                    'token' => $epg->sd_token,
+                    'expires' => $epg->sd_token_expires_at->timestamp,
+                ];
+            }
 
-        // Handle code 2055: debug not enabled - disable sd_debug and retry without debug header
-        if (isset($data['code']) && $data['code'] === self::DEBUG_NOT_ENABLED_CODE) {
-            $this->handleDebugNotEnabledError();
+            if ($reusableAuthentication = $this->findReusableAuthentication($accountIdentifier, $epg->sd_password)) {
+                $authentication = $reusableAuthentication['authentication'];
+                $epg->update([
+                    'sd_token' => $authentication['token'],
+                    'sd_token_expires_at' => Carbon::createFromTimestampUTC($authentication['expires']),
+                ]);
 
-            // Retry authentication without the debug header
-            Log::debug('Retrying authentication without debug header');
-            $response = Http::withHeaders($this->buildHeaders())->post(self::BASE_URL.'/'.self::API_VERSION.'/token', [
-                'username' => $epg->sd_username,
-                'password' => hash('sha1', $epg->sd_password),
+                return $authentication;
+            }
+
+            if ($activeCooldown = $this->findActiveCooldown($accountIdentifier)) {
+                throw $this->activeLoginCooldownException($accountIdentifier, $activeCooldown, $epg);
+            }
+
+            $authentication = $this->requestAuthentication(
+                $epg->sd_username,
+                $epg->sd_password,
+                $accountIdentifier,
+                $epg,
+            );
+            $this->persistAuthentication($accountIdentifier, $epg->sd_password, $authentication);
+
+            return $authentication;
+        });
+
+        $epg->refresh();
+
+        return $authentication;
+    }
+
+    private function withAuthenticationLock(string $accountIdentifier, Closure $callback): array
+    {
+        try {
+            return Cache::lock(
+                'schedules-direct:authentication:'.$accountIdentifier,
+                self::AUTHENTICATION_LOCK_TTL_SECONDS,
+            )->block(self::AUTHENTICATION_LOCK_WAIT_SECONDS, $callback);
+        } catch (LockTimeoutException) {
+            throw new Exception('Schedules Direct authentication is already in progress. Please try again shortly.');
+        }
+    }
+
+    private function claimAccountRows(string $username, string $accountIdentifier): void
+    {
+        Epg::query()
+            ->where('source_type', 'schedules_direct')
+            ->whereNotNull('sd_username')
+            ->whereRaw('LOWER(TRIM(sd_username)) = ?', [mb_strtolower(trim($username))])
+            ->update(['sd_account_identifier' => $accountIdentifier]);
+    }
+
+    /**
+     * @return array{started_at: Carbon, cooldown_until: Carbon, notified_at: ?Carbon}|null
+     */
+    private function findActiveCooldown(string $accountIdentifier): ?array
+    {
+        $canonicalCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+            ->where('account_identifier', $accountIdentifier)
+            ->first();
+
+        if ($canonicalCooldown) {
+            if ($canonicalCooldown->started_at && $canonicalCooldown->cooldown_until && Carbon::parse($canonicalCooldown->cooldown_until)->isFuture()) {
+                $cooldown = $this->canonicalCooldownData($canonicalCooldown);
+                $this->mirrorLoginCooldown($accountIdentifier, $cooldown);
+
+                return $cooldown;
+            }
+
+            return null;
+        }
+
+        $legacyCooldowns = Epg::query()
+            ->where('sd_account_identifier', $accountIdentifier)
+            ->whereNotNull('sd_login_cooldown_started_at')
+            ->where('sd_login_cooldown_until', '>', now());
+        $legacyStartedAt = (clone $legacyCooldowns)->min('sd_login_cooldown_started_at');
+        $legacyCooldownUntil = (clone $legacyCooldowns)->min('sd_login_cooldown_until');
+        $legacyNotifiedAt = (clone $legacyCooldowns)->whereNotNull('sd_login_cooldown_notified_at')->min('sd_login_cooldown_notified_at');
+
+        if (! $legacyStartedAt || ! $legacyCooldownUntil) {
+            return null;
+        }
+
+        DB::transaction(function () use ($accountIdentifier, $legacyStartedAt, $legacyCooldownUntil, $legacyNotifiedAt): void {
+            $values = [
+                'started_at' => $legacyStartedAt,
+                'cooldown_until' => $legacyCooldownUntil,
+                'notified_at' => $legacyNotifiedAt,
+            ];
+            $updated = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+                ->where('account_identifier', $accountIdentifier)
+                ->where(function ($query): void {
+                    $query->whereNull('cooldown_until')
+                        ->orWhere('cooldown_until', '<=', now());
+                })
+                ->update($values);
+
+            if ($updated === 0) {
+                DB::table(self::LOGIN_COOLDOWNS_TABLE)->insertOrIgnore([
+                    'account_identifier' => $accountIdentifier,
+                    ...$values,
+                ]);
+            }
+        });
+
+        $canonicalCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+            ->where('account_identifier', $accountIdentifier)
+            ->whereNotNull('started_at')
+            ->where('cooldown_until', '>', now())
+            ->first();
+
+        if (! $canonicalCooldown) {
+            return null;
+        }
+
+        $cooldown = $this->canonicalCooldownData($canonicalCooldown);
+        $this->mirrorLoginCooldown($accountIdentifier, $cooldown);
+
+        return $cooldown;
+    }
+
+    /**
+     * @return array{started_at: Carbon, cooldown_until: Carbon, notified_at: ?Carbon}
+     */
+    private function canonicalCooldownData(object $cooldown): array
+    {
+        return [
+            'started_at' => Carbon::parse($cooldown->started_at),
+            'cooldown_until' => Carbon::parse($cooldown->cooldown_until),
+            'notified_at' => $cooldown->notified_at ? Carbon::parse($cooldown->notified_at) : null,
+        ];
+    }
+
+    /**
+     * @param  array{started_at: Carbon, cooldown_until: Carbon, notified_at: ?Carbon}  $cooldown
+     */
+    private function mirrorLoginCooldown(string $accountIdentifier, array $cooldown): void
+    {
+        Epg::query()
+            ->where('sd_account_identifier', $accountIdentifier)
+            ->update([
+                'sd_login_cooldown_started_at' => $cooldown['started_at'],
+                'sd_login_cooldown_until' => $cooldown['cooldown_until'],
+                'sd_login_cooldown_notified_at' => $cooldown['notified_at'],
             ]);
+    }
+
+    /**
+     * @return array{authentication: array{token: string, expires: int}, epg: Epg}|null
+     */
+    private function findReusableAuthentication(string $accountIdentifier, string $password): ?array
+    {
+        $epg = $this->findCredentialMatchingEpg($accountIdentifier, $password, requireValidToken: true);
+
+        if (! $epg) {
+            return null;
+        }
+
+        return [
+            'authentication' => [
+                'token' => $epg->sd_token,
+                'expires' => $epg->sd_token_expires_at->timestamp,
+            ],
+            'epg' => $epg,
+        ];
+    }
+
+    private function findCredentialMatchingEpg(string $accountIdentifier, string $password, bool $requireValidToken = false): ?Epg
+    {
+        $query = Epg::query()
+            ->where('sd_account_identifier', $accountIdentifier)
+            ->latest('updated_at');
+
+        if ($requireValidToken) {
+            $query
+                ->whereNotNull('sd_token')
+                ->where('sd_token_expires_at', '>', now()->addSeconds(Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS));
+        }
+
+        foreach ($query->cursor() as $epg) {
+            if ($this->credentialsMatch($epg, $password)) {
+                return $epg;
+            }
+        }
+
+        return null;
+    }
+
+    private function credentialsMatch(Epg $epg, string $password): bool
+    {
+        return hash_equals(
+            hash('sha256', (string) $epg->sd_password),
+            hash('sha256', $password),
+        );
+    }
+
+    private function requestAuthentication(
+        string $username,
+        string $password,
+        string $accountIdentifier,
+        ?Epg $epg = null,
+    ): array {
+        $debugRetried = false;
+
+        do {
+            $response = Http::withHeaders($this->buildHeaders())
+                ->connectTimeout(10)
+                ->timeout(self::DEFAULT_TIMEOUT)
+                ->post(self::BASE_URL.'/'.self::API_VERSION.'/token', [
+                    'username' => $username,
+                    'password' => hash('sha1', $password),
+                ]);
             $data = $response->json();
+            $data = is_array($data) ? $data : [];
+            $responseCode = isset($data['code']) && is_numeric($data['code']) ? (int) $data['code'] : null;
+
+            if ($responseCode === self::DEBUG_NOT_ENABLED_CODE && ! $debugRetried && $this->currentEpg?->sd_debug) {
+                $this->handleDebugNotEnabledError();
+                $debugRetried = true;
+
+                continue;
+            }
+
+            if ($responseCode === self::TOO_MANY_LOGINS_CODE) {
+                throw $this->startLoginCooldown($accountIdentifier, $epg);
+            }
+
+            if ($response->failed() || ($responseCode !== null && $responseCode !== 0)) {
+                $code = $responseCode ?? $response->status();
+
+                throw new Exception("Schedules Direct authentication failed (code {$code}).", $code);
+            }
+
+            return $this->parseAuthenticationData($data);
+        } while ($debugRetried);
+
+        throw new Exception('Schedules Direct authentication failed.');
+    }
+
+    private function parseAuthenticationData(array $data): array
+    {
+        $expires = $data['tokenExpires'] ?? null;
+
+        if (! is_string($data['token'] ?? null) || $data['token'] === '') {
+            throw new Exception('Schedules Direct authentication returned an invalid token.');
         }
 
-        if ($response->failed()) {
-            throw new Exception('Authentication failed: '.$response->body());
+        if (! is_int($expires) || $expires <= now()->addSeconds(Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS)->timestamp) {
+            throw new Exception('Schedules Direct authentication returned an invalid token expiry.');
         }
-
-        if (isset($data['code']) && $data['code'] !== 0) {
-            throw new Exception('Authentication error: '.($data['message'] ?? 'Unknown error'));
-        }
-
-        // Update the EPG model with new token data
-        $epg->update([
-            'sd_token' => $data['token'],
-            'sd_token_expires_at' => $data['datetime'],
-        ]);
 
         return [
             'token' => $data['token'],
-            'expires' => strtotime($data['datetime']),
+            'expires' => $expires,
         ];
+    }
+
+    private function persistAuthentication(string $accountIdentifier, string $password, array $authentication): void
+    {
+        DB::table(self::LOGIN_COOLDOWNS_TABLE)
+            ->where('account_identifier', $accountIdentifier)
+            ->delete();
+
+        Epg::query()
+            ->where('sd_account_identifier', $accountIdentifier)
+            ->update([
+                'sd_login_cooldown_started_at' => null,
+                'sd_login_cooldown_until' => null,
+                'sd_login_cooldown_notified_at' => null,
+            ]);
+
+        foreach (Epg::query()->where('sd_account_identifier', $accountIdentifier)->lazyById() as $epg) {
+            if (! $this->credentialsMatch($epg, $password)) {
+                continue;
+            }
+
+            Epg::query()->whereKey($epg->id)->update([
+                'sd_token' => $authentication['token'],
+                'sd_token_expires_at' => Carbon::createFromTimestampUTC($authentication['expires']),
+            ]);
+        }
+    }
+
+    private function startLoginCooldown(string $accountIdentifier, ?Epg $requestingEpg): SchedulesDirectLoginCooldownException
+    {
+        $cooldown = DB::transaction(function () use ($accountIdentifier): array {
+            $activeCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+                ->where('account_identifier', $accountIdentifier)
+                ->whereNotNull('started_at')
+                ->where('cooldown_until', '>', now())
+                ->first();
+
+            if ($activeCooldown) {
+                return $this->canonicalCooldownData($activeCooldown);
+            }
+
+            $startedAt = now();
+            $endsAt = $startedAt->copy()->addDay();
+            $values = [
+                'started_at' => $startedAt,
+                'cooldown_until' => $endsAt,
+                'notified_at' => null,
+            ];
+            $updated = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+                ->where('account_identifier', $accountIdentifier)
+                ->where(function ($query): void {
+                    $query->whereNull('cooldown_until')
+                        ->orWhere('cooldown_until', '<=', now());
+                })
+                ->update($values);
+
+            if ($updated === 0) {
+                DB::table(self::LOGIN_COOLDOWNS_TABLE)->insertOrIgnore([
+                    'account_identifier' => $accountIdentifier,
+                    ...$values,
+                ]);
+            }
+
+            $canonicalCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+                ->where('account_identifier', $accountIdentifier)
+                ->first();
+
+            return $this->canonicalCooldownData($canonicalCooldown);
+        });
+
+        $this->mirrorLoginCooldown($accountIdentifier, $cooldown);
+
+        $this->sendLoginCooldownNotification($accountIdentifier, $cooldown['cooldown_until'], $requestingEpg);
+
+        return new SchedulesDirectLoginCooldownException($cooldown['cooldown_until']);
+    }
+
+    /**
+     * @param  array{started_at: Carbon, cooldown_until: Carbon, notified_at: ?Carbon}  $activeCooldown
+     */
+    private function activeLoginCooldownException(string $accountIdentifier, array $activeCooldown, ?Epg $requestingEpg): SchedulesDirectLoginCooldownException
+    {
+        $this->sendLoginCooldownNotification($accountIdentifier, $activeCooldown['cooldown_until'], $requestingEpg);
+
+        return new SchedulesDirectLoginCooldownException($activeCooldown['cooldown_until']);
+    }
+
+    private function sendLoginCooldownNotification(string $accountIdentifier, Carbon $cooldownUntil, ?Epg $requestingEpg): void
+    {
+        $notificationEpg = $requestingEpg
+            ? Epg::query()
+                ->where('sd_account_identifier', $accountIdentifier)
+                ->find($requestingEpg->id)
+            : null;
+        $user = $notificationEpg?->user()->first() ?? auth()->user();
+
+        if (! $user) {
+            return;
+        }
+
+        try {
+            DB::transaction(function () use ($accountIdentifier, $cooldownUntil, $user): void {
+                $claimedAt = now();
+                $notificationClaimed = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+                    ->where('account_identifier', $accountIdentifier)
+                    ->where('cooldown_until', $cooldownUntil)
+                    ->whereNull('notified_at')
+                    ->update(['notified_at' => $claimedAt]);
+
+                if ($notificationClaimed === 0) {
+                    return;
+                }
+
+                Epg::query()
+                    ->where('sd_account_identifier', $accountIdentifier)
+                    ->where('sd_login_cooldown_until', $cooldownUntil)
+                    ->update(['sd_login_cooldown_notified_at' => $claimedAt]);
+
+                $user->notifyNow(
+                    Notification::make()
+                        ->warning()
+                        ->title('Schedules Direct login limit reached')
+                        ->body('Authentication is paused until '.$cooldownUntil->toIso8601String().'.')
+                        ->toDatabase(),
+                );
+            });
+        } catch (Throwable $throwable) {
+            Log::warning('Failed to send Schedules Direct login cooldown notification', [
+                'error_class' => $throwable::class,
+            ]);
+        }
     }
 
     /**
@@ -298,6 +678,8 @@ class SchedulesDirectService
             $status = $this->getStatus($token);
 
             return (int) ($status['account']['maxLineups'] ?? 4);
+        } catch (SchedulesDirectLoginCooldownException $exception) {
+            throw $exception;
         } catch (Exception) {
             return 4;
         }
@@ -416,6 +798,8 @@ class SchedulesDirectService
      */
     public function getAccountLineupsAsOptions(Epg $epg): array
     {
+        $this->setCurrentEpg($epg);
+
         if (! $epg->hasValidSchedulesDirectToken()) {
             $this->authenticateFromEpg($epg);
             $epg->refresh();
@@ -433,6 +817,8 @@ class SchedulesDirectService
      */
     public function removeLineupFromEpg(Epg $epg, string $lineupId): void
     {
+        $this->setCurrentEpg($epg);
+
         if (! $epg->hasValidSchedulesDirectToken()) {
             $this->authenticateFromEpg($epg);
             $epg->refresh();
@@ -512,6 +898,10 @@ class SchedulesDirectService
             return [];
         }
 
+        if ($this->currentEpg?->hasValidSchedulesDirectToken()) {
+            $token = $this->currentEpg->sd_token;
+        }
+
         // SchedulesDirect has a limit of 500 program IDs per request
         $maxBatchSize = 500;
         $allArtwork = [];
@@ -531,22 +921,38 @@ class SchedulesDirectService
                     'batch_size' => count($batch),
                 ]);
 
-                // The correct endpoint requires a trailing slash: /metadata/programs/
-                $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
+                $debugRetried = false;
+                $tokenRetried = false;
 
-                $artworkData = $response->json();
-
-                // Handle code 2055: debug not enabled - disable sd_debug and retry without debug header
-                if (isset($artworkData['code']) && $artworkData['code'] === self::DEBUG_NOT_ENABLED_CODE) {
-                    $this->handleDebugNotEnabledError();
-
-                    // Retry the request without the debug header
-                    Log::debug('Retrying artwork request without debug header');
-                    $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
+                while (true) {
+                    $response = Http::withHeaders($this->buildHeaders($token))
+                        ->connectTimeout(10)
+                        ->timeout(30)
+                        ->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
                     $artworkData = $response->json();
+                    $artworkData = is_array($artworkData) ? $artworkData : [];
+                    $responseCode = isset($artworkData['code']) && is_numeric($artworkData['code'])
+                        ? (int) $artworkData['code']
+                        : null;
+
+                    if ($responseCode === self::DEBUG_NOT_ENABLED_CODE && ! $debugRetried) {
+                        $this->handleDebugNotEnabledError();
+                        $debugRetried = true;
+
+                        continue;
+                    }
+
+                    if ($responseCode === self::TOKEN_EXPIRED_CODE && ! $tokenRetried && $replacementToken = $this->refreshCurrentEpgToken($token)) {
+                        $token = $replacementToken;
+                        $tokenRetried = true;
+
+                        continue;
+                    }
+
+                    break;
                 }
 
-                if ($response->successful()) {
+                if ($response->successful() && ($responseCode === null || $responseCode === 0)) {
                     foreach ($artworkData as $programArtwork) {
                         $programId = $programArtwork['programID'] ?? null;
                         $artworkItems = $programArtwork['data'] ?? [];
@@ -564,7 +970,7 @@ class SchedulesDirectService
                     Log::error('Failed to fetch program artwork batch', [
                         'batch' => $batchIndex + 1,
                         'status' => $response->status(),
-                        'response' => $response->body(),
+                        'code' => $responseCode,
                     ]);
                 }
 
@@ -581,6 +987,8 @@ class SchedulesDirectService
             ]);
 
             return $allArtwork;
+        } catch (SchedulesDirectLoginCooldownException $exception) {
+            throw $exception;
         } catch (Exception $e) {
             Log::error('Exception while fetching program artwork', [
                 'error' => $e->getMessage(),
@@ -1133,6 +1541,8 @@ class SchedulesDirectService
                             'programs_written' => $chunkProgramsWritten,
                             'total_programs_written' => $totalProgramsWritten,
                         ]);
+                    } catch (SchedulesDirectLoginCooldownException $exception) {
+                        throw $exception;
                     } catch (Exception $e) {
                         Log::error('Error processing sub-chunk programs', [
                             'step' => $progressStep,
@@ -1219,6 +1629,10 @@ class SchedulesDirectService
      */
     private function processProgramBatchDirectly(array $programBatch, int $batchIndex, string $token, int $chunkIndex, array $scheduleChunk, $file, int &$programsWritten, array $artworkCache = [], ?Epg $epg = null): void
     {
+        if ($this->currentEpg?->hasValidSchedulesDirectToken()) {
+            $token = $this->currentEpg->sd_token;
+        }
+
         // Create a temporary file for the API response
         $tempResponseFile = tempnam(sys_get_temp_dir(), 'epg_programs_response_');
         try {
@@ -1240,23 +1654,35 @@ class SchedulesDirectService
             // Merge with existing artwork cache
             $fullArtworkCache = array_merge($artworkCache, ['programs' => $programArtworkCache]);
 
-            // Stream the API response directly to a file
-            $response = Http::withHeaders($this->buildHeaders($token))->timeout(300)->sink($tempResponseFile)->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
+            $debugRetried = false;
+            $tokenRetried = false;
 
-            // Check for error code 2055 in the response file (API returns error as JSON even on failure)
-            if (! $response->successful() && file_exists($tempResponseFile)) {
-                $errorContent = file_get_contents($tempResponseFile);
-                $errorData = json_decode($errorContent, true);
-                if (isset($errorData['code']) && $errorData['code'] === self::DEBUG_NOT_ENABLED_CODE) {
+            while (true) {
+                $response = Http::withHeaders($this->buildHeaders($token))
+                    ->connectTimeout(10)
+                    ->timeout(300)
+                    ->sink($tempResponseFile)
+                    ->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
+                $responseCode = $this->streamedProviderErrorCode($tempResponseFile);
+
+                if ($responseCode === self::DEBUG_NOT_ENABLED_CODE && ! $debugRetried) {
                     $this->handleDebugNotEnabledError();
+                    $debugRetried = true;
 
-                    // Retry the request without the debug header
-                    Log::debug('Retrying program batch request without debug header');
-                    $response = Http::withHeaders($this->buildHeaders($token))->timeout(300)->sink($tempResponseFile)->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
+                    continue;
                 }
+
+                if ($responseCode === self::TOKEN_EXPIRED_CODE && ! $tokenRetried && $replacementToken = $this->refreshCurrentEpgToken($token)) {
+                    $token = $replacementToken;
+                    $tokenRetried = true;
+
+                    continue;
+                }
+
+                break;
             }
 
-            if ($response->successful()) {
+            if ($response->successful() && ($responseCode === null || $responseCode === 0)) {
                 // Stream through the program response and match with schedules immediately
                 $programs = Items::fromFile($tempResponseFile);
                 foreach ($programs as $program) {
@@ -1300,8 +1726,11 @@ class SchedulesDirectService
                     'chunk' => $chunkIndex,
                     'batch' => $batchIndex + 1,
                     'status' => $response->status(),
+                    'code' => $responseCode,
                 ]);
             }
+        } catch (SchedulesDirectLoginCooldownException $exception) {
+            throw $exception;
         } catch (Exception $e) {
             Log::error('Error processing program batch directly', [
                 'chunk' => $chunkIndex,
@@ -1314,6 +1743,35 @@ class SchedulesDirectService
                 unlink($tempResponseFile);
             }
         }
+    }
+
+    private function streamedProviderErrorCode(string $responseFile): ?int
+    {
+        if (! file_exists($responseFile)) {
+            return null;
+        }
+
+        $handle = fopen($responseFile, 'r');
+
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            $prefix = ltrim((string) fread($handle, 1024));
+        } finally {
+            fclose($handle);
+        }
+
+        if (! str_starts_with($prefix, '{')) {
+            return null;
+        }
+
+        $errorData = json_decode((string) file_get_contents($responseFile), true);
+
+        return is_array($errorData) && isset($errorData['code']) && is_numeric($errorData['code'])
+            ? (int) $errorData['code']
+            : null;
     }
 
     /**
@@ -1408,10 +1866,109 @@ class SchedulesDirectService
         fwrite($file, "  </programme>\n");
     }
 
-    /**
-     * Make authenticated request to SchedulesDirect API with improved error handling
-     */
     private function makeRequest(string $method, string $endpoint, array $data = [], ?string $token = null): Response
+    {
+        $debugRetried = false;
+        $tokenRetried = false;
+
+        while (true) {
+            $response = $this->sendRequestOnce($method, $endpoint, $data, $token);
+            $body = $response->json();
+            $body = is_array($body) ? $body : [];
+            $responseCode = isset($body['code']) && is_numeric($body['code']) ? (int) $body['code'] : null;
+
+            if ($responseCode === self::DEBUG_NOT_ENABLED_CODE && ! $debugRetried) {
+                $this->handleDebugNotEnabledError();
+                $debugRetried = true;
+
+                continue;
+            }
+
+            if ($responseCode === self::TOKEN_EXPIRED_CODE && ! $tokenRetried && $this->currentEpg) {
+                if ($replacementToken = $this->refreshCurrentEpgToken($token)) {
+                    $token = $replacementToken;
+                    $tokenRetried = true;
+
+                    continue;
+                }
+            }
+
+            if ($response->failed() || ($responseCode !== null && $responseCode !== 0)) {
+                $code = $responseCode ?? $response->status();
+
+                Log::error('SchedulesDirect API error response', [
+                    'method' => $method,
+                    'endpoint' => $endpoint,
+                    'status' => $response->status(),
+                    'code' => $code,
+                ]);
+
+                throw new Exception("Schedules Direct API request failed (code {$code}).", $code);
+            }
+
+            return $response;
+        }
+    }
+
+    private function refreshCurrentEpgToken(?string $rejectedToken): ?string
+    {
+        if (! $this->currentEpg?->hasSchedulesDirectCredentials()) {
+            return null;
+        }
+
+        $accountIdentifier = Epg::schedulesDirectAccountIdentifier($this->currentEpg->sd_username);
+        $authentication = $this->withAuthenticationLock($accountIdentifier, function () use ($accountIdentifier, $rejectedToken): array {
+            $this->claimAccountRows($this->currentEpg->sd_username, $accountIdentifier);
+            $this->currentEpg->refresh();
+            $password = $this->currentEpg->sd_password;
+
+            if ($this->currentEpg->hasValidSchedulesDirectToken() && ! hash_equals($this->currentEpg->sd_token, $rejectedToken ?? '')) {
+                return [
+                    'token' => $this->currentEpg->sd_token,
+                    'expires' => $this->currentEpg->sd_token_expires_at->timestamp,
+                ];
+            }
+
+            $this->clearAuthenticationForCredentials($accountIdentifier, $password);
+            $this->currentEpg->refresh();
+
+            if ($activeCooldown = $this->findActiveCooldown($accountIdentifier)) {
+                throw $this->activeLoginCooldownException($accountIdentifier, $activeCooldown, $this->currentEpg);
+            }
+
+            $authentication = $this->requestAuthentication(
+                $this->currentEpg->sd_username,
+                $this->currentEpg->sd_password,
+                $accountIdentifier,
+                $this->currentEpg,
+            );
+            $this->persistAuthentication($accountIdentifier, $password, $authentication);
+
+            return $authentication;
+        });
+        $this->currentEpg->refresh();
+
+        return $authentication['token'];
+    }
+
+    private function clearAuthenticationForCredentials(string $accountIdentifier, string $password): void
+    {
+        foreach (Epg::query()->where('sd_account_identifier', $accountIdentifier)->lazyById() as $epg) {
+            if (! $this->credentialsMatch($epg, $password)) {
+                continue;
+            }
+
+            Epg::query()->whereKey($epg->id)->update([
+                'sd_token' => null,
+                'sd_token_expires_at' => null,
+            ]);
+        }
+    }
+
+    /**
+     * Send one authenticated request without provider-code retries.
+     */
+    private function sendRequestOnce(string $method, string $endpoint, array $data = [], ?string $token = null): Response
     {
         $headers = $this->buildHeaders($token);
         $url = self::BASE_URL.'/'.self::API_VERSION.$endpoint;
@@ -1435,8 +1992,15 @@ class SchedulesDirectService
         }
 
         $request = Http::withHeaders($headers)
+            ->connectTimeout(10)
             ->timeout($timeout)
-            ->retry(2, 1000) // Basic retry with 1 second delay
+            ->retry(
+                2,
+                1000,
+                fn (Exception $exception): bool => $exception instanceof ConnectionException
+                    || ($exception instanceof RequestException && $exception->response->serverError()),
+                throw: false,
+            )
             ->withOptions([
                 'verify' => true,
                 'stream' => false, // Disable streaming to prevent memory issues
@@ -1471,68 +2035,15 @@ class SchedulesDirectService
                 'status_code' => $response->status(),
                 'response_size' => strlen($response->body()),
             ]);
-        } catch (Exception $e) {
+        } catch (Exception $exception) {
             Log::error('SchedulesDirect API request failed', [
                 'method' => $method,
                 'endpoint' => $endpoint,
                 'timeout' => $timeout,
-                'error' => $e->getMessage(),
-                'error_class' => get_class($e),
-            ]);
-            throw new Exception("SchedulesDirect API request failed: {$e->getMessage()}");
-        }
-        // Check response body for error codes (API may return error codes in successful HTTP responses)
-        $body = $response->json();
-        $responseCode = $body['code'] ?? null;
-
-        // Handle code 2055: debug not enabled - disable sd_debug and retry without debug header
-        if ($responseCode === self::DEBUG_NOT_ENABLED_CODE) {
-            $this->handleDebugNotEnabledError();
-
-            // Retry the request without the debug header
-            Log::debug('Retrying request without debug header', [
-                'method' => $method,
-                'endpoint' => $endpoint,
+                'error_class' => $exception::class,
             ]);
 
-            $headers = $this->buildHeaders($token);
-            $request = Http::withHeaders($headers)
-                ->timeout($timeout)
-                ->retry(2, 1000)
-                ->withOptions([
-                    'verify' => true,
-                    'stream' => false,
-                    'max_redirects' => 3,
-                    'allow_redirects' => ['strict' => true],
-                ]);
-
-            if ($method === 'GET' && ! empty($data)) {
-                $response = $request->get($url);
-            } elseif ($method === 'POST') {
-                $response = $request->post($url, $data);
-            } elseif ($method === 'PUT') {
-                $response = $request->put($url, $data);
-            } else {
-                $response = $request->send($method, $url, ['json' => $data]);
-            }
-
-            $body = $response->json();
-            $responseCode = $body['code'] ?? null;
-        }
-
-        if ($response->failed()) {
-            $message = $body['message'] ?? $body['response'] ?? 'Unknown error';
-            $code = $responseCode ?? $response->status();
-
-            Log::error('SchedulesDirect API error response', [
-                'method' => $method,
-                'endpoint' => $endpoint,
-                'status' => $response->status(),
-                'code' => $code,
-                'message' => $message,
-                'full_response' => $response->body(),
-            ]);
-            throw new Exception("SchedulesDirect API error: {$message} (Code: {$code})", (int) $code);
+            throw new Exception('Schedules Direct API request failed.');
         }
 
         return $response;
