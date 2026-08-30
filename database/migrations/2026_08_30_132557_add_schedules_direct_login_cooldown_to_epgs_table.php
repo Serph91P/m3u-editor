@@ -62,21 +62,16 @@ return new class extends Migration
 
         $missingAccountIdentifier = ! Schema::hasColumn('epgs', 'sd_account_identifier');
         $missingCooldownStartedAt = ! Schema::hasColumn('epgs', 'sd_login_cooldown_started_at');
-        $missingCooldownUntil = ! Schema::hasColumn('epgs', 'sd_login_cooldown_until');
         $missingCooldownNotifiedAt = ! Schema::hasColumn('epgs', 'sd_login_cooldown_notified_at');
 
-        if ($missingAccountIdentifier || $missingCooldownStartedAt || $missingCooldownUntil || $missingCooldownNotifiedAt) {
-            Schema::table('epgs', function (Blueprint $table) use ($missingAccountIdentifier, $missingCooldownStartedAt, $missingCooldownUntil, $missingCooldownNotifiedAt): void {
+        if ($missingAccountIdentifier || $missingCooldownStartedAt || $missingCooldownNotifiedAt) {
+            Schema::table('epgs', function (Blueprint $table) use ($missingAccountIdentifier, $missingCooldownStartedAt, $missingCooldownNotifiedAt): void {
                 if ($missingAccountIdentifier) {
                     $table->string('sd_account_identifier', 64)->nullable();
                 }
 
                 if ($missingCooldownStartedAt) {
                     $table->timestamp('sd_login_cooldown_started_at')->nullable();
-                }
-
-                if ($missingCooldownUntil) {
-                    $table->timestamp('sd_login_cooldown_until')->nullable();
                 }
 
                 if ($missingCooldownNotifiedAt) {
@@ -144,7 +139,6 @@ return new class extends Migration
         $columns = collect([
             'sd_account_identifier',
             'sd_login_cooldown_started_at',
-            'sd_login_cooldown_until',
             'sd_login_cooldown_notified_at',
         ])->filter(fn (string $column): bool => Schema::hasColumn('epgs', $column))->all();
 

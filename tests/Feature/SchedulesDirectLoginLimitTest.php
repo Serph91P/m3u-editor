@@ -3,6 +3,7 @@
 use App\Enums\EpgSourceType;
 use App\Enums\Status;
 use App\Exceptions\SchedulesDirectLoginCooldownException;
+use App\Exceptions\SchedulesDirectTokenExpiredException;
 use App\Jobs\ProcessEpgImport;
 use App\Models\Epg;
 use App\Models\User;
@@ -120,6 +121,45 @@ it('coordinates provider cooldowns across owners and passwords while keeping not
         ->and($firstEpg->user->notifications()->count())->toBe(1)
         ->and($secondEpg->user->notifications()->count())->toBe(1)
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+});
+
+it('promotes a legacy per EPG cooldown into canonical account state without extending it', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    NotificationFacade::fake();
+    $cooldownUntil = now()->addHours(8);
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_username' => ' Legacy.Account@Example.com ',
+        'sd_password' => 'legacy-private-password',
+        'sd_login_cooldown_until' => $cooldownUntil,
+    ]);
+    $loggedMessages = [];
+    Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$loggedMessages): void {
+        $loggedMessages[] = [$event->message, $event->context];
+    });
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response(
+            schedulesDirectTokenPayload('unexpected-token', now()->addDay()->timestamp),
+        ),
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
+        ->toThrow(SchedulesDirectLoginCooldownException::class);
+
+    $canonicalCooldown = DB::table('schedules_direct_login_cooldowns')
+        ->where('account_identifier', Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username))
+        ->first();
+    $serializedOutput = json_encode([
+        $canonicalCooldown,
+        $epg->user->notifications()->first()?->data,
+        $loggedMessages,
+    ]);
+
+    expect($canonicalCooldown)->not->toBeNull()
+        ->and(Carbon::parse($canonicalCooldown->cooldown_until)->equalTo($cooldownUntil))->toBeTrue()
+        ->and($serializedOutput)->not->toContain('Legacy.Account@Example.com')
+        ->and($serializedOutput)->not->toContain('legacy-private-password');
+    Http::assertNothingSent();
 });
 
 it('does not create a recipient claim for unauthenticated rowless cooldowns', function () {
@@ -504,7 +544,8 @@ it('uses tokenExpires when authenticating from an EPG and persists that expiry',
         ->and($epg->fresh()->sd_token_expires_at->timestamp)->toBe($expires);
 });
 
-it('fails closed when authentication from an EPG has no tokenExpires', function () {
+it('uses the documented 24 hour fallback when EPG authentication has no tokenExpires', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
     $epg = makeSchedulesDirectEpgForLoginLimitTests();
 
     Http::fake([
@@ -515,11 +556,11 @@ it('fails closed when authentication from an EPG has no tokenExpires', function 
         ]),
     ]);
 
-    expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
-        ->toThrow(Exception::class, 'Schedules Direct authentication returned an invalid token expiry.');
+    $authentication = (new SchedulesDirectService)->authenticateFromEpg($epg);
 
-    expect($epg->fresh()->sd_token)->toBeNull()
-        ->and($epg->fresh()->sd_token_expires_at)->toBeNull();
+    expect($authentication['expires'])->toBe(now()->addDay()->timestamp)
+        ->and($epg->fresh()->sd_token)->toBe('secret-provider-token')
+        ->and($epg->fresh()->sd_token_expires_at->timestamp)->toBe(now()->addDay()->timestamp);
 });
 
 it('fails closed with a sanitized error for an invalid token expiry', function (mixed $tokenExpires) {
@@ -541,7 +582,6 @@ it('fails closed with a sanitized error for an invalid token expiry', function (
     expect(fn () => (new SchedulesDirectService)->authenticate('account@example.com', 'provider-password'))
         ->toThrow(Exception::class, 'Schedules Direct authentication returned an invalid token expiry.');
 })->with([
-    'missing' => null,
     'numeric string' => '1796040000',
     'floating point' => 1796040000.5,
     'expired' => 1788091199,
@@ -963,6 +1003,26 @@ it('fails closed when the cache lease expires without a database advisory fence'
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
 });
 
+it('fails closed for unsupported production database authentication fencing', function () {
+    $originalEnvironment = app()->environment();
+    $connection = Mockery::mock();
+    $connection->shouldReceive('getDriverName')->once()->andReturn('sqlsrv');
+    DB::shouldReceive('connection')->once()->andReturn($connection);
+    $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
+
+    app()->detectEnvironment(fn (): string => 'production');
+
+    try {
+        expect(fn () => $method->invoke(
+            new SchedulesDirectService,
+            Epg::schedulesDirectProviderAccountIdentifier('account@example.com'),
+            fn (): array => ['unexpected' => true],
+        ))->toThrow(Exception::class, 'Schedules Direct authentication requires a database driver with advisory lock support.');
+    } finally {
+        app()->detectEnvironment(fn (): string => $originalEnvironment);
+    }
+});
+
 it('uses a bounded MySQL provider advisory lock and releases it', function () {
     $connection = Mockery::mock();
     $connection->shouldReceive('getDriverName')->once()->andReturn('mysql');
@@ -1050,10 +1110,53 @@ it('does not repeat 4006 recovery more than once for a request', function () {
     ]);
 
     expect(fn () => (new SchedulesDirectService)->getAccountLineupsAsOptions($epg))
-        ->toThrow(Exception::class, 'Schedules Direct API request failed (code 4006).');
+        ->toThrow(SchedulesDirectTokenExpiredException::class, 'Schedules Direct token remained expired after one recovery attempt.');
 
     expect(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/lineups')))->toHaveCount(2)
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+});
+
+it('surfaces a typed failure when artwork token recovery cannot authenticate', function () {
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_token' => 'expired-artwork-token',
+        'sd_token_expires_at' => now()->addHour(),
+    ]);
+    $service = (new SchedulesDirectService)->setCurrentEpg($epg);
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/metadata/programs/*' => Http::response(['code' => 4006, 'message' => 'TOKEN_EXPIRED']),
+        'json.schedulesdirect.org/20141201/token' => Http::response(['code' => 4999, 'message' => 'Authentication unavailable'], 503),
+    ]);
+
+    expect(fn () => $service->getProgramArtwork($epg->sd_token, ['EP000000000001']))
+        ->toThrow(SchedulesDirectTokenExpiredException::class, 'Schedules Direct token expired and could not be refreshed.');
+
+    expect($epg->fresh()->sd_token)->toBeNull();
+});
+
+it('clears a provider-rejected token before surfacing an active login cooldown', function () {
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_token' => 'rejected-during-cooldown',
+        'sd_token_expires_at' => now()->addHour(),
+    ]);
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    DB::table('schedules_direct_login_cooldowns')->insert([
+        'account_identifier' => $providerIdentifier,
+        'started_at' => now()->subHour(),
+        'cooldown_until' => now()->addHours(8),
+        'notified_at' => null,
+    ]);
+    $service = (new SchedulesDirectService)->setCurrentEpg($epg);
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/lineups/*' => Http::response(['code' => 4006, 'message' => 'TOKEN_EXPIRED']),
+    ]);
+
+    expect(fn () => $service->getLineup($epg->sd_token, $epg->sd_lineup_id))
+        ->toThrow(SchedulesDirectLoginCooldownException::class);
+
+    expect($epg->fresh()->sd_token)->toBeNull();
+    Http::assertNotSent(fn (Request $request): bool => str_ends_with($request->url(), '/token'));
 });
 
 it('reuses a token refreshed by another worker while waiting for 4006 recovery', function () {
@@ -2371,7 +2474,7 @@ it('reverses only the new Schedules Direct cooldown columns', function () {
         ->and(Schema::hasTable('schedules_direct_login_cooldown_claims'))->toBeFalse()
         ->and(Schema::hasColumn('epgs', 'sd_account_identifier'))->toBeFalse()
         ->and(Schema::hasColumn('epgs', 'sd_login_cooldown_started_at'))->toBeFalse()
-        ->and(Schema::hasColumn('epgs', 'sd_login_cooldown_until'))->toBeFalse()
+        ->and(Schema::hasColumn('epgs', 'sd_login_cooldown_until'))->toBeTrue()
         ->and(Schema::hasColumn('epgs', 'sd_login_cooldown_notified_at'))->toBeFalse();
 
     $migration->up();

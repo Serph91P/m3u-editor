@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Exceptions\SchedulesDirectLoginCooldownException;
+use App\Exceptions\SchedulesDirectTokenExpiredException;
 use App\Facades\ProxyFacade;
 use App\Models\Epg;
 use App\Notifications\Notification;
@@ -45,10 +46,6 @@ class SchedulesDirectService
      */
     private const DEBUG_NOT_ENABLED_CODE = 2055;
 
-    private const TOKEN_EXPIRED_CODE = 4006;
-
-    private const TOO_MANY_LOGINS_CODE = 4009;
-
     // At most two 45-second /token attempts leave 90 seconds for bounded persistence.
     private const AUTHENTICATION_LOCK_TTL_SECONDS = 180;
 
@@ -86,6 +83,12 @@ class SchedulesDirectService
 
     /** Full subscriber download limit exceeded. */
     public const EXCEED_DOWNLOAD_LIMIT_CODE = 4004;
+
+    /** Token has expired; the stored token must be discarded and re-requested once. */
+    public const TOKEN_EXPIRED_CODE = 4006;
+
+    /** Exceeded the maximum number of logins in 24 hours. */
+    public const TOO_MANY_LOGINS_CODE = 4009;
 
     /**
      * The current EPG model being used for requests (used to check/update sd_debug)
@@ -225,6 +228,8 @@ class SchedulesDirectService
                     }
                 } catch (SchedulesDirectLoginCooldownException $exception) {
                     throw $exception;
+                } catch (SchedulesDirectTokenExpiredException $exception) {
+                    throw $exception;
                 } catch (Exception $e) {
                     if ($retry === self::MAX_RETRIES - 1) {
                         Log::error("Max retries exceeded for chunk {$chunkNumber}, skipping");
@@ -238,7 +243,9 @@ class SchedulesDirectService
     }
 
     /**
-     * Authenticate with SchedulesDirect and get a token
+     * Authenticate with Schedules Direct using raw credentials.
+     *
+     * @return array{token: string, expires: int}
      */
     public function authenticate(string $username, string $password): array
     {
@@ -274,7 +281,16 @@ class SchedulesDirectService
     }
 
     /**
-     * Authenticate using an EPG model with stored credentials
+     * Authenticate using an EPG model with stored credentials.
+     *
+     * Authentication is single-flight per Schedules Direct account: only one
+     * worker may hold the per-account lock and issue a /token request at a time.
+     * Workers that arrive while a peer is authenticating wait for the lock, then
+     * reuse the token the peer stored instead of logging in again.
+     *
+     * @return array{token: string, expires: int}
+     *
+     * @throws SchedulesDirectLoginCooldownException when a 4009 cooldown is active or freshly triggered
      */
     public function authenticateFromEpg(Epg $epg, bool $quietLoginCooldown = false): array
     {
@@ -388,6 +404,10 @@ class SchedulesDirectService
         $driver = DB::connection()->getDriverName();
 
         if (! in_array($driver, ['pgsql', 'mysql', 'mariadb'], true)) {
+            if (app()->isProduction()) {
+                throw new Exception('Schedules Direct authentication requires a database driver with advisory lock support.');
+            }
+
             return $callback();
         }
 
@@ -622,15 +642,15 @@ class SchedulesDirectService
         }
 
         $legacyCooldowns = $this->providerAccountEpgQuery($credentialSnapshot)
-            ->whereNotNull('sd_login_cooldown_started_at')
             ->where('sd_login_cooldown_until', '>', now());
-        $legacyStartedAt = (clone $legacyCooldowns)->min('sd_login_cooldown_started_at');
-        $legacyCooldownUntil = (clone $legacyCooldowns)->min('sd_login_cooldown_until');
-        $legacyNotifiedAt = (clone $legacyCooldowns)->whereNotNull('sd_login_cooldown_notified_at')->min('sd_login_cooldown_notified_at');
+        $legacyCooldownUntil = (clone $legacyCooldowns)->max('sd_login_cooldown_until');
 
-        if (! $legacyStartedAt || ! $legacyCooldownUntil) {
+        if (! $legacyCooldownUntil) {
             return null;
         }
+
+        $legacyStartedAt = (clone $legacyCooldowns)->min('sd_login_cooldown_started_at') ?? now();
+        $legacyNotifiedAt = (clone $legacyCooldowns)->whereNotNull('sd_login_cooldown_notified_at')->min('sd_login_cooldown_notified_at');
 
         DB::transaction(function () use ($accountIdentifier, $legacyStartedAt, $legacyCooldownUntil, $legacyNotifiedAt): void {
             $values = [
@@ -818,7 +838,11 @@ class SchedulesDirectService
 
     private function parseAuthenticationData(array $data): array
     {
-        $expires = $data['tokenExpires'] ?? null;
+        // Older compatible responses omit tokenExpires. The provider documents
+        // a 24-hour token lifetime; datetime and serverTime are only clocks.
+        $expires = array_key_exists('tokenExpires', $data)
+            ? $data['tokenExpires']
+            : now()->addDay()->timestamp;
 
         if (! is_string($data['token'] ?? null) || $data['token'] === '') {
             throw new Exception('Schedules Direct authentication returned an invalid token.');
@@ -1312,11 +1336,17 @@ class SchedulesDirectService
                         continue;
                     }
 
-                    if ($responseCode === self::TOKEN_EXPIRED_CODE && ! $tokenRetried && $replacementToken = $this->refreshCurrentEpgToken($token)) {
-                        $token = $replacementToken;
-                        $tokenRetried = true;
+                    if ($responseCode === self::TOKEN_EXPIRED_CODE) {
+                        if (! $tokenRetried && $replacementToken = $this->recoverCurrentEpgToken($token)) {
+                            $token = $replacementToken;
+                            $tokenRetried = true;
 
-                        continue;
+                            continue;
+                        }
+
+                        $this->invalidateCurrentEpgAuthentication();
+
+                        throw new SchedulesDirectTokenExpiredException('Schedules Direct token remained expired after one recovery attempt.');
                     }
 
                     break;
@@ -1358,6 +1388,8 @@ class SchedulesDirectService
 
             return $allArtwork;
         } catch (SchedulesDirectLoginCooldownException $exception) {
+            throw $exception;
+        } catch (SchedulesDirectTokenExpiredException $exception) {
             throw $exception;
         } catch (Exception $e) {
             Log::error('Exception while fetching program artwork', [
@@ -1621,7 +1653,12 @@ class SchedulesDirectService
     }
 
     /**
-     * Fetch SchedulesDirect EPG data and update the EPG record
+     * Fetch SchedulesDirect EPG data and update the EPG record.
+     *
+     * Authenticated requests recover from TOKEN_EXPIRED (4006) once in place.
+     * A repeated 4006 terminates the sync with a typed exception.
+     *
+     * @throws SchedulesDirectLoginCooldownException when a 4009 login-limit cooldown is active
      */
     public function syncEpgData(Epg $epg): void
     {
@@ -1633,6 +1670,12 @@ class SchedulesDirectService
             'chunk_size' => self::STATIONS_PER_CHUNK,
             'sd_debug' => $epg->sd_debug,
         ]);
+
+        $this->performEpgSync($epg);
+    }
+
+    private function performEpgSync(Epg $epg): void
+    {
         try {
             // Validate token or re-authenticate
             if (! $epg->hasValidSchedulesDirectToken()) {
@@ -1708,6 +1751,10 @@ class SchedulesDirectService
                 'stations_processed' => count($stationIds),
                 'file_path' => $xmlFilePath,
             ]);
+        } catch (SchedulesDirectTokenExpiredException $e) {
+            throw $e;
+        } catch (SchedulesDirectLoginCooldownException $e) {
+            throw $e;
         } catch (Exception $e) {
             $errors = $epg->sd_errors ?? [];
             $errors[] = [
@@ -1913,6 +1960,8 @@ class SchedulesDirectService
                         ]);
                     } catch (SchedulesDirectLoginCooldownException $exception) {
                         throw $exception;
+                    } catch (SchedulesDirectTokenExpiredException $exception) {
+                        throw $exception;
                     } catch (Exception $e) {
                         Log::error('Error processing sub-chunk programs', [
                             'step' => $progressStep,
@@ -2042,11 +2091,17 @@ class SchedulesDirectService
                     continue;
                 }
 
-                if ($responseCode === self::TOKEN_EXPIRED_CODE && ! $tokenRetried && $replacementToken = $this->refreshCurrentEpgToken($token)) {
-                    $token = $replacementToken;
-                    $tokenRetried = true;
+                if ($responseCode === self::TOKEN_EXPIRED_CODE) {
+                    if (! $tokenRetried && $replacementToken = $this->recoverCurrentEpgToken($token)) {
+                        $token = $replacementToken;
+                        $tokenRetried = true;
 
-                    continue;
+                        continue;
+                    }
+
+                    $this->invalidateCurrentEpgAuthentication();
+
+                    throw new SchedulesDirectTokenExpiredException('Schedules Direct token remained expired after one recovery attempt.');
                 }
 
                 break;
@@ -2100,6 +2155,8 @@ class SchedulesDirectService
                 ]);
             }
         } catch (SchedulesDirectLoginCooldownException $exception) {
+            throw $exception;
+        } catch (SchedulesDirectTokenExpiredException $exception) {
             throw $exception;
         } catch (Exception $e) {
             Log::error('Error processing program batch directly', [
@@ -2272,13 +2329,19 @@ class SchedulesDirectService
                 continue;
             }
 
-            if ($responseCode === self::TOKEN_EXPIRED_CODE && ! $tokenRetried && $this->currentEpg) {
-                if ($replacementToken = $this->refreshCurrentEpgToken($token, $quietLoginCooldown)) {
-                    $token = $replacementToken;
-                    $tokenRetried = true;
+            if ($responseCode === self::TOKEN_EXPIRED_CODE) {
+                if (! $tokenRetried && $this->currentEpg) {
+                    if ($replacementToken = $this->recoverCurrentEpgToken($token, $quietLoginCooldown)) {
+                        $token = $replacementToken;
+                        $tokenRetried = true;
 
-                    continue;
+                        continue;
+                    }
                 }
+
+                $this->invalidateCurrentEpgAuthentication();
+
+                throw new SchedulesDirectTokenExpiredException('Schedules Direct token remained expired after one recovery attempt.');
             }
 
             if ($response->failed() || ($responseCode !== null && $responseCode !== 0)) {
@@ -2297,6 +2360,32 @@ class SchedulesDirectService
             }
 
             return $response;
+        }
+    }
+
+    private function invalidateCurrentEpgAuthentication(): void
+    {
+        if (! $this->currentEpg?->hasSchedulesDirectCredentials()) {
+            return;
+        }
+
+        $this->withoutAuthenticationDatabaseDetails(function (): void {
+            $credentialSnapshot = $this->credentialSnapshotFromEpg($this->currentEpg);
+            $this->clearAuthenticationForCredentials($credentialSnapshot);
+            $this->currentEpg->refresh();
+        });
+    }
+
+    private function recoverCurrentEpgToken(?string $rejectedToken, bool $quietLoginCooldown = false): ?string
+    {
+        try {
+            return $this->refreshCurrentEpgToken($rejectedToken, $quietLoginCooldown);
+        } catch (SchedulesDirectLoginCooldownException $exception) {
+            throw $exception;
+        } catch (SchedulesDirectTokenExpiredException $exception) {
+            throw $exception;
+        } catch (Exception) {
+            throw new SchedulesDirectTokenExpiredException('Schedules Direct token expired and could not be refreshed.');
         }
     }
 

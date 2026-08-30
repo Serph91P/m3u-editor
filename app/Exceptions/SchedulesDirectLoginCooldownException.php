@@ -2,17 +2,16 @@
 
 namespace App\Exceptions;
 
-use DateTimeInterface;
-use Exception;
+use Carbon\CarbonInterface;
 use Illuminate\Contracts\Debug\ShouldntReport;
 
-class SchedulesDirectLoginCooldownException extends Exception implements ShouldntReport
+class SchedulesDirectLoginCooldownException extends SchedulesDirectRateLimitException implements ShouldntReport
 {
-    public function __construct(public readonly DateTimeInterface $retryAt)
+    public function __construct(CarbonInterface $retryAt)
     {
         parent::__construct(
-            'Schedules Direct authentication is paused until '.$retryAt->format(DateTimeInterface::ATOM).'.',
-            4009,
+            $retryAt,
+            'Schedules Direct authentication is paused until '.$retryAt->toIso8601String().'.',
         );
     }
 }

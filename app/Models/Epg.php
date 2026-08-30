@@ -137,6 +137,12 @@ class Epg extends Model
         return $this->source_type === EpgSourceType::SCHEDULES_DIRECT;
     }
 
+    /**
+     * A stored Schedules Direct token is usable when it exists and still has a
+     * safety margin left before its real expiry. Schedules Direct tokens are
+     * valid for 24 hours; the small margin absorbs clock skew and keeps a
+     * long-running sync from having a token lapse mid-request.
+     */
     public function hasValidSchedulesDirectToken(): bool
     {
         return $this->sd_token &&
