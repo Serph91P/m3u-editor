@@ -63,7 +63,7 @@ class SchedulesDirectImageProxyController extends Controller
                 return response($cachedResponse['body'], 200, $cachedResponse['headers']);
             }
 
-            $response = $this->schedulesDirectService->getImage($epg, $imageHash);
+            $response = $this->schedulesDirectService->getImage($epg, $imageHash, quietLoginCooldown: true);
 
             if ($response->successful()) {
                 $body = $response->body();

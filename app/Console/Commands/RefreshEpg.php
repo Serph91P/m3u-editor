@@ -5,11 +5,15 @@ namespace App\Console\Commands;
 use App\Enums\Status;
 use App\Jobs\ProcessEpgImport;
 use App\Models\Epg;
+use Carbon\Carbon;
 use Cron\CronExpression;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 class RefreshEpg extends Command
 {
+    private const SCHEDULES_DIRECT_COOLDOWN_QUERY_CHUNK_SIZE = 500;
+
     /**
      * The name and signature of the console command.
      *
@@ -88,30 +92,61 @@ class RefreshEpg extends Command
 
             $count = 0;
             $failedRetryCooldown = (int) config('dev.failed_retry_cooldown_minutes', 30);
-            $epgs->get()->each(function (Epg $epg) use (&$count, $failedRetryCooldown) {
-                if ($epg->isSchedulesDirect() && ! $epg->hasValidSchedulesDirectToken() && $epg->hasActiveSchedulesDirectLoginCooldown()) {
-                    return;
-                }
+            $epgs->chunkById(self::SCHEDULES_DIRECT_COOLDOWN_QUERY_CHUNK_SIZE, function ($epgChunk) use (&$count, $failedRetryCooldown): void {
+                $providerIdentifiers = $epgChunk
+                    ->filter(fn (Epg $epg): bool => $epg->isSchedulesDirect()
+                        && ! $epg->hasValidSchedulesDirectToken()
+                        && filled($epg->sd_username))
+                    ->map(fn (Epg $epg): string => Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username))
+                    ->unique()
+                    ->values();
+                $canonicalCooldowns = $providerIdentifiers->isEmpty()
+                    ? []
+                    : DB::table('schedules_direct_login_cooldowns')
+                        ->whereIn('account_identifier', $providerIdentifiers)
+                        ->get(['account_identifier', 'cooldown_until'])
+                        ->pluck('cooldown_until', 'account_identifier')
+                        ->all();
 
-                $interval = $epg->sync_interval === '24hr' ? '0 0 * * *' : $epg->sync_interval;
-                $cronExpression = new CronExpression($interval);
+                $epgChunk->each(function (Epg $epg) use (&$count, $failedRetryCooldown, $canonicalCooldowns): void {
+                    if ($epg->isSchedulesDirect() && ! $epg->hasValidSchedulesDirectToken()) {
+                        $providerIdentifier = filled($epg->sd_username)
+                            ? Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username)
+                            : null;
 
-                // Gate failed retries behind a cooldown to prevent CPU runaway
-                $isFailed = $epg->status === Status::Failed;
-                $cooldownPassed = $epg->updated_at->diffInMinutes(now()) >= $failedRetryCooldown;
+                        if ($providerIdentifier !== null && array_key_exists($providerIdentifier, $canonicalCooldowns)) {
+                            $cooldownUntil = $canonicalCooldowns[$providerIdentifier]
+                                ? Carbon::parse($canonicalCooldowns[$providerIdentifier])
+                                : null;
 
-                if ($isFailed && ! $cooldownPassed) {
-                    return;
-                }
+                            if ($cooldownUntil?->isFuture()) {
+                                return;
+                            }
+                        } elseif ($epg->sd_login_cooldown_until?->isFuture()) {
+                            return;
+                        }
+                    }
 
-                $force = $isFailed;
-                $lastRun = $force ? now()->subYears(1) : ($epg->synced ?? now()->subYears(1));
-                $nextDue = $cronExpression->getNextRunDate($lastRun->toDateTimeImmutable());
+                    $interval = $epg->sync_interval === '24hr' ? '0 0 * * *' : $epg->sync_interval;
+                    $cronExpression = new CronExpression($interval);
 
-                if (now() >= $nextDue) {
-                    $count++;
-                    dispatch(new ProcessEpgImport($epg, $force));
-                }
+                    // Gate failed retries behind a cooldown to prevent CPU runaway
+                    $isFailed = $epg->status === Status::Failed;
+                    $cooldownPassed = $epg->updated_at->diffInMinutes(now()) >= $failedRetryCooldown;
+
+                    if ($isFailed && ! $cooldownPassed) {
+                        return;
+                    }
+
+                    $force = $isFailed;
+                    $lastRun = $force ? now()->subYears(1) : ($epg->synced ?? now()->subYears(1));
+                    $nextDue = $cronExpression->getNextRunDate($lastRun->toDateTimeImmutable());
+
+                    if (now() >= $nextDue) {
+                        $count++;
+                        dispatch(new ProcessEpgImport($epg, $force));
+                    }
+                });
             });
             $this->info('Dispatched '.$count.' epgs for refresh');
         }
