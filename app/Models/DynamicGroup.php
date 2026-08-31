@@ -118,4 +118,18 @@ class DynamicGroup extends Model
             ? $intId - self::XTREAM_CATEGORY_ID_OFFSET
             : null;
     }
+
+    /**
+     * Whether a playlist's `dynamic_groups_config` holds at least one enabled
+     * rule. Shared by SyncDynamicGroups (pipeline phase) and the
+     * app:refresh-dynamic-groups command so the "does this playlist have any
+     * dynamic-group work to do" check stays defined in one place.
+     *
+     * @param  array<int, array<string, mixed>>|null  $config
+     */
+    public static function configHasEnabledRule(?array $config): bool
+    {
+        return collect($config ?? [])
+            ->contains(fn (array $rule): bool => (bool) ($rule['enabled'] ?? false));
+    }
 }

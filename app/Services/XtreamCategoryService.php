@@ -191,6 +191,9 @@ class XtreamCategoryService
      * category_id decodes to a dynamic group (see
      * DynamicGroup::idFromXtreamCategoryId()).
      *
+     * The `enabled` cut is left to the caller's base query, which already
+     * filters `enabled = true` on both the channels and series paths.
+     *
      * @param  \Illuminate\Contracts\Database\Query\Builder|Builder|Relation  $query
      */
     public static function applyDynamicGroupFilter($query, int $dynamicGroupId, bool $isVod): void
@@ -256,14 +259,20 @@ class XtreamCategoryService
     public static function dynamicCategoryIdsByItem(Playlist $sourcePlaylist, bool $isVod): array
     {
         $itemType = $isVod ? Channel::class : Series::class;
+        $itemTable = $isVod ? 'channels' : 'series';
 
+        // Match dynamicCategories(): only enabled members count. A group is
+        // only listed when it has an enabled member, so its disabled members
+        // must not carry its category id either.
         $map = [];
         $rows = DB::table('dynamic_group_items')
             ->join('dynamic_groups', 'dynamic_groups.id', '=', 'dynamic_group_items.dynamic_group_id')
+            ->join($itemTable, "{$itemTable}.id", '=', 'dynamic_group_items.item_id')
             ->where('dynamic_groups.playlist_id', $sourcePlaylist->id)
             ->where('dynamic_groups.type', $isVod ? 'vod' : 'series')
             ->where('dynamic_groups.enabled', true)
             ->where('dynamic_group_items.item_type', $itemType)
+            ->where("{$itemTable}.enabled", true)
             ->select(['dynamic_group_items.item_id', 'dynamic_group_items.dynamic_group_id'])
             ->cursor();
 

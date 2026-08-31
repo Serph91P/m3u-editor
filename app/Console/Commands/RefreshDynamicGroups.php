@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Jobs\SyncDynamicGroups;
+use App\Models\DynamicGroup;
 use App\Models\Playlist;
 use Illuminate\Console\Command;
 
@@ -48,10 +49,7 @@ class RefreshDynamicGroups extends Command
             ->whereNotNull('dynamic_groups_config')
             ->cursor()
             ->each(function (Playlist $playlist) use (&$count, &$skipped): void {
-                $rules = collect($playlist->dynamic_groups_config ?? []);
-                $hasEnabled = $rules->contains(fn (array $rule): bool => (bool) ($rule['enabled'] ?? false));
-
-                if (! $hasEnabled) {
+                if (! DynamicGroup::configHasEnabledRule($playlist->dynamic_groups_config)) {
                     $skipped++;
 
                     return;

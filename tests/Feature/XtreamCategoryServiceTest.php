@@ -164,13 +164,18 @@ it('maps member item ids to their dynamic Xtream category ids', function () {
         'type' => 'series', 'source' => 'top_genre', 'name' => 'C', 'sort_order' => 2, 'enabled' => false,
     ]);
 
-    $s1 = Series::factory()->for($this->user)->for($this->playlist)->create();
-    $s2 = Series::factory()->for($this->user)->for($this->playlist)->create();
+    $s1 = Series::factory()->for($this->user)->for($this->playlist)->create(['enabled' => true]);
+    $s2 = Series::factory()->for($this->user)->for($this->playlist)->create(['enabled' => true]);
+    // A disabled member must not carry its group's dynamic category id, to
+    // stay consistent with dynamicCategories() which hides groups whose only
+    // members are disabled.
+    $disabledSeries = Series::factory()->for($this->user)->for($this->playlist)->create(['enabled' => false]);
     DB::table('dynamic_group_items')->insert([
         ['dynamic_group_id' => $groupA->id, 'item_type' => Series::class, 'item_id' => $s1->id],
         ['dynamic_group_id' => $groupB->id, 'item_type' => Series::class, 'item_id' => $s1->id],
         ['dynamic_group_id' => $groupA->id, 'item_type' => Series::class, 'item_id' => $s2->id],
         ['dynamic_group_id' => $disabled->id, 'item_type' => Series::class, 'item_id' => $s2->id],
+        ['dynamic_group_id' => $groupB->id, 'item_type' => Series::class, 'item_id' => $disabledSeries->id],
     ]);
 
     $map = XtreamCategoryService::dynamicCategoryIdsByItem($this->playlist, isVod: false);
@@ -178,7 +183,8 @@ it('maps member item ids to their dynamic Xtream category ids', function () {
     expect($map[$s1->id])->toEqualCanonicalizing([
         DynamicGroup::XTREAM_CATEGORY_ID_OFFSET + $groupA->id,
         DynamicGroup::XTREAM_CATEGORY_ID_OFFSET + $groupB->id,
-    ])->and($map[$s2->id])->toBe([DynamicGroup::XTREAM_CATEGORY_ID_OFFSET + $groupA->id]);
+    ])->and($map[$s2->id])->toBe([DynamicGroup::XTREAM_CATEGORY_ID_OFFSET + $groupA->id])
+        ->and($map)->not->toHaveKey($disabledSeries->id);
 });
 
 it('constrains a query to one dynamic group\'s members', function () {
