@@ -22,6 +22,7 @@ use App\Models\DynamicGroup;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Epg;
 use App\Models\EpgProgramme;
+use App\Models\Episode;
 use App\Models\Group;
 use App\Models\MediaServerIntegration;
 use App\Models\MergedPlaylist;
@@ -2889,6 +2890,12 @@ class XtreamApiController extends Controller
         $type = $request->input('type'); // 'live', 'vod', 'episode', or null for all
         $limit = min((int) $request->input('limit', 20), 100);
 
+        // Opt-in: clients that understand synthetic "up next" episode entries pass
+        // include_up_next=1. Older apps (and every other Xtream client) never send
+        // it and get the unchanged response.
+        $includeUpNext = $request->boolean('include_up_next')
+            && (! $type || $type === 'episode');
+
         $query = ViewerWatchProgress::where('playlist_viewer_id', $viewer->id)
             ->orderByDesc('last_watched_at')
             ->with(['channel', 'episode.series']);
@@ -2989,7 +2996,109 @@ class XtreamApiController extends Controller
             return $data;
         });
 
-        return response()->json($enriched);
+        if ($includeUpNext) {
+            $enriched = $this->appendUpNextEntries($enriched, $results, $viewer, $playlist, $limit);
+        }
+
+        return response()->json($enriched->values());
+    }
+
+    /**
+     * Given the enriched recently-watched rows, append a synthetic "up next"
+     * entry for each series whose most-recently-watched episode is completed and
+     * has a following episode that has not been started yet. Each synthetic entry
+     * borrows the finished episode's `last_watched_at` so it lands in the same
+     * slot of the recency-ordered list, then the merged list is re-sorted and
+     * re-limited.
+     *
+     * @param  Collection<int, array<string, mixed>>  $enriched
+     * @param  Collection<int, ViewerWatchProgress>  $results
+     * @return Collection<int, array<string, mixed>>
+     */
+    private function appendUpNextEntries($enriched, $results, PlaylistViewer $viewer, $playlist, int $limit)
+    {
+        $latestEpisodeRowPerSeries = $results
+            ->filter(fn (ViewerWatchProgress $row): bool => $row->content_type === 'episode' && $row->series_id)
+            ->groupBy('series_id')
+            ->map(fn ($rows) => $rows->first()); // rows are already last_watched_at DESC
+
+        $candidates = [];
+        foreach ($latestEpisodeRowPerSeries as $row) {
+            if (! $row->completed || ! $row->episode) {
+                continue;
+            }
+            $next = $row->episode->nextInSeries();
+            if ($next) {
+                $candidates[$next->id] = ['next' => $next, 'source' => $row];
+            }
+        }
+
+        if (empty($candidates)) {
+            return $enriched;
+        }
+
+        // Drop any candidate the viewer has already started or finished.
+        $alreadyTracked = ViewerWatchProgress::where('playlist_viewer_id', $viewer->id)
+            ->where('content_type', 'episode')
+            ->whereIn('stream_id', array_keys($candidates))
+            ->pluck('stream_id')
+            ->all();
+        foreach ($alreadyTracked as $trackedStreamId) {
+            unset($candidates[$trackedStreamId]);
+        }
+
+        foreach ($candidates as $candidate) {
+            $enriched->push($this->buildUpNextEntry($candidate['next'], $candidate['source'], $playlist));
+        }
+
+        return $enriched
+            ->sortByDesc('last_watched_at')
+            ->take($limit);
+    }
+
+    /**
+     * Build a synthetic recently-watched array entry (shaped like the `episode`
+     * branch of getRecentlyWatched) representing the next unwatched episode.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildUpNextEntry(Episode $next, ViewerWatchProgress $source, $playlist): array
+    {
+        $series = $next->series;
+        $info = \is_array($next->info) ? $next->info : [];
+
+        $backdrop = $info['movie_image'] ?? $info['cover_big'] ?? null;
+        if (! $backdrop) {
+            $backdrop = $this->extractFirstUrl($series?->backdrop_path ?? null);
+        }
+        if ($backdrop && ($playlist->enable_logo_proxy ?? false)) {
+            $backdrop = $this->proxyImageUrl($backdrop);
+        }
+
+        return [
+            'id' => null,
+            'playlist_viewer_id' => $source->playlist_viewer_id,
+            'content_type' => 'episode',
+            'stream_id' => $next->id,
+            'series_id' => $next->series_id,
+            'season_number' => $next->season,
+            'episode_number' => $next->episode_num,
+            'position_seconds' => 0,
+            'duration_seconds' => $info['duration'] ?? null,
+            'completed' => false,
+            'watch_count' => 0,
+            // Serialize via the model so the value format matches the real rows
+            // (toArray() strings), keeping the merged sortByDesc() consistent.
+            'last_watched_at' => $source->toArray()['last_watched_at'] ?? null,
+            'up_next' => true,
+            'title' => $series?->name ?? $next->title,
+            'episode_title' => $next->title,
+            'series_name' => $series?->name,
+            'thumbnail_url' => $next->cover ?? $series?->cover ?? null,
+            'backdrop_url' => $backdrop,
+            'rating' => isset($info['rating']) ? (string) $info['rating'] : null,
+            'runtime' => $info['duration'] ?? null,
+        ];
     }
 
     /**
