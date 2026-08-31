@@ -8,6 +8,7 @@ use App\Jobs\ProcessEpgImport;
 use App\Jobs\ProcessEpgImportChunk;
 use App\Jobs\ProcessEpgImportComplete;
 use App\Models\Epg;
+use App\Models\EpgChannel;
 use App\Models\Job;
 use App\Models\User;
 use App\Services\SchedulesDirectService;
@@ -264,6 +265,8 @@ it('retains a retry after a legacy completion post-dispatch update fails', funct
     Queue::fake();
     $epg = Event::fakeFor(fn () => Epg::factory()->for(User::factory())->create([
         'status' => Status::Processing,
+        'processing' => true,
+        'processing_phase' => 'import',
         'channel_count' => 0,
         'auto_resync_on_failure' => true,
         'auto_resync_retries' => 1,
@@ -296,6 +299,8 @@ it('restores legacy root and completion payloads without concurrent processing',
     Event::fake();
     $epg = Event::fakeFor(fn () => Epg::factory()->for(User::factory())->create([
         'status' => Status::Processing,
+        'processing' => true,
+        'processing_phase' => 'import',
         'channel_count' => 1,
         'source_type' => EpgSourceType::SCHEDULES_DIRECT,
         'sd_username' => 'legacy-payload@example.com',
@@ -322,12 +327,40 @@ it('restores legacy root and completion payloads without concurrent processing',
         ->and(ProcessEpgImport::dispatchIfAvailable($epg, force: true))->toBeTrue();
 });
 
+it('ignores a stale legacy completion after a newer import finished', function () {
+    Queue::fake();
+    Notification::fake();
+    Event::fake();
+    $epg = Epg::factory()->for(User::factory())->create([
+        'status' => Status::Completed,
+        'processing' => false,
+        'errors' => 'newer-state',
+    ]);
+    $channel = EpgChannel::factory()->create([
+        'epg_id' => $epg->id,
+        'user_id' => $epg->user_id,
+        'import_batch_no' => 'newer-batch',
+    ]);
+    $staleCompletion = unserialize(serializeLegacyEpgJobAs(
+        new LegacyProcessEpgImportCompletePayload($epg->user_id, $epg->id, 'old-batch', now()),
+        ProcessEpgImportComplete::class,
+    ));
+    $staleCompletion->handle();
+
+    expect($channel->fresh())->not->toBeNull()
+        ->and($epg->fresh()->errors)->toBe('newer-state')
+        ->and(ProcessEpgImport::dispatchIfAvailable($epg, force: true))->toBeTrue();
+    Queue::pushed(ProcessEpgImport::class)->last()->failed(new RuntimeException('test cleanup'));
+});
+
 it('fences legacy chunk payloads with a batch compatibility reservation', function () {
     Queue::fake();
     Notification::fake();
     Event::fake();
     $epg = Epg::factory()->for(User::factory())->create([
         'status' => Status::Processing,
+        'processing' => true,
+        'processing_phase' => 'import',
         'channel_count' => 1,
     ]);
     $job = Job::create([

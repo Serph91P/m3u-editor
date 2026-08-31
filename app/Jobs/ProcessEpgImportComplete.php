@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Enums\Status;
 use App\Events\SyncCompleted;
+use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\Job;
 use App\Models\User;
@@ -51,6 +52,13 @@ class ProcessEpgImportComplete implements ShouldQueue
             throw new \RuntimeException('EPG import completion reservation ownership was lost.');
         }
 
+        if ($legacyReservation && ! $this->matchesActiveLegacyImport()) {
+            ProcessEpgImport::forgetCompatibilityReservation($this->epgId, $this->batchNo);
+            ProcessEpgImport::releaseReservation($this->epgId, $this->reservationOwner);
+
+            return;
+        }
+
         try {
             $this->handleReservedCompletion();
         } catch (\Throwable $throwable) {
@@ -72,6 +80,17 @@ class ProcessEpgImportComplete implements ShouldQueue
         if (! $this->reservationTransferred) {
             ProcessEpgImport::releaseReservation($this->epgId, $this->reservationOwner);
         }
+    }
+
+    private function matchesActiveLegacyImport(): bool
+    {
+        return Epg::query()
+            ->whereKey($this->epgId)
+            ->where('user_id', $this->userId)
+            ->where('status', Status::Processing->value)
+            ->where('processing', true)
+            ->where('processing_phase', 'import')
+            ->exists();
     }
 
     private bool $reservationTransferred = false;
