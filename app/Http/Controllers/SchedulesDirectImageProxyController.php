@@ -45,10 +45,6 @@ class SchedulesDirectImageProxyController extends Controller
                 return response()->json(['error' => 'Daily image download limit reached'], 429);
             }
 
-            if (! $epg->hasValidSchedulesDirectToken() && $retryAt = $epg->activeSchedulesDirectLoginCooldownUntil()) {
-                return $this->loginCooldownResponse($retryAt);
-            }
-
             // Check cache first (cache for 24 hours)
             $cachedResponse = Cache::get($cacheKey);
             if ($cachedResponse) {
@@ -61,6 +57,10 @@ class SchedulesDirectImageProxyController extends Controller
                 }
 
                 return response($cachedResponse['body'], 200, $cachedResponse['headers']);
+            }
+
+            if (! $epg->hasValidSchedulesDirectToken() && $retryAt = $epg->activeSchedulesDirectLoginCooldownUntil()) {
+                return $this->loginCooldownResponse($retryAt);
             }
 
             $response = $this->schedulesDirectService->getImage($epg, $imageHash, quietLoginCooldown: true);

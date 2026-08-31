@@ -2,6 +2,8 @@
 
 use App\Enums\EpgSourceType;
 use App\Enums\Status;
+use App\Events\EpgCreated;
+use App\Events\SyncCompleted;
 use App\Exceptions\SchedulesDirectLoginCooldownException;
 use App\Exceptions\SchedulesDirectTokenExpiredException;
 use App\Jobs\ProcessEpgImport;
@@ -10,6 +12,7 @@ use App\Models\User;
 use App\Services\SchedulesDirectService;
 use Carbon\Carbon;
 use Filament\Notifications\DatabaseNotification;
+use Illuminate\Bus\UniqueLock;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\QueryException;
@@ -24,6 +27,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification as NotificationFacade;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Sleep;
@@ -32,7 +36,10 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     config()->set('app.key', '12345678901234567890123456789012');
+    config()->set('cache.default', 'array');
+    Cache::setDefaultDriver('array');
     Bus::fake();
+    Queue::fake();
     Http::preventStrayRequests();
 });
 
@@ -42,13 +49,13 @@ afterEach(function () {
 
 function makeSchedulesDirectEpgForLoginLimitTests(array $attributes = []): Epg
 {
-    return Epg::factory()->for(User::factory())->create(array_merge([
+    return Event::fakeFor(fn () => Epg::factory()->for(User::factory())->create(array_merge([
         'source_type' => EpgSourceType::SCHEDULES_DIRECT,
         'sd_username' => 'account@example.com',
         'sd_password' => 'provider-password',
         'sd_lineup_id' => 'USA-NY12345-X',
         'sd_days_to_import' => 1,
-    ], $attributes));
+    ], $attributes)), [EpgCreated::class]);
 }
 
 function schedulesDirectTokenPayload(string $token, int $expires): array
@@ -1170,6 +1177,97 @@ it('does not persist authentication after the PostgreSQL advisory lock session r
     expect(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
 });
 
+it('does not commit EPG token state after the PostgreSQL advisory lock session reconnects during persistence', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL-only advisory lock persistence assertion.');
+    }
+
+    DB::rollBack();
+    $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $providerResponded = false;
+    $advisorySessionDisconnected = false;
+
+    DB::listen(function ($query) use (&$providerResponded, &$advisorySessionDisconnected): void {
+        if ($providerResponded
+            && ! $advisorySessionDisconnected
+            && str_contains($query->sql, 'FROM pg_locks')
+        ) {
+            $advisorySessionDisconnected = true;
+            DB::disconnect();
+        }
+    });
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => function () use (&$providerResponded) {
+            $providerResponded = true;
+
+            return Http::response(
+                schedulesDirectTokenPayload('must-not-commit', now()->addHours(23)->timestamp),
+            );
+        },
+    ]);
+
+    try {
+        expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
+            ->toThrow(Exception::class, 'Schedules Direct authentication lock ownership was lost. Please try again shortly.');
+
+        expect($advisorySessionDisconnected)->toBeTrue()
+            ->and(Epg::query()->findOrFail($epg->id)->sd_token)->toBeNull();
+    } finally {
+        Epg::query()->whereKey($epg->id)->delete();
+        User::query()->whereKey($epg->user_id)->delete();
+        DB::beginTransaction();
+    }
+});
+
+it('does not commit cooldown state after the PostgreSQL advisory lock session reconnects during persistence', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL-only advisory lock persistence assertion.');
+    }
+
+    DB::rollBack();
+    $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    $providerResponded = false;
+    $advisorySessionDisconnected = false;
+
+    DB::listen(function ($query) use (&$providerResponded, &$advisorySessionDisconnected): void {
+        if ($providerResponded
+            && ! $advisorySessionDisconnected
+            && str_contains($query->sql, 'FROM pg_locks')
+        ) {
+            $advisorySessionDisconnected = true;
+            DB::disconnect();
+        }
+    });
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => function () use (&$providerResponded) {
+            $providerResponded = true;
+
+            return Http::response([
+                'code' => 4009,
+                'message' => 'TOO_MANY_LOGINS',
+            ], 400);
+        },
+    ]);
+
+    try {
+        expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
+            ->toThrow(Exception::class, 'Schedules Direct authentication lock ownership was lost. Please try again shortly.');
+
+        $epg->refresh();
+        expect($advisorySessionDisconnected)->toBeTrue()
+            ->and($epg->sd_login_cooldown_started_at)->toBeNull()
+            ->and($epg->sd_login_cooldown_until)->toBeNull()
+            ->and(DB::table('schedules_direct_login_cooldowns')->where('account_identifier', $providerIdentifier)->exists())->toBeFalse();
+    } finally {
+        DB::table('schedules_direct_login_cooldown_claims')->where('provider_account_identifier', $providerIdentifier)->delete();
+        DB::table('schedules_direct_login_cooldowns')->where('account_identifier', $providerIdentifier)->delete();
+        Epg::query()->whereKey($epg->id)->delete();
+        User::query()->whereKey($epg->user_id)->delete();
+        DB::beginTransaction();
+    }
+});
+
 it('fails closed when the cache lease expires without a database advisory fence', function () {
     if (in_array(DB::connection()->getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
         $this->markTestSkipped('Requires a database driver without advisory lock support.');
@@ -1409,6 +1507,10 @@ it('clears a provider-rejected token before surfacing an active login cooldown',
         'sd_token_expires_at' => now()->addHour(),
     ]);
     $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    $loggedMessages = [];
+    Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$loggedMessages): void {
+        $loggedMessages[] = $event->message;
+    });
     DB::table('schedules_direct_login_cooldowns')->insert([
         'account_identifier' => $providerIdentifier,
         'started_at' => now()->subHour(),
@@ -1466,6 +1568,43 @@ it('reuses a token refreshed by another worker while waiting for 4006 recovery',
         ->and($lineupRequests->first()[0]->header('token'))->toBe(['rejected-token'])
         ->and($lineupRequests->last()[0]->header('token'))->toBe(['concurrently-refreshed-token']);
 
+    Http::assertNotSent(fn (Request $request): bool => str_ends_with($request->url(), '/token'));
+});
+
+it('adopts a newer shared row token after the first 4006 without requesting another token', function () {
+    $owner = User::factory()->create();
+    $rejectedEpg = makeSchedulesDirectEpgForLoginLimitTests([
+        'user_id' => $owner->id,
+        'sd_token' => 'rejected-shared-token',
+        'sd_token_expires_at' => now()->addHour(),
+    ]);
+    $newerEpg = makeSchedulesDirectEpgForLoginLimitTests([
+        'user_id' => $owner->id,
+        'sd_token' => 'newer-shared-token',
+        'sd_token_expires_at' => now()->addHours(2),
+    ]);
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/lineups' => Http::sequence()
+            ->push(['code' => 4006, 'message' => 'TOKEN_EXPIRED'], 401)
+            ->push(['lineups' => [[
+                'lineup' => 'USA-NY12345-X',
+                'name' => 'Test Lineup',
+                'transport' => 'Antenna',
+            ]]]),
+        'json.schedulesdirect.org/20141201/token' => Http::response(
+            schedulesDirectTokenPayload('unexpected-login-token', now()->addHours(23)->timestamp),
+        ),
+    ]);
+
+    $options = (new SchedulesDirectService)->getAccountLineupsAsOptions($rejectedEpg);
+    $lineupRequests = Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/lineups'));
+
+    expect($options)->toHaveKey('USA-NY12345-X')
+        ->and($lineupRequests)->toHaveCount(2)
+        ->and($lineupRequests->last()[0]->header('token'))->toBe(['newer-shared-token'])
+        ->and($rejectedEpg->fresh()->sd_token)->toBe('newer-shared-token')
+        ->and($newerEpg->fresh()->sd_token)->toBe('newer-shared-token');
     Http::assertNotSent(fn (Request $request): bool => str_ends_with($request->url(), '/token'));
 });
 
@@ -2011,6 +2150,54 @@ it('does not send a generic process failure notification for a login cooldown', 
         ->and($epg->fresh()->status->value)->toBe('failed');
 });
 
+it('returns quietly when a canonical cooldown appears during import authentication', function () {
+    NotificationFacade::fake();
+    Event::fake([SyncCompleted::class]);
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'status' => Status::Pending,
+        'processing' => false,
+        'processing_started_at' => null,
+        'synced' => null,
+        'errors' => null,
+    ]);
+    DB::table('epgs')->where('id', $epg->id)->update(['updated_at' => now()->subMinute()]);
+    $epg->refresh();
+    $originalUpdatedAt = $epg->updated_at->copy();
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    $loggedMessages = [];
+    Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$loggedMessages): void {
+        $loggedMessages[] = $event->message;
+    });
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => function () use ($providerIdentifier) {
+            DB::table('schedules_direct_login_cooldowns')->insert([
+                'account_identifier' => $providerIdentifier,
+                'started_at' => now(),
+                'cooldown_until' => now()->addDay(),
+                'notified_at' => null,
+            ]);
+
+            return Http::response(['code' => 4999, 'message' => 'Authentication unavailable'], 503);
+        },
+    ]);
+
+    (new ProcessEpgImport($epg, force: true))->handle(new SchedulesDirectService);
+
+    $epg->refresh();
+    expect($epg->status)->toBe(Status::Pending)
+        ->and($epg->processing)->toBeFalse()
+        ->and($epg->processing_started_at)->toBeNull()
+        ->and($epg->synced)->toBeNull()
+        ->and($epg->errors)->toBeNull()
+        ->and($epg->updated_at->equalTo($originalUpdatedAt))->toBeTrue();
+    $notificationTitles = NotificationFacade::sent($epg->user, DatabaseNotification::class)
+        ->pluck('data.title');
+    expect($notificationTitles->contains(fn (string $title): bool => str_starts_with($title, 'Error processing')))->toBeFalse();
+    expect($loggedMessages)->not->toContain("Error processing \"{$epg->name}\": Schedules Direct authentication failed (code 4999).");
+    Event::assertNotDispatched(SyncCompleted::class);
+});
+
 it('sanitizes authentication database failures before service and job error handling', function () {
     NotificationFacade::fake();
     $password = 'query-exception-plaintext-password';
@@ -2379,6 +2566,7 @@ it('does not suppress scheduled work that can use a valid isolated token during 
 
     Bus::assertDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epg->is($epg));
     Bus::fake();
+    (new UniqueLock(Cache::store('array')))->release(new ProcessEpgImport($epg, force: true));
 
     expect($epg->fresh()->hasActiveSchedulesDirectLoginCooldown())->toBeTrue()
         ->and(ProcessEpgImport::scheduleResyncIfNeeded($epg))->toBeTrue();
@@ -2591,6 +2779,107 @@ it('returns a quiet image 429 from canonical cooldown without authentication sid
         ->and($epg->fresh()->sd_login_cooldown_until)->toBeNull()
         ->and($loggedErrors)->toBe([]);
     Http::assertNothingSent();
+});
+
+it('serves cached image responses during an active login cooldown without provider requests', function (array $cachedResponse, int $expectedStatus, ?string $expectedBody) {
+    $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $imageHash = 'cached-cooldown-image';
+    Cache::put("sd_image_{$epg->uuid}_{$imageHash}", $cachedResponse, now()->addHour());
+    DB::table('schedules_direct_login_cooldowns')->insert([
+        'account_identifier' => Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username),
+        'started_at' => now(),
+        'cooldown_until' => now()->addDay(),
+        'notified_at' => null,
+    ]);
+
+    $response = $this->get(route('schedules-direct.image.proxy', [
+        'epg' => $epg->uuid,
+        'imageHash' => $imageHash,
+    ]));
+
+    $response->assertStatus($expectedStatus)->assertHeaderMissing('Retry-After');
+    if ($expectedBody !== null) {
+        $response->assertContent($expectedBody);
+    }
+    Http::assertNothingSent();
+})->with([
+    'successful image' => [[
+        'body' => 'cached-image-bytes',
+        'headers' => ['Content-Type' => 'image/jpeg'],
+    ], 200, 'cached-image-bytes'],
+    'not found' => [['not_found' => true], 404, null],
+    'download limit' => [['download_limit' => true], 429, null],
+]);
+
+it('does not delete a newer authentication handoff after a stale conditional delete', function () {
+    $credentialSnapshot = [
+        'owner_id' => 0,
+        'username' => 'rowless@example.com',
+        'password' => 'rowless-password',
+        'identifier' => Epg::schedulesDirectAccountIdentifier(0, 'rowless@example.com', 'rowless-password'),
+        'provider_identifier' => Epg::schedulesDirectProviderAccountIdentifier('rowless@example.com'),
+    ];
+    $handoffKey = 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
+    $authentication = ['token' => 'rejected-handoff-token', 'expires' => now()->addHour()->timestamp];
+    $newerAuthentication = ['token' => 'newer-handoff-token', 'expires' => now()->addHours(2)->timestamp];
+    $lock = Mockery::mock(Lock::class);
+    $lock->shouldReceive('block')
+        ->once()
+        ->with(5, Mockery::type(Closure::class))
+        ->andReturnUsing(function (int $seconds, Closure $callback) use (&$authentication, $newerAuthentication) {
+            $authentication = $newerAuthentication;
+
+            return $callback();
+        });
+    Cache::shouldReceive('lock')
+        ->once()
+        ->with('schedules-direct:authentication-handoff-mutation:'.$credentialSnapshot['identifier'], 10)
+        ->andReturn($lock);
+    Cache::shouldReceive('get')->once()->with($handoffKey)->andReturnUsing(function () use (&$authentication) {
+        return $authentication;
+    });
+    Cache::shouldReceive('forget')->never();
+
+    (new ReflectionMethod(SchedulesDirectService::class, 'forgetRejectedAuthenticationHandoff'))->invoke(
+        new SchedulesDirectService,
+        $credentialSnapshot,
+        'rejected-handoff-token',
+    );
+
+    expect($authentication)->toBe($newerAuthentication);
+});
+
+it('does not delete a newer authentication handoff while cleaning up failed persistence', function () {
+    $credentialSnapshot = [
+        'owner_id' => 0,
+        'username' => 'rowless@example.com',
+        'password' => 'rowless-password',
+        'identifier' => Epg::schedulesDirectAccountIdentifier(0, 'rowless@example.com', 'rowless-password'),
+        'provider_identifier' => Epg::schedulesDirectProviderAccountIdentifier('rowless@example.com'),
+    ];
+    $handoffKey = 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
+    $authentication = ['token' => 'failed-persistence-token', 'expires' => now()->addHour()->timestamp];
+    $newerAuthentication = ['token' => 'newer-handoff-token', 'expires' => now()->addHours(2)->timestamp];
+    $ownershipAssertions = 0;
+    $assertLockOwned = function () use (&$ownershipAssertions, $handoffKey, $newerAuthentication): void {
+        $ownershipAssertions++;
+
+        if ($ownershipAssertions === 2) {
+            Cache::put($handoffKey, $newerAuthentication, now()->addHours(2));
+
+            throw new RuntimeException('controlled persistence failure');
+        }
+    };
+    $method = new ReflectionMethod(SchedulesDirectService::class, 'persistAuthentication');
+
+    expect(fn () => $method->invokeArgs(new SchedulesDirectService, [
+        $credentialSnapshot,
+        $authentication,
+        true,
+        $assertLockOwned,
+    ]))->toThrow(RuntimeException::class, 'controlled persistence failure');
+
+    expect(Cache::get($handoffKey))->toBe($newerAuthentication);
 });
 
 it('returns a side effect free quiet image 429 when cooldown begins between controller and service checks', function () {

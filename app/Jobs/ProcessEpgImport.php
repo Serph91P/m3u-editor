@@ -15,9 +15,12 @@ use App\Traits\ProviderRequestDelay;
 use Carbon\Carbon;
 use Exception;
 use Filament\Notifications\Notification;
+use Illuminate\Contracts\Cache\Repository;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -27,7 +30,7 @@ use Throwable;
 use XMLReader;
 use XMLWriter;
 
-class ProcessEpgImport implements ShouldQueue
+class ProcessEpgImport implements ShouldBeUnique, ShouldQueue
 {
     use ProviderRequestDelay;
     use Queueable;
@@ -92,6 +95,16 @@ class ProcessEpgImport implements ShouldQueue
     public function handle(SchedulesDirectService $service): void
     {
         $this->epg->refresh();
+        $initialImportState = $this->epg->only([
+            'processing',
+            'status',
+            'processing_started_at',
+            'processing_phase',
+            'errors',
+            'progress',
+            'synced',
+            'updated_at',
+        ]);
 
         if ($this->epg->isSchedulesDirect() && ! $this->epg->hasValidSchedulesDirectToken() && $this->epg->hasActiveSchedulesDirectLoginCooldown()) {
             return;
@@ -175,7 +188,7 @@ class ProcessEpgImport implements ShouldQueue
                     // Fire the epg synced event
                     event(new SyncCompleted($this->epg));
 
-                    static::scheduleResyncIfNeeded($this->epg);
+                    static::scheduleResyncIfNeeded($this->epg, $this);
 
                     return;
                 } else {
@@ -301,7 +314,7 @@ class ProcessEpgImport implements ShouldQueue
                 // Fire the epg synced event
                 event(new SyncCompleted($this->epg));
 
-                static::scheduleResyncIfNeeded($this->epg);
+                static::scheduleResyncIfNeeded($this->epg, $this);
 
                 return;
             }
@@ -543,6 +556,17 @@ class ProcessEpgImport implements ShouldQueue
 
             event(new SyncCompleted($this->epg));
         } catch (Exception $e) {
+            $this->epg->refresh();
+
+            if ($this->epg->isSchedulesDirect()
+                && ! $this->epg->hasValidSchedulesDirectToken()
+                && $this->epg->hasActiveSchedulesDirectLoginCooldown()
+            ) {
+                $this->epg->forceFill($initialImportState)->saveQuietly();
+
+                return;
+            }
+
             // Log the exception
             logger()->error("Error processing \"{$this->epg->name}\": {$e->getMessage()}");
 
@@ -571,7 +595,7 @@ class ProcessEpgImport implements ShouldQueue
             // Fire the epg synced event
             event(new SyncCompleted($this->epg));
 
-            static::scheduleResyncIfNeeded($this->epg);
+            static::scheduleResyncIfNeeded($this->epg, $this);
         }
 
     }
@@ -580,7 +604,7 @@ class ProcessEpgImport implements ShouldQueue
      * Schedule an automatic resync with linear backoff if the EPG is configured for it.
      * Returns true if a retry was dispatched (caller should skip further processing).
      */
-    public static function scheduleResyncIfNeeded(Epg $epg): bool
+    public static function scheduleResyncIfNeeded(Epg $epg, ?self $currentJob = null): bool
     {
         $epg->refresh();
 
@@ -605,9 +629,25 @@ class ProcessEpgImport implements ShouldQueue
             ->body("Retry {$newAttempt} of {$epg->auto_resync_retries} scheduled for \"{$epg->name}\" (delay: {$delaySeconds}s).")
             ->sendToDatabase($epg->user);
 
-        dispatch(new self($epg, force: true))->delay(now()->addSeconds($delaySeconds));
+        $retry = (new self($epg, force: true))->delay(now()->addSeconds($delaySeconds));
+
+        if ($currentJob?->job) {
+            $currentJob->appendToChain($retry);
+        } else {
+            dispatch($retry);
+        }
 
         return true;
+    }
+
+    public function uniqueId(): string
+    {
+        return (string) $this->epg->getKey();
+    }
+
+    public function uniqueVia(): Repository
+    {
+        return Cache::store(app()->runningUnitTests() ? 'array' : 'redis');
     }
 
     private function resolveEpgSourceFilePath(Epg $epg): ?string
