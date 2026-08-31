@@ -32,6 +32,7 @@ use App\Livewire\XtreamApiInfo;
 use App\Livewire\XtreamDnsStatus;
 use App\Models\Category;
 use App\Models\CustomPlaylist;
+use App\Models\DynamicGroup;
 use App\Models\Group;
 use App\Models\MediaServerIntegration;
 use App\Models\Playlist;
@@ -49,6 +50,7 @@ use App\Services\EpgCacheService;
 use App\Services\M3uProxyService;
 use App\Services\ProfileService;
 use App\Services\SyncPipelineService;
+use App\Services\TmdbService;
 use App\Services\XtreamService;
 use App\Tables\Columns\ProgressColumn;
 use App\Traits\HasUserFiltering;
@@ -67,7 +69,6 @@ use Filament\Actions\ViewAction;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\ModalTableSelect;
-use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TagsInput;
@@ -77,6 +78,7 @@ use Filament\Forms\Components\ToggleButtons;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Actions;
+use Filament\Schemas\Components\Callout;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Group as ComponentsGroup;
@@ -810,7 +812,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->helperText(__('3-36 characters. Only letters, numbers, hyphens, and underscores are allowed.'))
                         ->hintIcon(
                             'heroicon-m-exclamation-triangle',
-                            tooltip: 'Be careful changing this value as this will change the URLs for the Playlist, its EPG, and HDHR.'
+                            tooltip: __('Be careful changing this value as this will change the URLs for the Playlist, its EPG, and HDHR.')
                         )
                         ->hidden(fn ($get): bool => ! $get('edit_uuid'))
                         ->required(),
@@ -942,7 +944,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->live()
                                 ->hintIcon(
                                     'heroicon-s-information-circle',
-                                    tooltip: 'Alternative Xtream API URLs to try if the primary URL fails during a sync operation. Stream URLs will be automatically updated to the resolved URL.',
+                                    tooltip: __('Alternative Xtream API URLs to try if the primary URL fails during a sync operation. Stream URLs will be automatically updated to the resolved URL.'),
                                 )
                                 ->helperText(__('Alternative Xtream API URLs. If the primary URL fails during a sync, these will be tried in order (same credentials are used for all URLs).'))
                                 ->simple(
@@ -1078,7 +1080,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                         ->columnSpan(1)
                                         ->hintIcon(
                                             'heroicon-s-information-circle',
-                                            tooltip: 'This is the format that will be used for the imported streams. If you change this later, the playlist will need to be synced for the changes to be applied.',
+                                            tooltip: __('This is the format that will be used for the imported streams. If you change this later, the playlist will need to be synced for the changes to be applied.'),
                                         )
                                         ->options([
                                             'ts' => 'MPEG-TS (.ts)',
@@ -1183,16 +1185,16 @@ class PlaylistResource extends Resource implements CopilotResource
                                         ->label(__('Bypass Provider Connection Limits'))
                                         ->hintIcon(
                                             'heroicon-m-question-mark-circle',
-                                            tooltip: 'Only the "Available Streams" setting (Output tab) will determine when 503 errors are returned. Enable this if you use stream pooling or if your provider allows more connections than reported.'
+                                            tooltip: __('Only the "Available Streams" setting (Output tab) will determine when 503 errors are returned. Enable this if you use stream pooling or if your provider allows more connections than reported.')
                                         )
                                         ->helperText(__('When enabled, the proxy will attempt to start streams even if the provider\'s reported connection limit has been reached.'))
                                         ->visible(fn (Get $get): bool => (bool) $get('profiles_enabled'))
                                         ->inline(false)
                                         ->live()
                                         ->default(false),
-                                    Placeholder::make('bypass_provider_limits_warning')
-                                        ->label(__('Provider Limits Warning'))
-                                        ->content('⚠️ Provider connection limits will not be enforced. If the provider strictly enforces its limit, streams may fail at the provider level rather than being blocked by the proxy.')
+                                    Callout::make(__('Provider Limits Warning'))
+                                        ->warning()
+                                        ->description('Provider connection limits will not be enforced. If the provider strictly enforces its limit, streams may fail at the provider level rather than being blocked by the proxy.')
                                         ->visible(fn (Get $get): bool => (bool) $get('profiles_enabled') && (bool) $get('bypass_provider_limits')),
                                 ]),
 
@@ -1200,7 +1202,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->label(__('Enable Provider Affinity'))
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'When enabled, the proxy will remember which provider profile a client was assigned to and prefer it on subsequent requests. This prevents unnecessary profile switches during channel changes.'
+                                    tooltip: __('When enabled, the proxy will remember which provider profile a client was assigned to and prefer it on subsequent requests. This prevents unnecessary profile switches during channel changes.')
                                 )
                                 ->helperText(__('Remember which provider profile a client was assigned to and prefer it on subsequent requests.'))
                                 ->visible(fn (Get $get): bool => (bool) $get('profiles_enabled'))
@@ -1212,9 +1214,8 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->columns(2)
                         ->visible(fn (Get $get): bool => $get('profiles_enabled'))
                         ->schema([
-                            Placeholder::make('primary_profile_info')
-                                ->label(__('Primary Account'))
-                                ->content(function (?Playlist $record): string {
+                            Callout::make(__('Primary Account'))
+                                ->description(function (?Playlist $record): string {
                                     if (! $record || ! $record->xtream_config) {
                                         return 'Configure Xtream credentials above first.';
                                     }
@@ -1489,9 +1490,8 @@ class PlaylistResource extends Resource implements CopilotResource
                             return $data;
                         }),
 
-                    Placeholder::make('pool_status')
-                        ->label(__('Pool Status'))
-                        ->content(function (?Playlist $record, Get $get): HtmlString {
+                    Callout::make(__('Pool Status'))
+                        ->description(function (?Playlist $record, Get $get): HtmlString {
                             if (! $record || ! $record->profiles_enabled) {
                                 return new HtmlString('Enable profiles to see pool status.');
                             }
@@ -1576,10 +1576,9 @@ class PlaylistResource extends Resource implements CopilotResource
                             : 'Specify the CRON schedule for automatic sync, e.g. "0 3 * * *".')
                         ->hidden(fn (Get $get): bool => ! $get('auto_sync')),
 
-                    Placeholder::make('synced')
+                    Callout::make(__('Last Synced'))
                         ->columnSpan(2)
-                        ->label(__('Last Synced'))
-                        ->content(fn ($record) => app(DateFormatService::class)->format($record?->synced)),
+                        ->description(fn ($record) => app(DateFormatService::class)->format($record?->synced)),
                 ]),
         ];
 
@@ -1594,7 +1593,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->live()
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'This may slow down the import process but can help with larger playlists that time out when fetching all items at once.'
+                            tooltip: __('This may slow down the import process but can help with larger playlists that time out when fetching all items at once.')
                         )
                         ->hidden(fn (Get $get): bool => ! $get('xtream'))
                         ->inline(true)
@@ -1906,6 +1905,197 @@ class PlaylistResource extends Resource implements CopilotResource
                             '.mkv',
                             '.mp4',
                         ])->splitKeys(['Tab', 'Return']),
+
+                    // Dynamic Groups (TMDB) — nested inside Playlist Processing
+                    // (per CJ's 2026-08-30 amendment: should sit alongside the
+                    // Live/VOD/Series processing fieldsets, not as a standalone
+                    // top-level section). Nested Section keeps ->description() and
+                    // ->collapsible() semantics. columnSpanFull() is preserved
+                    // because the parent section uses ->columns(2).
+                    Section::make(__('Dynamic Groups (TMDB)'))
+                        ->description(__('Per-playlist virtual groups computed from TMDB list endpoints (Trending, Popular, In Theatres, Coming Soon, Top <Genre>, by TV Network, by Streaming Service). Categories are prepended to the Xtream VOD/series category lists. Requires the TMDB API key in Settings → TMDB Integration.'))
+                        ->columnSpanFull()
+                        ->collapsible()
+                        ->collapsed($creating)
+                        ->schema([
+                            Repeater::make('dynamic_groups_config')
+                                ->label('')
+                                ->schema([
+                                    Toggle::make('enabled')
+                                        ->label(__('Enabled'))
+                                        ->default(true)
+                                        ->inline(false)
+                                        ->columnSpan(2),
+                                    Select::make('type')
+                                        ->label(__('Content Type'))
+                                        ->options([
+                                            'vod' => __('VOD (Movies)'),
+                                            'series' => __('Series'),
+                                        ])
+                                        ->live()
+                                        ->required()
+                                        ->afterStateUpdated(function (Set $set): void {
+                                            // Reset source-dependent fields so the user
+                                            // cannot keep a provider/genre/network that
+                                            // is no longer relevant after switching
+                                            // between vod and series.
+                                            $set('source', null);
+                                            $set('tmdb_params', []);
+                                        })
+                                        ->columnSpan(2),
+                                    Select::make('source')
+                                        ->label(__('Source'))
+                                        ->options(function (Get $get): array {
+                                            $type = $get('type');
+
+                                            if ($type === 'series') {
+                                                return [
+                                                    'trending' => __('Trending'),
+                                                    'popular' => __('Popular'),
+                                                    'top_genre' => __('Top Genre'),
+                                                    'tmdb_network' => __('By TV Network'),
+                                                    'provider' => __('By Streaming Service'),
+                                                ];
+                                            }
+
+                                            return [
+                                                'trending' => __('Trending'),
+                                                'popular' => __('Popular'),
+                                                'now_playing' => __('In Theatres'),
+                                                'upcoming' => __('Coming Soon'),
+                                                'top_genre' => __('Top Genre'),
+                                                'provider' => __('By Streaming Service'),
+                                            ];
+                                        })
+                                        ->live()
+                                        ->required()
+                                        ->columnSpan(3),
+                                    Select::make('tmdb_params.genre_id')
+                                        ->label(__('Genre'))
+                                        ->options(function (Get $get): array {
+                                            $tmdb = app(TmdbService::class);
+                                            if (! $tmdb->isConfigured()) {
+                                                return [];
+                                            }
+                                            $genres = $get('type') === 'series'
+                                                ? $tmdb->getTvGenres()
+                                                : $tmdb->getMovieGenres();
+
+                                            return array_column($genres, 'name', 'id');
+                                        })
+                                        ->required()
+                                        ->visible(fn (Get $get): bool => $get('source') === 'top_genre')
+                                        ->columnSpan(5),
+                                    Select::make('tmdb_params.network_id')
+                                        ->label(__('TV Network'))
+                                        ->options(TmdbService::TV_NETWORKS)
+                                        ->required()
+                                        ->visible(fn (Get $get): bool => $get('source') === 'tmdb_network')
+                                        ->columnSpan(5),
+                                    Select::make('tmdb_params.provider_id')
+                                        ->label(__('Streaming Service'))
+                                        ->options(function (Get $get): array {
+                                            $tmdb = app(TmdbService::class);
+                                            if (! $tmdb->isConfigured()) {
+                                                return [];
+                                            }
+                                            $region = $get('tmdb_params.region') ?: 'US';
+                                            $mediaType = $get('type') === 'series' ? 'tv' : 'movie';
+                                            $providers = $tmdb->getWatchProviders($mediaType, $region);
+
+                                            return array_column($providers, 'name', 'id');
+                                        })
+                                        ->required()
+                                        ->live()
+                                        ->visible(fn (Get $get): bool => $get('source') === 'provider')
+                                        ->columnSpan(4),
+                                    TextInput::make('tmdb_params.region')
+                                        ->label(__('Region'))
+                                        ->placeholder('US')
+                                        ->maxLength(2)
+                                        ->live()
+                                        ->visible(fn (Get $get): bool => $get('source') === 'provider')
+                                        ->columnSpan(1),
+                                    Select::make('tmdb_params.time_window')
+                                        ->label(__('Time Window'))
+                                        ->options([
+                                            'day' => __('Today'),
+                                            'week' => __('This Week'),
+                                        ])
+                                        ->default('week')
+                                        ->visible(fn (Get $get): bool => $get('source') === 'trending')
+                                        ->columnSpan(5),
+                                    TextInput::make('name')
+                                        ->label(__('Category Name'))
+                                        ->placeholder(__('e.g. Trending Now, Top Comedy, Netflix'))
+                                        ->required()
+                                        ->columnSpan(5),
+                                ])
+                                ->columns(12)
+                                ->reorderable()
+                                ->reorderableWithButtons()
+                                ->collapsible()
+                                ->defaultItems(0)
+                                ->addActionLabel(__('Add dynamic group'))
+                                ->extraItemActions([
+                                    Action::make('preview_dynamic_group')
+                                        ->label(__('Preview'))
+                                        ->icon('heroicon-o-eye')
+                                        ->color('info')
+                                        ->tooltip(__('Preview the entries this rule currently matches'))
+                                        // Matching runs against the playlist's synced VOD/series
+                                        // rows, so there is nothing to preview until the
+                                        // playlist exists.
+                                        ->visible(fn (?Playlist $record): bool => $record !== null)
+                                        ->modalHeading(function (array $arguments, Repeater $component): string {
+                                            $itemKey = $arguments['item'] ?? null;
+                                            $rule = $itemKey !== null ? (array) $component->getRawItemState($itemKey) : [];
+                                            $name = trim((string) ($rule['name'] ?? ''));
+
+                                            return $name !== ''
+                                                ? __('Preview: :name', ['name' => $name])
+                                                : __('Preview dynamic group');
+                                        })
+                                        ->modalWidth('2xl')
+                                        ->modalSubmitAction(false)
+                                        ->modalCancelActionLabel(__('Close'))
+                                        ->modalContent(function (array $arguments, Repeater $component, ?Playlist $record) {
+                                            // Raw (unvalidated) state so the preview reflects the
+                                            // rule as currently edited, before the form is saved.
+                                            $itemKey = $arguments['item'] ?? null;
+                                            $rule = $itemKey !== null ? (array) $component->getRawItemState($itemKey) : [];
+
+                                            return view(
+                                                'filament.forms.dynamic-group-preview',
+                                                self::getDynamicGroupPreviewData($rule, $record),
+                                            );
+                                        }),
+                                ])
+                                ->itemLabel(function (array $state): ?string {
+                                    $name = $state['name'] ?? null;
+                                    if (! $name) {
+                                        return null;
+                                    }
+                                    $type = $state['type'] ?? null;
+                                    $source = $state['source'] ?? null;
+                                    $typeLabel = $type === 'series' ? 'Series' : ($type === 'vod' ? 'VOD' : null);
+                                    $sourceLabel = match ($source) {
+                                        'trending' => 'Trending',
+                                        'popular' => 'Popular',
+                                        'now_playing' => 'In Theatres',
+                                        'upcoming' => 'Coming Soon',
+                                        'top_genre' => 'Top Genre',
+                                        'tmdb_network' => 'By Network',
+                                        'provider' => 'By Provider',
+                                        default => $source,
+                                    };
+                                    $disabled = ($state['enabled'] ?? true) ? '' : ' (disabled)';
+
+                                    return $typeLabel
+                                        ? "{$name} ({$typeLabel} — {$sourceLabel}){$disabled}"
+                                        : "{$name} ({$sourceLabel}){$disabled}";
+                                }),
+                        ]),
                 ]),
 
             Section::make(__('URL Find & Replace Preprocessing'))
@@ -1974,7 +2164,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->label(__('Probe Live streams after sync'))
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Required for fast channel switching when using the emby-xtream plugin.'
+                            tooltip: __('Required for fast channel switching when using the emby-xtream plugin.')
                         )
                         ->helperText(__('When enabled, live channels will be probed with ffprobe after sync to collect stream metadata (codec, resolution, bitrate) and store it to the database for fast retrieval.'))
                         ->live()
@@ -2113,7 +2303,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Recommend leaving this disabled unless you are including Series in the M3U output or syncing stream files. When accessing via the Xtream API, metadata will be automatically fetched.'
+                            tooltip: __('Recommend leaving this disabled unless you are including Series in the M3U output or syncing stream files. When accessing via the Xtream API, metadata will be automatically fetched.')
                         )
                         ->default(false)
                         ->helperText(__('Fetches episode metadata for enabled series after each sync. Required for stream file sync.')),
@@ -2122,7 +2312,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Requires "Fetch metadata" to be enabled. Stream files will be generated after metadata has been fully fetched.'
+                            tooltip: __('Requires "Fetch metadata" to be enabled. Stream files will be generated after metadata has been fully fetched.')
                         )
                         ->default(false)
                         ->helperText(__('Generates .strm files for enabled series after metadata fetch completes. Requires "Fetch metadata" to be enabled.')),
@@ -2131,7 +2321,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Enable this to output your enabled series in the M3U file. It is recommended to enable the "Fetch metadata" option when enabled, otherwise you will need to manually fetch metadata for each series.'
+                            tooltip: __('Enable this to output your enabled series in the M3U file. It is recommended to enable the "Fetch metadata" option when enabled, otherwise you will need to manually fetch metadata for each series.')
                         )
                         ->default(false)
                         ->helperText(__('When enabled, series will be included in the M3U output. It is recommended to enable the "Fetch metadata" option when enabled.')),
@@ -2149,7 +2339,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Enable this to automatically fetch metadata for enabled VOD channels. When accessing via the Xtream API, metadata will be automatically fetched.'
+                            tooltip: __('Enable this to automatically fetch metadata for enabled VOD channels. When accessing via the Xtream API, metadata will be automatically fetched.')
                         )
                         ->default(false)
                         ->helperText(__('This will only fetch metadata for enabled VOD channels.')),
@@ -2158,7 +2348,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Enable this to automatically sync stream files for enabled VOD channels.'
+                            tooltip: __('Enable this to automatically sync stream files for enabled VOD channels.')
                         )
                         ->default(false)
                         ->helperText(__('This will only sync stream files for enabled VOD channels.')),
@@ -2167,7 +2357,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Enable this to output your enabled VOD channels in the M3U file.'
+                            tooltip: __('Enable this to output your enabled VOD channels in the M3U file.')
                         )
                         ->default(false)
                         ->helperText(__('When enabled, VOD channels will be included in the M3U output.')),
@@ -2229,7 +2419,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->placeholder('/^BBC\\s*One$/i')
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'Each pattern matches channels by title or name, grouping them as master + failovers. The highest-scoring match becomes the master. Use PHP regex syntax, e.g. /^CCTV[-]?1$/i'
+                                    tooltip: __('Each pattern matches channels by title or name, grouping them as master + failovers. The highest-scoring match becomes the master. Use PHP regex syntax, e.g. /^CCTV[-]?1$/i')
                                 )
                                 ->helperText(__('Regex patterns for failover grouping. Useful when the same channel has different names within and across providers.'))
                                 ->splitKeys(['Tab', 'Return']),
@@ -2248,7 +2438,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->default(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: '⚠️ IPTV WARNING: This will analyze each stream to determine resolution, which may cause rate limiting or blocking with IPTV providers.'
+                                    tooltip: __('⚠️ IPTV WARNING: This will analyze each stream to determine resolution, which may cause rate limiting or blocking with IPTV providers.')
                                 )
                                 ->helperText(__('When enabled, channels with higher resolution will be prioritized as master.')),
                             Toggle::make('auto_merge_config.force_complete_remerge')
@@ -2257,7 +2447,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->default(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: 'This will re-evaluate ALL existing failover relationships on each sync.'
+                                    tooltip: __('This will re-evaluate ALL existing failover relationships on each sync.')
                                 )
                                 ->helperText(__('When enabled, all channels will be re-evaluated during merge, including existing failover relationships.')),
                             Toggle::make('auto_merge_config.new_channels_only')
@@ -2265,7 +2455,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->inline(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: 'When enabled, only newly synced channels will be merged. Disable to re-process all channels on each sync.'
+                                    tooltip: __('When enabled, only newly synced channels will be merged. Disable to re-process all channels on each sync.')
                                 )
                                 ->default(true),
                             Toggle::make('auto_merge_deactivate_failover')
@@ -2273,7 +2463,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->inline(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: 'When enabled, channels that become failovers will be automatically disabled.'
+                                    tooltip: __('When enabled, channels that become failovers will be automatically disabled.')
                                 )
                                 ->default(false),
                             Toggle::make('auto_merge_config.prefer_catchup_as_primary')
@@ -2281,7 +2471,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->inline(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: 'When enabled, channels with catch-up enabled will be selected as the master when available.'
+                                    tooltip: __('When enabled, channels with catch-up enabled will be selected as the master when available.')
                                 )
                                 ->default(false),
                             Toggle::make('auto_merge_config.exclude_disabled_groups')
@@ -2289,7 +2479,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->inline(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: 'Channels from disabled groups will never be selected as master, only as failovers.'
+                                    tooltip: __('Channels from disabled groups will never be selected as master, only as failovers.')
                                 )
                                 ->default(false),
                             Toggle::make('auto_merge_config.scrubber_aware_master_selection')
@@ -2297,7 +2487,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->inline(false)
                                 ->hintIcon(
                                     'heroicon-m-exclamation-triangle',
-                                    tooltip: 'When enabled, channels confirmed dead by the scrubber are excluded from master selection. Leave disabled to allow all channels to be eligible as master (default behavior).'
+                                    tooltip: __('When enabled, channels confirmed dead by the scrubber are excluded from master selection. Leave disabled to allow all channels to be eligible as master (default behavior).')
                                 )
                                 ->helperText(__('When enabled, channels confirmed dead by the scrubber are excluded from master selection.'))
                                 ->default(false),
@@ -2781,7 +2971,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->live()
                                 ->native(false)
                                 ->required()
-                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: '"New Groups Only" automatically syncs any group flagged as new (first import or re-added) into the Custom Playlist, without needing to select them manually.')
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('"New Groups Only" automatically syncs any group flagged as new (first import or re-added) into the Custom Playlist, without needing to select them manually.'))
                                 ->visible(fn (Get $get): bool => $get('type') !== 'series_categories')
                                 ->afterStateUpdated(fn (Set $set) => $set('groups', []))
                                 ->columnSpan(2),
@@ -2847,7 +3037,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ])
                                 ->default('full_sync')
                                 ->required()
-                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: '"Sync" adds new channels and removes channels no longer in the source group. "Add only" never removes channels from the Custom Playlist.')
+                                ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('"Sync" adds new channels and removes channels no longer in the source group. "Add only" never removes channels from the Custom Playlist.'))
                                 ->columnSpan(4),
                             Select::make('mode')
                                 ->label(__('Group Assignment'))
@@ -2942,7 +3132,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->columnSpan(1)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'You will need to re-sync your playlist, or wait for the next scheduled sync, if changing this. This will overwrite any existing channel sort order customization for this playlist.'
+                            tooltip: __('You will need to re-sync your playlist, or wait for the next scheduled sync, if changing this. This will overwrite any existing channel sort order customization for this playlist.')
                         )
                         ->inline(false)
                         ->default(true)
@@ -2952,7 +3142,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->columnSpan(1)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'You will need to re-sync your playlist, or wait for the next scheduled sync, if changing this. This will overwrite any existing group sort order customization for this playlist.'
+                            tooltip: __('You will need to re-sync your playlist, or wait for the next scheduled sync, if changing this. This will overwrite any existing group sort order customization for this playlist.')
                         )
                         ->inline(false)
                         ->default(true)
@@ -2967,7 +3157,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->default(false)
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'When enabled, catch-up attributes will be stripped from M3U output and Xtream API responses (tv_archive, tv_archive_duration, has_archive).'
+                                    tooltip: __('When enabled, catch-up attributes will be stripped from M3U output and Xtream API responses (tv_archive, tv_archive_duration, has_archive).')
                                 )
                                 ->helperText(__('Strip all catch-up related attributes from the playlist output and Xtream API. Useful when your provider\'s catch-up doesn\'t work or is unreliable.')),
                             Toggle::make('disable_m3u_xtream_format')
@@ -2976,7 +3166,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->default(false)
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'When enabled, the provider\'s original stream URL will be used directly in M3U output instead of the internal Xtream-format URL.'
+                                    tooltip: __('When enabled, the provider\'s original stream URL will be used directly in M3U output instead of the internal Xtream-format URL.')
                                 )
                                 ->afterStateHydrated(function (Toggle $component) {
                                     if (config('app.disable_m3u_xtream_format', false)) {
@@ -2992,7 +3182,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->default(false)
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'This can be used by clients to better categorize channels.'
+                                    tooltip: __('This can be used by clients to better categorize channels.')
                                 )
                                 ->helperText(__('When enabled, a <tvg-type> tag will be included in the M3U output based on the channel type (live, vod, series).')),
 
@@ -3013,7 +3203,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->hidden(fn (Get $get): bool => ! $get('auto_channel_increment'))
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'When enabled, the incrementing channel number always replaces the number provided by the source feed, instead of only filling in missing numbers.'
+                            tooltip: __('When enabled, the incrementing channel number always replaces the number provided by the source feed, instead of only filling in missing numbers.')
                         )
                         ->helperText(__('Always assign an incrementing channel number, overriding any number provided by the source.')),
                     TextInput::make('channel_start')
@@ -3059,7 +3249,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->columnSpan(1)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Enter 0 to use to use provider defined value. This value is also used when generating the Xtream API user info response.'
+                            tooltip: __('Enter 0 to use to use provider defined value. This value is also used when generating the Xtream API user info response.')
                         )
                         ->rules(['min:0'])
                         ->type('number')
@@ -3161,7 +3351,7 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->nullable()
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'Time seeking is not supported when transcoding VOD or Series streams. This is a limitation of live-transcoding. Leave empty to allow time seeking.'
+                                    tooltip: __('Time seeking is not supported when transcoding VOD or Series streams. This is a limitation of live-transcoding. Leave empty to allow time seeking.')
                                 )
                                 ->helperText(__('Select a transcoding profile to apply to VOD and Series streams for external clients (VLC, Kodi, etc.). Does not affect the in-app player. Leave empty for direct stream proxying.'))
                                 ->placeholder(__('Leave empty for direct stream proxying')),
@@ -3297,7 +3487,7 @@ class PlaylistResource extends Resource implements CopilotResource
                 })
                 ->hintIcon(
                     'heroicon-m-question-mark-circle',
-                    tooltip: 'Only unassigned auths are available. Each auth can only be assigned to one playlist at a time. You will also be able to access the Xtream API using any assigned auths.'
+                    tooltip: __('Only unassigned auths are available. Each auth can only be assigned to one playlist at a time. You will also be able to access the Xtream API using any assigned auths.')
                 )
                 ->helperText(__('Simple authentication for playlist access.'))
                 ->afterStateUpdated(function ($state, $record) {
@@ -3339,6 +3529,85 @@ class PlaylistResource extends Resource implements CopilotResource
 
         // Return sections and fields
         return $sections;
+    }
+
+    /**
+     * Build the view data for the dynamic-group rule preview modal.
+     *
+     * Uses the same TMDB collection (TmdbService::collectDynamicGroupResults)
+     * and item matching (DynamicGroup::itemsMatchingTmdbIds) as the
+     * SyncDynamicGroups job, so the preview always shows exactly what a sync
+     * would attach.
+     *
+     * @param  array<string, mixed>  $rule  Raw (unvalidated) repeater item state
+     * @return array{error: ?string, type: string, tmdbTotal: int, matched: array<int, string>, matchedTotal: int, unmatched: array<int, array<string, mixed>>, unmatchedTotal: int}
+     */
+    public static function getDynamicGroupPreviewData(array $rule, ?Playlist $record): array
+    {
+        $type = (string) ($rule['type'] ?? '');
+        $source = (string) ($rule['source'] ?? '');
+
+        $base = [
+            'error' => null,
+            'type' => $type,
+            'tmdbTotal' => 0,
+            'matched' => [],
+            'matchedTotal' => 0,
+            'unmatched' => [],
+            'unmatchedTotal' => 0,
+        ];
+
+        if (! $record) {
+            return ['error' => __('Save the playlist before previewing dynamic groups.')] + $base;
+        }
+
+        if (! in_array($type, ['vod', 'series'], true) || $source === '') {
+            return ['error' => __('Select a content type and source first.')] + $base;
+        }
+
+        $tmdb = app(TmdbService::class);
+        if (! $tmdb->isConfigured()) {
+            return ['error' => __('TMDB is not configured. Add your TMDB API key in Settings → TMDB Integration.')] + $base;
+        }
+
+        $results = $tmdb->collectDynamicGroupResults($type, $source, (array) ($rule['tmdb_params'] ?? []));
+        if ($results === []) {
+            return ['error' => __('TMDB returned no titles for this rule. Check the rule parameters, or try again later.')] + $base;
+        }
+
+        $tmdbIds = array_map(
+            fn (array $item): string => (string) ($item['tmdb_id'] ?? 0),
+            $results,
+        );
+
+        // cursor() keeps memory flat; the TMDB id set bounds the row count
+        // (a few hundred at most) regardless.
+        $matched = [];
+        $matchedTmdbIds = [];
+        $itemsQuery = DynamicGroup::itemsMatchingTmdbIds($type, $record->id, $tmdbIds)
+            ->select($type === 'vod' ? ['id', 'name', 'name_custom', 'tmdb_id'] : ['id', 'name', 'tmdb_id']);
+        foreach ($itemsQuery->cursor() as $item) {
+            $matchedTmdbIds[(string) $item->tmdb_id] = true;
+            $matched[] = $type === 'vod'
+                ? ($item->name_custom ?? $item->name)
+                : $item->name;
+        }
+        sort($matched, SORT_NATURAL | SORT_FLAG_CASE);
+
+        $unmatched = array_values(array_filter(
+            $results,
+            fn (array $item): bool => ! isset($matchedTmdbIds[(string) ($item['tmdb_id'] ?? 0)]),
+        ));
+
+        return [
+            'error' => null,
+            'type' => $type,
+            'tmdbTotal' => count($results),
+            'matched' => array_slice($matched, 0, 50),
+            'matchedTotal' => count($matched),
+            'unmatched' => array_slice($unmatched, 0, 50),
+            'unmatchedTotal' => count($unmatched),
+        ];
     }
 
     public static function getForm(): array
@@ -3739,7 +4008,7 @@ class PlaylistResource extends Resource implements CopilotResource
                             ])
                             ->hintIcon(
                                 'heroicon-s-information-circle',
-                                tooltip: 'Select the channel attributes to match channels between the source and target playlists. Channels will be matched based on these attributes. If multiple attributes are selected, all must match for a channel to be considered the same.',
+                                tooltip: __('Select the channel attributes to match channels between the source and target playlists. Channels will be matched based on these attributes. If multiple attributes are selected, all must match for a channel to be considered the same.'),
                             )
                             ->multiple()
                             ->required()
@@ -3750,7 +4019,7 @@ class PlaylistResource extends Resource implements CopilotResource
                             ->live()
                             ->hintIcon(
                                 'heroicon-s-information-circle',
-                                tooltip: 'If enabled, missing channels will be created in the target playlist. If disabled, only existing matched channels will be updated.',
+                                tooltip: __('If enabled, missing channels will be created in the target playlist. If disabled, only existing matched channels will be updated.'),
                             )
                             ->default(false),
                         Toggle::make('all_attributes')
@@ -3758,7 +4027,7 @@ class PlaylistResource extends Resource implements CopilotResource
                             ->live()
                             ->hintIcon(
                                 'heroicon-s-information-circle',
-                                tooltip: 'If enabled, all channel attributes will be copied to the target playlist. If disabled, only the selected attributes below will be copied.',
+                                tooltip: __('If enabled, all channel attributes will be copied to the target playlist. If disabled, only the selected attributes below will be copied.'),
                             )
                             ->default(true),
                         Select::make('channel_attributes')
@@ -3783,7 +4052,7 @@ class PlaylistResource extends Resource implements CopilotResource
                             ->label(__('Overwrite Existing Attributes'))
                             ->hintIcon(
                                 'heroicon-s-information-circle',
-                                tooltip: 'If enabled, existing custom attributes in the target playlist will be overwritten. If disabled, only empty custom attributes will be updated.',
+                                tooltip: __('If enabled, existing custom attributes in the target playlist will be overwritten. If disabled, only empty custom attributes will be updated.'),
                             )
                             ->default(true),
                     ])

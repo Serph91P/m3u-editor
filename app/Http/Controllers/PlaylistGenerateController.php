@@ -786,8 +786,12 @@ class PlaylistGenerateController extends Controller
                 );
             }
 
-            // Standard ordering for non-custom playlists (merged groups rank by the parent)
+            // Standard ordering for non-custom playlists (merged groups rank by the parent,
+            // then by each child group's own sort_order so the order set on the merged
+            // group's child list drives channel output order). For an unmerged group the
+            // second key just repeats the first, so ordering is unchanged.
             $query->orderByRaw('COALESCE(parent_groups.sort_order, groups.sort_order)')
+                ->orderBy('groups.sort_order')
                 ->orderBy('channels.sort')
                 ->orderBy('channels.channel')
                 ->orderBy('channels.title');

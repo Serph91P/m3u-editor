@@ -92,6 +92,33 @@ it('emits the merged group name as group-title in M3U output', function () {
         ->and($content)->not->toContain('group-title="Norway"');
 });
 
+it('orders folded channels by each child group sort_order within the merged group', function () {
+    ['denmark' => $denmark, 'norway' => $norway] = makeNordicsMerge($this->user, $this->playlist);
+
+    // Child list order is defined on the merged group: put Norway ahead of Denmark.
+    $norway->update(['sort_order' => 5]);
+    $denmark->update(['sort_order' => 10]);
+
+    $content = $this->get(route('playlist.generate', [
+        'uuid' => $this->playlist->uuid,
+        'username' => $this->username,
+        'password' => $this->password,
+    ]))->assertSuccessful()->streamedContent();
+
+    expect(strpos($content, 'NRK1'))->toBeLessThan(strpos($content, 'DR1'));
+
+    // Reversing the child order reverses the channel output order.
+    $denmark->update(['sort_order' => 1]);
+
+    $content = $this->get(route('playlist.generate', [
+        'uuid' => $this->playlist->uuid,
+        'username' => $this->username,
+        'password' => $this->password,
+    ]))->assertSuccessful()->streamedContent();
+
+    expect(strpos($content, 'DR1'))->toBeLessThan(strpos($content, 'NRK1'));
+});
+
 it('lists a merged group once and hides its children in get_live_categories', function () {
     ['merged' => $merged] = makeNordicsMerge($this->user, $this->playlist);
 

@@ -165,6 +165,50 @@ it('renders the child-groups relation manager for a merged group with the shared
         ->and($headerAction->isVisible())->toBeTrue();
 });
 
+it('detaches a child group through the relation manager row action', function () {
+    $merged = liveGroup($this->user, $this->playlist, ['name' => 'Nordics', 'name_internal' => 'Nordics', 'custom' => true, 'is_merged' => true]);
+    $denmark = liveGroup($this->user, $this->playlist, ['name' => 'Denmark', 'name_internal' => 'Denmark', 'parent_id' => $merged->id]);
+
+    Livewire::test(ChildGroupsRelationManager::class, [
+        'ownerRecord' => $merged,
+        'pageClass' => EditGroup::class,
+    ])
+        ->callAction(TestAction::make('dissociate')->table($denmark))
+        ->assertHasNoActionErrors();
+
+    expect($denmark->fresh()->parent_id)->toBeNull();
+});
+
+it('detaches child groups in bulk through the relation manager', function () {
+    $merged = liveGroup($this->user, $this->playlist, ['name' => 'Nordics', 'name_internal' => 'Nordics', 'custom' => true, 'is_merged' => true]);
+    $denmark = liveGroup($this->user, $this->playlist, ['name' => 'Denmark', 'name_internal' => 'Denmark', 'parent_id' => $merged->id]);
+    $norway = liveGroup($this->user, $this->playlist, ['name' => 'Norway', 'name_internal' => 'Norway', 'parent_id' => $merged->id]);
+
+    Livewire::test(ChildGroupsRelationManager::class, [
+        'ownerRecord' => $merged,
+        'pageClass' => EditGroup::class,
+    ])
+        ->callTableBulkAction('dissociate', [$denmark, $norway])
+        ->assertHasNoTableBulkActionErrors();
+
+    expect($denmark->fresh()->parent_id)->toBeNull()
+        ->and($norway->fresh()->parent_id)->toBeNull();
+});
+
+it('reorders child groups within a merged group, writing sort_order', function () {
+    $merged = liveGroup($this->user, $this->playlist, ['name' => 'Nordics', 'name_internal' => 'Nordics', 'custom' => true, 'is_merged' => true]);
+    $denmark = liveGroup($this->user, $this->playlist, ['name' => 'Denmark', 'name_internal' => 'Denmark', 'parent_id' => $merged->id, 'sort_order' => 1]);
+    $norway = liveGroup($this->user, $this->playlist, ['name' => 'Norway', 'name_internal' => 'Norway', 'parent_id' => $merged->id, 'sort_order' => 2]);
+
+    Livewire::test(ChildGroupsRelationManager::class, [
+        'ownerRecord' => $merged,
+        'pageClass' => EditGroup::class,
+    ])
+        ->call('reorderTable', [$norway->id, $denmark->id]);
+
+    expect($norway->fresh()->sort_order)->toBeLessThan($denmark->fresh()->sort_order);
+});
+
 it('creates a merged category via the list header action', function () {
     Livewire::test(ListCategories::class)
         ->callAction('createMerged', [
