@@ -200,6 +200,41 @@ it('starts the canonical cooldown for a string only too many logins response', f
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
 });
 
+it('does not persist a successful token over a canonical cooldown created during the provider response', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    $startedAt = now()->subMinutes(5);
+    $cooldownUntil = now()->addHours(8);
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => function () use ($providerIdentifier, $startedAt, $cooldownUntil) {
+            DB::table('schedules_direct_login_cooldowns')->insert([
+                'account_identifier' => $providerIdentifier,
+                'started_at' => $startedAt,
+                'cooldown_until' => $cooldownUntil,
+                'notified_at' => null,
+            ]);
+
+            return Http::response(
+                schedulesDirectTokenPayload('must-not-persist', now()->addHours(23)->timestamp),
+            );
+        },
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
+        ->toThrow(SchedulesDirectLoginCooldownException::class);
+
+    $canonicalCooldown = DB::table('schedules_direct_login_cooldowns')
+        ->where('account_identifier', $providerIdentifier)
+        ->sole();
+
+    expect($epg->fresh()->sd_token)->toBeNull()
+        ->and(Carbon::parse($canonicalCooldown->started_at)->equalTo($startedAt))->toBeTrue()
+        ->and(Carbon::parse($canonicalCooldown->cooldown_until)->equalTo($cooldownUntil))->toBeTrue()
+        ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+});
+
 it('does not reuse or mutate arbitrary EPG rows during unauthenticated bare authentication', function () {
     $epg = makeSchedulesDirectEpgForLoginLimitTests([
         'sd_token' => 'another-users-token',
@@ -1095,6 +1130,46 @@ it('fails closed before provider login when the PostgreSQL advisory lock session
     Http::assertNothingSent();
 });
 
+it('does not persist authentication after the PostgreSQL advisory lock session reconnects', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL-only advisory lock persistence assertion.');
+    }
+
+    $providerResponded = false;
+    $advisorySessionDisconnected = false;
+    $handoffKey = 'schedules-direct:authentication-handoff:'.Epg::schedulesDirectAccountIdentifier(
+        0,
+        'rowless@example.com',
+        'rowless-password',
+    );
+
+    DB::listen(function ($query) use (&$providerResponded, &$advisorySessionDisconnected): void {
+        if ($providerResponded
+            && ! $advisorySessionDisconnected
+            && str_contains($query->sql, 'FROM pg_locks')
+        ) {
+            $advisorySessionDisconnected = true;
+            DB::disconnect();
+        }
+    });
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => function () use (&$providerResponded) {
+            $providerResponded = true;
+
+            return Http::response(
+                schedulesDirectTokenPayload('must-not-persist', now()->addHours(23)->timestamp),
+            );
+        },
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->authenticate('rowless@example.com', 'rowless-password'))
+        ->toThrow(Exception::class, 'Schedules Direct authentication lock ownership was lost. Please try again shortly.');
+
+    expect($advisorySessionDisconnected)->toBeTrue()
+        ->and(Cache::has($handoffKey))->toBeFalse();
+    expect(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+});
+
 it('fails closed when the cache lease expires without a database advisory fence', function () {
     if (in_array(DB::connection()->getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
         $this->markTestSkipped('Requires a database driver without advisory lock support.');
@@ -1269,6 +1344,44 @@ it('does not repeat 4006 recovery more than once for a request', function () {
         ->toThrow(SchedulesDirectTokenExpiredException::class, 'Schedules Direct token remained expired after one recovery attempt.');
 
     expect(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/lineups')))->toHaveCount(2)
+        ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1)
+        ->and($epg->fresh()->sd_token)->toBeNull();
+});
+
+it('does not clear a newer token after a second 4006 response', function () {
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_token' => 'initial-rejected-token',
+        'sd_token_expires_at' => now()->addHour(),
+    ]);
+    $expires = now()->addHours(23)->timestamp;
+    $lineupRequestCount = 0;
+
+    Http::fake(function (Request $request) use ($epg, $expires, &$lineupRequestCount) {
+        if (str_ends_with($request->url(), '/token')) {
+            return Http::response(schedulesDirectTokenPayload('replay-rejected-token', $expires));
+        }
+
+        if (str_ends_with($request->url(), '/lineups')) {
+            $lineupRequestCount++;
+
+            if ($lineupRequestCount === 2) {
+                Epg::whereKey($epg->id)->update([
+                    'sd_token' => 'newer-concurrent-token',
+                    'sd_token_expires_at' => now()->addHours(23),
+                ]);
+            }
+
+            return Http::response(['code' => 4006, 'message' => 'TOKEN_EXPIRED'], 401);
+        }
+
+        return Http::response(['unexpected' => true], 500);
+    });
+
+    expect(fn () => (new SchedulesDirectService)->getAccountLineupsAsOptions($epg))
+        ->toThrow(SchedulesDirectTokenExpiredException::class, 'Schedules Direct token remained expired after one recovery attempt.');
+
+    expect($lineupRequestCount)->toBe(2)
+        ->and($epg->fresh()->sd_token)->toBe('newer-concurrent-token')
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
 });
 
