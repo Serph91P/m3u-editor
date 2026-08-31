@@ -21,6 +21,13 @@ class ChildCategoriesRelationManager extends RelationManager
 {
     protected static string $relationship = 'children';
 
+    /**
+     * A child category points back at its merged parent through `parent()`, not the
+     * `category()` name Filament would otherwise infer from the owner model. Without
+     * this the Detach row/bulk actions call an undefined method and fail.
+     */
+    protected static ?string $inverseRelationship = 'parent';
+
     protected static ?string $title = 'Merged Categories';
 
     protected $listeners = ['refreshRelation' => '$refresh'];
@@ -38,6 +45,7 @@ class ChildCategoriesRelationManager extends RelationManager
         return $table
             ->recordTitleAttribute('name')
             ->defaultSort('sort_order', 'asc')
+            ->reorderable('sort_order')
             ->columns([
                 TextColumn::make('name')
                     ->label(__('Name'))
@@ -65,11 +73,19 @@ class ChildCategoriesRelationManager extends RelationManager
             ->recordActions([
                 DissociateAction::make()
                     ->label(__('Detach'))
+                    ->modalHeading(fn (Category $record): string => __('Detach :name', [
+                        'name' => filled($record->name) ? $record->name : (string) $record->name_internal,
+                    ]))
+                    ->modalSubmitActionLabel(__('Detach'))
+                    ->successNotificationTitle(__('Category detached'))
                     ->button()->size('sm')->hiddenLabel(),
             ], position: RecordActionsPosition::BeforeCells)
             ->toolbarActions([
                 DissociateBulkAction::make()
-                    ->label(__('Detach selected')),
+                    ->label(__('Detach selected'))
+                    ->modalHeading(__('Detach selected categories'))
+                    ->modalSubmitActionLabel(__('Detach'))
+                    ->successNotificationTitle(__('Categories detached')),
             ]);
     }
 }
