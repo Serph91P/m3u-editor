@@ -327,7 +327,7 @@ it('restores legacy root and completion payloads without concurrent processing',
         ->and(ProcessEpgImport::dispatchIfAvailable($epg, force: true))->toBeTrue();
 });
 
-it('ignores a stale legacy completion after a newer import finished', function () {
+it('ignores stale legacy queue payloads after a newer import finished', function () {
     Queue::fake();
     Notification::fake();
     Event::fake();
@@ -339,8 +339,25 @@ it('ignores a stale legacy completion after a newer import finished', function (
     $channel = EpgChannel::factory()->create([
         'epg_id' => $epg->id,
         'user_id' => $epg->user_id,
+        'name' => 'newer-name',
+        'source_id' => 'stale-source',
         'import_batch_no' => 'newer-batch',
     ]);
+    $payload = $channel->getAttributes();
+    unset($payload['id'], $payload['created_at'], $payload['updated_at']);
+    $payload['name'] = 'stale-name';
+    $payload['import_batch_no'] = 'old-batch';
+    $job = Job::create([
+        'title' => 'Stale legacy chunk',
+        'batch_no' => 'old-batch',
+        'payload' => [$payload],
+        'variables' => ['epgId' => $epg->id],
+    ]);
+    $staleChunk = unserialize(serializeLegacyEpgJobAs(
+        new LegacyProcessEpgImportChunkPayload([$job->id], 1),
+        ProcessEpgImportChunk::class,
+    ));
+    $staleChunk->handle();
     $staleCompletion = unserialize(serializeLegacyEpgJobAs(
         new LegacyProcessEpgImportCompletePayload($epg->user_id, $epg->id, 'old-batch', now()),
         ProcessEpgImportComplete::class,
@@ -348,6 +365,7 @@ it('ignores a stale legacy completion after a newer import finished', function (
     $staleCompletion->handle();
 
     expect($channel->fresh())->not->toBeNull()
+        ->and($channel->fresh()->name)->toBe('newer-name')
         ->and($epg->fresh()->errors)->toBe('newer-state')
         ->and(ProcessEpgImport::dispatchIfAvailable($epg, force: true))->toBeTrue();
     Queue::pushed(ProcessEpgImport::class)->last()->failed(new RuntimeException('test cleanup'));

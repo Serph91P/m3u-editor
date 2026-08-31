@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\Status;
 use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\Job;
@@ -39,7 +40,9 @@ class ProcessEpgImportChunk implements ShouldQueue
      */
     public function handle(): void
     {
-        $this->restoreLegacyReservation();
+        if (! $this->restoreLegacyReservation()) {
+            return;
+        }
 
         if ($this->epgId === null
             || ! is_string($this->reservationOwner)
@@ -93,10 +96,10 @@ class ProcessEpgImportChunk implements ShouldQueue
         }
     }
 
-    private function restoreLegacyReservation(): void
+    private function restoreLegacyReservation(): bool
     {
         if ($this->epgId !== null || $this->reservationOwner !== null) {
-            return;
+            return true;
         }
 
         $jobs = Job::query()->whereIn('id', $this->jobs)->get(['batch_no', 'variables']);
@@ -117,13 +120,30 @@ class ProcessEpgImportChunk implements ShouldQueue
         }
 
         $this->epgId = $epgIds->sole();
+        $batchNo = $batchNumbers->sole();
         $this->reservationOwner = ProcessEpgImport::acquireCompatibilityReservation(
             $this->epgId,
-            $batchNumbers->sole(),
+            $batchNo,
         );
 
         if (! is_string($this->reservationOwner)) {
             throw new \RuntimeException('Legacy EPG import chunk reservation could not be acquired.');
         }
+
+        $activeImport = Epg::query()
+            ->whereKey($this->epgId)
+            ->where('status', Status::Processing->value)
+            ->where('processing', true)
+            ->where('processing_phase', 'import')
+            ->exists();
+
+        if (! $activeImport) {
+            ProcessEpgImport::forgetCompatibilityReservation($this->epgId, $batchNo);
+            ProcessEpgImport::releaseReservation($this->epgId, $this->reservationOwner);
+
+            return false;
+        }
+
+        return true;
     }
 }
