@@ -27,6 +27,7 @@ class ProcessEpgImportComplete implements ShouldQueue
         public int $epgId,
         public string $batchNo,
         public Carbon $start,
+        public string $reservationOwner,
     ) {
         //
     }
@@ -35,6 +36,21 @@ class ProcessEpgImportComplete implements ShouldQueue
      * Execute the job.
      */
     public function handle(): void
+    {
+        if (! ProcessEpgImport::ownsReservation($this->epgId, $this->reservationOwner)) {
+            return;
+        }
+
+        $this->handleReservedCompletion();
+
+        if (! $this->reservationTransferred) {
+            ProcessEpgImport::releaseReservation($this->epgId, $this->reservationOwner);
+        }
+    }
+
+    private bool $reservationTransferred = false;
+
+    private function handleReservedCompletion(): void
     {
         // Calculate the time taken to complete the import
         $completedIn = $this->start->diffInSeconds(now());
@@ -78,6 +94,16 @@ class ProcessEpgImportComplete implements ShouldQueue
                 ->body("Channel count is 0. Retry {$newAttempt} of {$epg->auto_resync_retries} scheduled for \"{$epg->name}\" (delay: {$delaySeconds}s).")
                 ->sendToDatabase($epg->user);
 
+            if (! ProcessEpgImport::dispatchContinuation(
+                $epg,
+                $this->reservationOwner,
+                force: true,
+                delay: now()->addSeconds($delaySeconds),
+            )) {
+                throw new \RuntimeException('EPG import retry reservation ownership was lost.');
+            }
+            $this->reservationTransferred = true;
+
             $epg->update([
                 'status' => Status::Pending,
                 'progress' => 0,
@@ -85,8 +111,6 @@ class ProcessEpgImportComplete implements ShouldQueue
                 'errors' => 'Channel count is 0 after sync, retrying...',
                 'resync_attempt' => $newAttempt,
             ]);
-
-            dispatch(new ProcessEpgImport($epg, force: true))->delay(now()->addSeconds($delaySeconds));
 
             return;
         }

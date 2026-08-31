@@ -45,7 +45,7 @@ class RefreshEpg extends Command
                 return;
             }
 
-            dispatch(new ProcessEpgImport($epg, (bool) $force));
+            ProcessEpgImport::dispatchIfAvailable($epg, (bool) $force);
             $this->info('Dispatched EPG for refresh');
         } else {
             $this->info('Refreshing all EPGs');
@@ -143,8 +143,9 @@ class RefreshEpg extends Command
                     $nextDue = $cronExpression->getNextRunDate($lastRun->toDateTimeImmutable());
 
                     if (now() >= $nextDue) {
-                        $count++;
-                        dispatch(new ProcessEpgImport($epg, $force));
+                        if (ProcessEpgImport::dispatchIfAvailable($epg, $force)) {
+                            $count++;
+                        }
                     }
                 });
             });

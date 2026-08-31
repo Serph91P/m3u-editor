@@ -34,7 +34,7 @@ class EpgController extends Controller
 
         // Refresh the EPG
         // Refresh the playlist
-        dispatch(new ProcessEpgImport($epg, $request->force ?? true));
+        ProcessEpgImport::dispatchIfAvailable($epg, $request->force ?? true);
 
         return response()->json([
             'message' => "EPG \"{$epg->name}\" is currently being synced...",

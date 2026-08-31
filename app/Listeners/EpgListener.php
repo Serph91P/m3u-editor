@@ -31,7 +31,7 @@ class EpgListener
             return;
         }
 
-        dispatch(new ProcessEpgImport($event->epg));
+        ProcessEpgImport::dispatchIfAvailable($event->epg);
         $event->epg->postProcesses()->where([
             ['event', 'created'],
             ['enabled', true],

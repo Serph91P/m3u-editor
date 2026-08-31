@@ -12,7 +12,10 @@ use App\Models\User;
 use App\Services\SchedulesDirectService;
 use Carbon\Carbon;
 use Filament\Notifications\DatabaseNotification;
-use Illuminate\Bus\UniqueLock;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\NullStore;
+use Illuminate\Cache\RedisStore;
+use Illuminate\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\QueryException;
@@ -21,6 +24,8 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Notifications\Events\NotificationSent;
+use Illuminate\Redis\Events\CommandExecuted;
+use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -328,6 +333,7 @@ it('retries EPG authentication with refreshed credentials under the same provide
     $epg = makeSchedulesDirectEpgForLoginLimitTests();
     $expires = now()->addHours(23)->timestamp;
     $lockKeys = [];
+    $handoffStore = Cache::store('array')->getStore();
     $firstLock = Mockery::mock(Lock::class);
     $firstLock->shouldReceive('block')
         ->once()
@@ -352,6 +358,7 @@ it('retries EPG authentication with refreshed credentials under the same provide
             return count($lockKeys) === 1 ? $firstLock : $secondLock;
         });
     Cache::shouldReceive('get')->zeroOrMoreTimes()->andReturnNull();
+    Cache::shouldReceive('getStore')->zeroOrMoreTimes()->andReturn($handoffStore);
     Http::fake([
         'json.schedulesdirect.org/20141201/token' => Http::response(schedulesDirectTokenPayload('replacement-token', $expires)),
     ]);
@@ -856,6 +863,7 @@ it('uses a bounded lock whose key contains no account secrets', function () {
     ]);
     $expires = now()->addHours(23)->timestamp;
     $capturedLockKey = null;
+    $handoffStore = Cache::store('array')->getStore();
     $lock = Mockery::mock(Lock::class);
     $lock->shouldReceive('block')
         ->once()
@@ -872,6 +880,7 @@ it('uses a bounded lock whose key contains no account secrets', function () {
         })
         ->andReturn($lock);
     Cache::shouldReceive('get')->zeroOrMoreTimes()->andReturnNull();
+    Cache::shouldReceive('getStore')->zeroOrMoreTimes()->andReturn($handoffStore);
 
     Http::fake([
         'json.schedulesdirect.org/20141201/token' => Http::response(schedulesDirectTokenPayload('secret-token', $expires)),
@@ -1043,6 +1052,7 @@ it('persists successful authentication after the cache lease expires while the P
     $expires = now()->addHours(23)->timestamp;
     $cacheLeaseExpired = false;
     $advisoryFenceWasActive = false;
+    $handoffStore = Cache::store('array')->getStore();
     $lock = Mockery::mock(Lock::class);
     $lock->shouldReceive('block')
         ->once()
@@ -1059,6 +1069,7 @@ it('persists successful authentication after the cache lease expires while the P
         ->with(Mockery::on(fn (string $key): bool => str_starts_with($key, 'schedules-direct:authentication:')), 180)
         ->andReturn($lock);
     Cache::shouldReceive('get')->zeroOrMoreTimes()->andReturnNull();
+    Cache::shouldReceive('getStore')->zeroOrMoreTimes()->andReturn($handoffStore);
 
     config()->set('database.connections.pg_advisory_probe', config('database.connections.'.config('database.default')));
     DB::purge('pg_advisory_probe');
@@ -1219,6 +1230,74 @@ it('does not commit EPG token state after the PostgreSQL advisory lock session r
     }
 });
 
+it('does not overwrite newer token and cooldown state when reusable token persistence reconnects', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL-only reusable token persistence assertion.');
+    }
+
+    DB::rollBack();
+    $owner = User::factory()->create();
+    $sourceEpg = makeSchedulesDirectEpgForLoginLimitTests([
+        'user_id' => $owner->id,
+        'sd_token' => 'stale-reusable-token',
+        'sd_token_expires_at' => now()->addHour(),
+    ]);
+    $requestingEpg = makeSchedulesDirectEpgForLoginLimitTests([
+        'user_id' => $owner->id,
+    ]);
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($requestingEpg->sd_username);
+    $interleaved = false;
+    config()->set('database.connections.pg_reusable_interleaving', config('database.connections.'.config('database.default')));
+    DB::purge('pg_reusable_interleaving');
+
+    DB::connection()->beforeExecuting(function (string $query, array $bindings) use (
+        &$interleaved,
+        $providerIdentifier,
+        $requestingEpg,
+    ): void {
+        if ($interleaved
+            || ! str_starts_with(strtolower($query), 'update')
+            || ! str_contains(strtolower($query), 'epgs')
+            || ! in_array('stale-reusable-token', $bindings, true)
+        ) {
+            return;
+        }
+
+        $interleaved = true;
+        DB::connection('pg_reusable_interleaving')->table('epgs')
+            ->where('id', $requestingEpg->id)
+            ->update([
+                'sd_token' => 'newer-token',
+                'sd_token_expires_at' => now()->addHours(2),
+            ]);
+        DB::connection('pg_reusable_interleaving')->table('schedules_direct_login_cooldowns')->insert([
+            'account_identifier' => $providerIdentifier,
+            'started_at' => now(),
+            'cooldown_until' => now()->addDay(),
+            'notified_at' => null,
+        ]);
+        DB::disconnect();
+    });
+
+    try {
+        expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($requestingEpg))
+            ->toThrow(Exception::class, 'Schedules Direct authentication lock ownership was lost. Please try again shortly.');
+
+        $persistedEpg = Epg::query()->findOrFail($requestingEpg->id);
+        expect($interleaved)->toBeTrue()
+            ->and($persistedEpg->sd_token)->toBe('newer-token')
+            ->and(DB::table('schedules_direct_login_cooldowns')->where('account_identifier', $providerIdentifier)->exists())->toBeTrue();
+        Http::assertNothingSent();
+    } finally {
+        DB::disconnect('pg_reusable_interleaving');
+        DB::table('schedules_direct_login_cooldown_claims')->where('provider_account_identifier', $providerIdentifier)->delete();
+        DB::table('schedules_direct_login_cooldowns')->where('account_identifier', $providerIdentifier)->delete();
+        Epg::query()->whereKey([$sourceEpg->id, $requestingEpg->id])->delete();
+        User::query()->whereKey($owner->id)->delete();
+        DB::beginTransaction();
+    }
+});
+
 it('does not commit cooldown state after the PostgreSQL advisory lock session reconnects during persistence', function () {
     if (DB::connection()->getDriverName() !== 'pgsql') {
         $this->markTestSkipped('PostgreSQL-only advisory lock persistence assertion.');
@@ -1275,6 +1354,7 @@ it('fails closed when the cache lease expires without a database advisory fence'
 
     $epg = makeSchedulesDirectEpgForLoginLimitTests();
     $cacheLeaseExpired = false;
+    $handoffStore = Cache::store('array')->getStore();
     $lock = Mockery::mock(Lock::class);
     $lock->shouldReceive('block')
         ->once()
@@ -1288,6 +1368,7 @@ it('fails closed when the cache lease expires without a database advisory fence'
 
     Cache::shouldReceive('lock')->once()->andReturn($lock);
     Cache::shouldReceive('get')->zeroOrMoreTimes()->andReturnNull();
+    Cache::shouldReceive('getStore')->zeroOrMoreTimes()->andReturn($handoffStore);
     Http::fake([
         'json.schedulesdirect.org/20141201/token' => function () use (&$cacheLeaseExpired) {
             $cacheLeaseExpired = true;
@@ -2150,6 +2231,59 @@ it('does not send a generic process failure notification for a login cooldown', 
         ->and($epg->fresh()->status->value)->toBe('failed');
 });
 
+it('quietly restores import state when a cooldown appears before authentication', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    NotificationFacade::fake();
+    Event::fake([SyncCompleted::class]);
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'status' => Status::Pending,
+        'processing' => false,
+        'processing_started_at' => now()->subMinutes(10),
+        'processing_phase' => 'waiting',
+        'errors' => 'existing import error',
+        'progress' => 37,
+        'synced' => now()->subHour(),
+    ]);
+    DB::table('epgs')->where('id', $epg->id)->update(['updated_at' => now()->subMinutes(5)]);
+    $epg->refresh();
+    $importStateFields = [
+        'processing',
+        'status',
+        'processing_started_at',
+        'processing_phase',
+        'errors',
+        'progress',
+        'synced',
+        'updated_at',
+    ];
+    $initialImportState = collect($epg->getRawOriginal())->only($importStateFields)->all();
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    $cooldownInserted = false;
+
+    DB::listen(function ($query) use (&$cooldownInserted, $providerIdentifier): void {
+        if ($cooldownInserted || ! str_contains($query->sql, 'schedules_direct_login_cooldowns')) {
+            return;
+        }
+
+        $cooldownInserted = true;
+        DB::table('schedules_direct_login_cooldowns')->insert([
+            'account_identifier' => $providerIdentifier,
+            'started_at' => now(),
+            'cooldown_until' => now()->addDay(),
+            'notified_at' => null,
+        ]);
+    });
+
+    (new ProcessEpgImport($epg, force: true))->handle(new SchedulesDirectService);
+
+    expect($cooldownInserted)->toBeTrue()
+        ->and(collect($epg->fresh()->getRawOriginal())->only($importStateFields)->all())->toBe($initialImportState);
+    NotificationFacade::assertNothingSent();
+    Event::assertNotDispatched(SyncCompleted::class);
+    Http::assertNothingSent();
+    Bus::assertNotDispatched(ProcessEpgImport::class);
+});
+
 it('returns quietly when a canonical cooldown appears during import authentication', function () {
     NotificationFacade::fake();
     Event::fake([SyncCompleted::class]);
@@ -2159,24 +2293,48 @@ it('returns quietly when a canonical cooldown appears during import authenticati
         'processing_started_at' => null,
         'synced' => null,
         'errors' => null,
+        'sd_errors' => [[
+            'timestamp' => '2026-08-29T12:00:00.000000Z',
+            'message' => 'existing provider error',
+        ]],
+        'sd_last_sync' => now()->subDay(),
+        'sd_progress' => 42,
+        'sd_station_ids' => ['existing-station'],
     ]);
     DB::table('epgs')->where('id', $epg->id)->update(['updated_at' => now()->subMinute()]);
     $epg->refresh();
     $originalUpdatedAt = $epg->updated_at->copy();
+    $initialSchedulesDirectState = collect($epg->getRawOriginal())->only([
+        'sd_errors',
+        'sd_last_sync',
+        'sd_progress',
+        'sd_station_ids',
+    ])->all();
     $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
     $loggedMessages = [];
     Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$loggedMessages): void {
         $loggedMessages[] = $event->message;
     });
+    $cooldownInserted = false;
 
     Http::fake([
-        'json.schedulesdirect.org/20141201/token' => function () use ($providerIdentifier) {
-            DB::table('schedules_direct_login_cooldowns')->insert([
-                'account_identifier' => $providerIdentifier,
-                'started_at' => now(),
-                'cooldown_until' => now()->addDay(),
-                'notified_at' => null,
-            ]);
+        'json.schedulesdirect.org/20141201/token' => Http::response(
+            schedulesDirectTokenPayload('race-token', now()->addHour()->timestamp),
+        ),
+        'json.schedulesdirect.org/20141201/lineups/*' => function () use (&$cooldownInserted, $epg, $providerIdentifier) {
+            if (! $cooldownInserted) {
+                $cooldownInserted = true;
+                DB::table('schedules_direct_login_cooldowns')->insert([
+                    'account_identifier' => $providerIdentifier,
+                    'started_at' => now(),
+                    'cooldown_until' => now()->addDay(),
+                    'notified_at' => null,
+                ]);
+                DB::table('epgs')->where('id', $epg->id)->update([
+                    'sd_token' => null,
+                    'sd_token_expires_at' => null,
+                ]);
+            }
 
             return Http::response(['code' => 4999, 'message' => 'Authentication unavailable'], 503);
         },
@@ -2190,7 +2348,9 @@ it('returns quietly when a canonical cooldown appears during import authenticati
         ->and($epg->processing_started_at)->toBeNull()
         ->and($epg->synced)->toBeNull()
         ->and($epg->errors)->toBeNull()
-        ->and($epg->updated_at->equalTo($originalUpdatedAt))->toBeTrue();
+        ->and($epg->updated_at->equalTo($originalUpdatedAt))->toBeTrue()
+        ->and(collect($epg->getRawOriginal())->only(array_keys($initialSchedulesDirectState))->all())
+        ->toBe($initialSchedulesDirectState);
     $notificationTitles = NotificationFacade::sent($epg->user, DatabaseNotification::class)
         ->pluck('data.title');
     expect($notificationTitles->contains(fn (string $title): bool => str_starts_with($title, 'Error processing')))->toBeFalse();
@@ -2375,6 +2535,7 @@ it('propagates a program recovery cooldown through a full sync without success o
 
 it('prevents an overlapping authentication from acquiring a second token inside the lease', function () {
     $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $handoffStore = Cache::store('array')->getStore();
     $outerLock = Mockery::mock(Lock::class);
     $outerLock->shouldReceive('block')
         ->once()
@@ -2392,6 +2553,7 @@ it('prevents an overlapping authentication from acquiring a second token inside 
         ->with(Mockery::on(fn (string $key): bool => str_starts_with($key, 'schedules-direct:authentication:')), 180)
         ->andReturn($outerLock, $overlappingLock);
     Cache::shouldReceive('get')->zeroOrMoreTimes()->andReturnNull();
+    Cache::shouldReceive('getStore')->zeroOrMoreTimes()->andReturn($handoffStore);
 
     $overlapFailure = null;
     Http::fake(function (Request $request) use ($epg, &$overlapFailure) {
@@ -2564,9 +2726,9 @@ it('does not suppress scheduled work that can use a valid isolated token during 
 
     $this->artisan('app:refresh-epg', ['epg' => $epg->id, 'force' => 1])->assertSuccessful();
 
-    Bus::assertDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epg->is($epg));
+    Bus::assertDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epgId === $epg->id);
+    Bus::dispatched(ProcessEpgImport::class)->first()->failed(new RuntimeException('test reservation handoff'));
     Bus::fake();
-    (new UniqueLock(Cache::store('array')))->release(new ProcessEpgImport($epg, force: true));
 
     expect($epg->fresh()->hasActiveSchedulesDirectLoginCooldown())->toBeTrue()
         ->and(ProcessEpgImport::scheduleResyncIfNeeded($epg))->toBeTrue();
@@ -2589,7 +2751,7 @@ it('does not suppress refresh after canonical cooldown expiry when the EPG mirro
 
     $this->artisan('app:refresh-epg', ['epg' => $epg->id, 'force' => 1])->assertSuccessful();
 
-    Bus::assertDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epg->is($epg));
+    Bus::assertDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epgId === $epg->id);
 });
 
 it('does not dispatch a Schedules Direct EPG with an active cooldown from the refresh command', function (bool $explicit) {
@@ -2639,7 +2801,7 @@ it('resolves refresh cooldowns set-wise instead of querying once per EPG', funct
 
     expect($cooldownQueries)->toBe(1);
     foreach ($epgs as $epg) {
-        Bus::assertNotDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epg->is($epg));
+        Bus::assertNotDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epgId === $epg->id);
     }
 });
 
@@ -2812,6 +2974,7 @@ it('serves cached image responses during an active login cooldown without provid
 ]);
 
 it('does not delete a newer authentication handoff after a stale conditional delete', function () {
+    Cache::swap(new CacheRepository(new ArrayStore));
     $credentialSnapshot = [
         'owner_id' => 0,
         'username' => 'rowless@example.com',
@@ -2822,31 +2985,186 @@ it('does not delete a newer authentication handoff after a stale conditional del
     $handoffKey = 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
     $authentication = ['token' => 'rejected-handoff-token', 'expires' => now()->addHour()->timestamp];
     $newerAuthentication = ['token' => 'newer-handoff-token', 'expires' => now()->addHours(2)->timestamp];
-    $lock = Mockery::mock(Lock::class);
-    $lock->shouldReceive('block')
-        ->once()
-        ->with(5, Mockery::type(Closure::class))
-        ->andReturnUsing(function (int $seconds, Closure $callback) use (&$authentication, $newerAuthentication) {
-            $authentication = $newerAuthentication;
-
-            return $callback();
-        });
-    Cache::shouldReceive('lock')
-        ->once()
-        ->with('schedules-direct:authentication-handoff-mutation:'.$credentialSnapshot['identifier'], 10)
-        ->andReturn($lock);
-    Cache::shouldReceive('get')->once()->with($handoffKey)->andReturnUsing(function () use (&$authentication) {
-        return $authentication;
-    });
-    Cache::shouldReceive('forget')->never();
-
-    (new ReflectionMethod(SchedulesDirectService::class, 'forgetRejectedAuthenticationHandoff'))->invoke(
-        new SchedulesDirectService,
+    $service = new SchedulesDirectService;
+    $storeMethod = new ReflectionMethod(SchedulesDirectService::class, 'storeAuthenticationHandoff');
+    $forgetMethod = new ReflectionMethod(SchedulesDirectService::class, 'forgetRejectedAuthenticationHandoff');
+    $storeMethod->invoke($service, $credentialSnapshot, $newerAuthentication);
+    $forgetMethod->invoke(
+        $service,
         $credentialSnapshot,
         'rejected-handoff-token',
     );
 
-    expect($authentication)->toBe($newerAuthentication);
+    expect(Cache::get($handoffKey))->toBe($newerAuthentication);
+});
+
+it('fails closed for authentication handoffs on an unsupported cache store', function () {
+    Cache::swap(new CacheRepository(new NullStore));
+    $credentialSnapshot = [
+        'owner_id' => 0,
+        'username' => 'unsupported-cache@example.com',
+        'password' => 'rowless-password',
+        'identifier' => Epg::schedulesDirectAccountIdentifier(0, 'unsupported-cache@example.com', 'rowless-password'),
+        'provider_identifier' => Epg::schedulesDirectProviderAccountIdentifier('unsupported-cache@example.com'),
+    ];
+    $authentication = ['token' => 'must-not-store', 'expires' => now()->addHour()->timestamp];
+    $storeMethod = new ReflectionMethod(SchedulesDirectService::class, 'storeAuthenticationHandoff');
+
+    expect(fn () => $storeMethod->invoke(new SchedulesDirectService, $credentialSnapshot, $authentication))
+        ->toThrow(Exception::class, 'Schedules Direct authentication handoffs require the Redis or array cache store.');
+    Http::assertNothingSent();
+});
+
+it('stores Redis hash handoffs without colliding with legacy string handoffs', function () {
+    $redisHost = getenv('TEST_REDIS_HOST');
+
+    if ($redisHost === false) {
+        $this->markTestSkipped('Real Redis assertion requires TEST_REDIS_HOST.');
+    }
+
+    config([
+        'database.redis.client' => 'predis',
+        'database.redis.default.url' => null,
+        'database.redis.default.host' => $redisHost,
+        'database.redis.default.port' => (int) (getenv('TEST_REDIS_PORT') ?: 6379),
+        'database.redis.default.database' => (int) (getenv('TEST_REDIS_DATABASE') ?: 15),
+        'cache.default' => 'redis',
+        'cache.stores.redis.connection' => 'default',
+    ]);
+    Cache::setDefaultDriver('redis');
+    app('cache')->forgetDriver('redis');
+    app('redis')->purge('default');
+    $store = Cache::getStore();
+    expect($store)->toBeInstanceOf(RedisStore::class);
+    $credentialSnapshot = [
+        'owner_id' => 0,
+        'username' => 'legacy-redis-handoff@example.com',
+        'password' => 'rowless-password',
+        'identifier' => Epg::schedulesDirectAccountIdentifier(0, 'legacy-redis-handoff@example.com', 'rowless-password'),
+        'provider_identifier' => Epg::schedulesDirectProviderAccountIdentifier('legacy-redis-handoff@example.com'),
+    ];
+    $handoffKey = 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
+    $legacyAuthentication = ['token' => 'legacy-string-token', 'expires' => now()->addHour()->timestamp];
+    $newAuthentication = ['token' => 'new-hash-token', 'expires' => now()->addHours(2)->timestamp];
+    $service = new SchedulesDirectService;
+    $storeMethod = new ReflectionMethod(SchedulesDirectService::class, 'storeAuthenticationHandoff');
+    $getMethod = new ReflectionMethod(SchedulesDirectService::class, 'getAuthenticationHandoff');
+    Cache::put($handoffKey, $legacyAuthentication, now()->addHour());
+
+    try {
+        $storeMethod->invoke($service, $credentialSnapshot, $newAuthentication);
+
+        expect($getMethod->invoke($service, $credentialSnapshot))->toBe($newAuthentication)
+            ->and(Cache::get($handoffKey))->toBe($legacyAuthentication);
+    } finally {
+        $store->connection()->del($store->getPrefix().$handoffKey);
+        $store->connection()->del($store->getPrefix().$handoffKey.':hash');
+        Cache::setDefaultDriver('array');
+    }
+});
+
+it('atomically preserves a newer Redis authentication handoff during stale cleanup', function () {
+    $redisHost = getenv('TEST_REDIS_HOST');
+
+    if ($redisHost === false) {
+        $this->markTestSkipped('Real Redis assertion requires TEST_REDIS_HOST.');
+    }
+
+    config([
+        'database.redis.client' => 'predis',
+        'database.redis.default.url' => null,
+        'database.redis.default.host' => $redisHost,
+        'database.redis.default.port' => (int) (getenv('TEST_REDIS_PORT') ?: 6379),
+        'database.redis.default.database' => (int) (getenv('TEST_REDIS_DATABASE') ?: 15),
+        'database.redis.handoff_interleaving' => [
+            ...config('database.redis.default'),
+            'host' => $redisHost,
+            'port' => (int) (getenv('TEST_REDIS_PORT') ?: 6379),
+            'database' => (int) (getenv('TEST_REDIS_DATABASE') ?: 15),
+        ],
+        'cache.default' => 'redis',
+        'cache.stores.redis.connection' => 'default',
+    ]);
+    Cache::setDefaultDriver('redis');
+    app('cache')->forgetDriver('redis');
+    app('redis')->enableEvents();
+    app('redis')->purge('default');
+    app('redis')->purge('handoff_interleaving');
+    $store = Cache::getStore();
+    expect($store)->toBeInstanceOf(RedisStore::class);
+    $secondaryRedis = new RedisManager(app(), 'predis', [
+        'options' => config('database.redis.options'),
+        'handoff_interleaving' => config('database.redis.handoff_interleaving'),
+    ]);
+    $secondaryStore = new RedisStore(
+        $secondaryRedis,
+        $store->getPrefix(),
+        'handoff_interleaving',
+    );
+    $secondaryRepository = new CacheRepository($secondaryStore);
+    $credentialSnapshot = [
+        'owner_id' => 0,
+        'username' => 'redis-race@example.com',
+        'password' => 'rowless-password',
+        'identifier' => Epg::schedulesDirectAccountIdentifier(0, 'redis-race@example.com', 'rowless-password'),
+        'provider_identifier' => Epg::schedulesDirectProviderAccountIdentifier('redis-race@example.com'),
+    ];
+    $handoffKey = 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
+    $physicalKey = $store->getPrefix().$handoffKey.':hash';
+    $rejectedAuthentication = ['token' => 'rejected-redis-token', 'expires' => now()->addHour()->timestamp];
+    $newerAuthentication = ['token' => 'newer-redis-token', 'expires' => now()->addHours(2)->timestamp];
+    $service = new SchedulesDirectService;
+    $storeMethod = new ReflectionMethod(SchedulesDirectService::class, 'storeAuthenticationHandoff');
+    $forgetMethod = new ReflectionMethod(SchedulesDirectService::class, 'forgetRejectedAuthenticationHandoff');
+    $storeMethod->invoke($service, $credentialSnapshot, $rejectedAuthentication);
+    $interleavedCommand = null;
+
+    Event::listen(CommandExecuted::class, function (CommandExecuted $event) use (
+        &$interleavedCommand,
+        $handoffKey,
+        $newerAuthentication,
+        $physicalKey,
+        $secondaryStore,
+        $secondaryRepository,
+    ): void {
+        $command = strtolower($event->command);
+
+        if ($interleavedCommand !== null
+            || $event->connectionName !== 'default'
+            || ! in_array($command, ['get', 'hgetall'], true)
+            || ! in_array($physicalKey, $event->parameters, true)
+        ) {
+            return;
+        }
+
+        $interleavedCommand = $command;
+
+        if ($command === 'get') {
+            $secondaryRepository->put($handoffKey, $newerAuthentication, now()->addHours(2));
+
+            return;
+        }
+
+        $connection = $secondaryStore->connection();
+        $connection->hset($physicalKey, 'token', $newerAuthentication['token']);
+        $connection->hset($physicalKey, 'expires', (string) $newerAuthentication['expires']);
+        $connection->expireat($physicalKey, $newerAuthentication['expires'] - Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS);
+    });
+
+    try {
+        $forgetMethod->invoke($service, $credentialSnapshot, $rejectedAuthentication['token']);
+        $persistedAuthentication = $interleavedCommand === 'get'
+            ? $secondaryRepository->get($handoffKey)
+            : $secondaryStore->connection()->hgetall($physicalKey);
+
+        expect($interleavedCommand)->not->toBeNull()
+            ->and($persistedAuthentication['token'] ?? null)->toBe($newerAuthentication['token']);
+    } finally {
+        $secondaryStore->connection()->del($physicalKey);
+        Event::forget(CommandExecuted::class);
+        app('redis')->disableEvents();
+        Cache::setDefaultDriver('array');
+    }
 });
 
 it('does not delete a newer authentication handoff while cleaning up failed persistence', function () {

@@ -23,8 +23,7 @@ class ListMergedEpgs extends ListRecords
             CreateAction::make()
                 ->slideOver()
                 ->after(function ($record): void {
-                    app('Illuminate\Contracts\Bus\Dispatcher')
-                        ->dispatch(new ProcessEpgImport($record, force: true));
+                    ProcessEpgImport::dispatchIfAvailable($record, force: true);
                 }),
         ];
     }

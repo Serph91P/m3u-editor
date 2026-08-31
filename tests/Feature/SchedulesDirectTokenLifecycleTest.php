@@ -243,15 +243,17 @@ it('does not schedule the 60/120/180s resync when the sync hits the SD login lim
         'auto_resync_retries' => 3,
         'resync_attempt' => 0,
     ]);
+    Bus::dispatched(ProcessEpgImport::class)->first()->failed(new RuntimeException('test reservation cleanup'));
 
     // Fake the queue only after factory creation, so the EpgCreated-triggered
     // import is not what we are asserting against.
     Queue::fake();
 
     $this->mock(SchedulesDirectService::class, function ($mock) {
-        $mock->shouldReceive('syncEpgData')
+        $mock->shouldReceive('authenticateFromEpg')
             ->once()
             ->andThrow(new SchedulesDirectRateLimitException(now()->addHours(24)));
+        $mock->shouldNotReceive('syncEpgData');
     });
 
     (new ProcessEpgImport($epg, force: true))->handle(app(SchedulesDirectService::class));

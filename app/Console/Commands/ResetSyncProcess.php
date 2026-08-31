@@ -118,7 +118,7 @@ class ResetSyncProcess extends Command
                 // Optionally restart import
                 if ($epg->auto_sync) {
                     $this->line("  → Restarting import for \"{$epg->name}\"");
-                    dispatch(new ProcessEpgImport($epg, force: true));
+                    ProcessEpgImport::dispatchIfAvailable($epg, force: true);
                 } else {
                     $epg->update([
                         'status' => Status::Failed,

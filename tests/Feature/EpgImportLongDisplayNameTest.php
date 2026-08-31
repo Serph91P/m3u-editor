@@ -3,6 +3,7 @@
 use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\User;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
 
 // GitHub issue #1318: EPG sync succeeded but the subsequent EPG Cache
@@ -25,7 +26,7 @@ it('truncates long display names to fit within the configured limit', function (
 
 it('persists epg_channels with long name, lang, and channel_id values', function () {
     $user = User::factory()->create();
-    $epg = Epg::factory()->for($user)->create();
+    $epg = Event::fakeFor(fn () => Epg::factory()->for($user)->create());
 
     $epgChannel = EpgChannel::factory()->for($user)->for($epg)->create([
         'name' => str_repeat('a', 300),

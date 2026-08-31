@@ -12,6 +12,8 @@ use Carbon\Carbon;
 use Closure;
 use Exception;
 use Generator;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\RedisStore;
 use Illuminate\Contracts\Cache\Lock as CacheLock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Connection;
@@ -64,10 +66,6 @@ class SchedulesDirectService
     private const CREDENTIAL_LOCK_ATTEMPTS = 3;
 
     private const AUTHENTICATION_DATABASE_ERROR = 'Schedules Direct authentication could not be completed. Please try again.';
-
-    private const AUTHENTICATION_HANDOFF_LOCK_TTL_SECONDS = 10;
-
-    private const AUTHENTICATION_HANDOFF_LOCK_WAIT_SECONDS = 5;
 
     // Provider error objects are small; cap inspection at 4 KiB before rejecting them.
     private const STREAMED_ERROR_MAX_BYTES = 4096;
@@ -313,21 +311,24 @@ class SchedulesDirectService
      *
      * @throws SchedulesDirectLoginCooldownException when a 4009 cooldown is active or freshly triggered
      */
-    public function authenticateFromEpg(Epg $epg, bool $quietLoginCooldown = false): array
-    {
-        return $this->withoutAuthenticationDatabaseDetails(function () use ($epg, $quietLoginCooldown): array {
+    public function authenticateFromEpg(
+        Epg $epg,
+        bool $quietLoginCooldown = false,
+        bool $quietExistingCooldown = false,
+    ): array {
+        return $this->withoutAuthenticationDatabaseDetails(function () use ($epg, $quietExistingCooldown, $quietLoginCooldown): array {
             if (! $epg->sd_username || ! $epg->sd_password) {
                 throw new Exception('SchedulesDirect credentials not configured');
             }
 
-            if ($quietLoginCooldown && $retryAt = $epg->activeSchedulesDirectLoginCooldownUntil()) {
+            if (($quietLoginCooldown || $quietExistingCooldown) && $retryAt = $epg->activeSchedulesDirectLoginCooldownUntil()) {
                 throw new SchedulesDirectLoginCooldownException($retryAt);
             }
 
             $this->setCurrentEpg($epg);
             try {
-                $authentication = $this->withFreshEpgCredentialLock($epg, function (array $credentialSnapshot, Closure $assertLockOwned) use ($epg, $quietLoginCooldown): array {
-                    if ($quietLoginCooldown && $activeCooldown = $this->findActiveCooldown($credentialSnapshot, quiet: true)) {
+                $authentication = $this->withFreshEpgCredentialLock($epg, function (array $credentialSnapshot, Closure $assertLockOwned) use ($epg, $quietExistingCooldown, $quietLoginCooldown): array {
+                    if (($quietLoginCooldown || $quietExistingCooldown) && $activeCooldown = $this->findActiveCooldown($credentialSnapshot, quiet: true)) {
                         throw new SchedulesDirectLoginCooldownException($activeCooldown['cooldown_until']);
                     }
 
@@ -344,37 +345,41 @@ class SchedulesDirectService
                     }
 
                     if ($reusableAuthentication = $this->findReusableAuthentication($credentialSnapshot)) {
-                        $authentication = $reusableAuthentication['authentication'];
-                        $assertLockOwned();
-                        $updated = Epg::query()
-                            ->whereKey($epg->id)
-                            ->where('user_id', $credentialSnapshot['owner_id'])
-                            ->where('sd_account_identifier', $credentialSnapshot['identifier'])
-                            ->update([
-                                'sd_token' => $authentication['token'],
-                                'sd_token_expires_at' => Carbon::createFromTimestampUTC($authentication['expires']),
-                            ]);
+                        $authentication = $this->copyReusableAuthenticationToEpg(
+                            $epg,
+                            $credentialSnapshot,
+                            $reusableAuthentication,
+                            $assertLockOwned,
+                        );
 
-                        if ($updated === 0) {
+                        if ($authentication === null) {
                             $epg->refresh();
 
-                            return ['retry_with' => $this->credentialSnapshotFromEpg($epg)];
+                            if ($retryWith = $this->refreshedCredentialSnapshotIfChanged($epg, $credentialSnapshot)) {
+                                return ['retry_with' => $retryWith];
+                            }
+                        } else {
+                            $epg->refresh();
+
+                            return $authentication;
                         }
-
-                        $epg->refresh();
-
-                        return $authentication;
                     }
 
-                    if ($activeCooldown = $this->findActiveCooldown($credentialSnapshot, $quietLoginCooldown)) {
-                        throw $this->activeLoginCooldownException($credentialSnapshot, $activeCooldown, $epg, $quietLoginCooldown);
+                    if ($activeCooldown = $this->findActiveCooldown($credentialSnapshot, $quietLoginCooldown || $quietExistingCooldown)) {
+                        throw $this->activeLoginCooldownException($credentialSnapshot, $activeCooldown, $epg, $quietLoginCooldown || $quietExistingCooldown);
                     }
 
                     if ($retryWith = $this->refreshedCredentialSnapshotIfChanged($epg, $credentialSnapshot)) {
                         return ['retry_with' => $retryWith];
                     }
 
-                    $authentication = $this->requestAuthentication($credentialSnapshot, $epg, $assertLockOwned, $quietLoginCooldown);
+                    $authentication = $this->requestAuthentication(
+                        $credentialSnapshot,
+                        $epg,
+                        $assertLockOwned,
+                        $quietLoginCooldown,
+                        $quietExistingCooldown,
+                    );
 
                     if ($retryWith = $this->refreshedCredentialSnapshotIfChanged($epg, $credentialSnapshot)) {
                         return ['retry_with' => $retryWith];
@@ -933,7 +938,7 @@ class SchedulesDirectService
             ];
         }
 
-        $authentication = Cache::get($this->authenticationHandoffKey($credentialSnapshot));
+        $authentication = $this->getAuthenticationHandoff($credentialSnapshot);
 
         if (! is_array($authentication)
             || ! is_string($authentication['token'] ?? null)
@@ -949,9 +954,101 @@ class SchedulesDirectService
         ];
     }
 
+    /**
+     * @param  array{owner_id: int, username: string, password: string, identifier: string, provider_identifier: string}  $credentialSnapshot
+     * @param  array{authentication: array{token: string, expires: int}, epg: ?Epg}  $reusableAuthentication
+     * @return array{token: string, expires: int}|null
+     */
+    private function copyReusableAuthenticationToEpg(
+        Epg $requestingEpg,
+        array $credentialSnapshot,
+        array $reusableAuthentication,
+        Closure $assertLockOwned,
+    ): ?array {
+        $connection = $this->authenticationPersistenceConnection ?? DB::connection();
+        $epg = new Epg;
+
+        return $connection->transaction(function () use (
+            $assertLockOwned,
+            $connection,
+            $credentialSnapshot,
+            $epg,
+            $requestingEpg,
+            $reusableAuthentication,
+        ): ?array {
+            $assertLockOwned();
+            $authentication = $reusableAuthentication['authentication'];
+
+            if ($sourceEpg = $reusableAuthentication['epg']) {
+                $source = $connection->table($epg->getTable())
+                    ->where($epg->getKeyName(), $sourceEpg->getKey())
+                    ->where('user_id', $credentialSnapshot['owner_id'])
+                    ->where('source_type', 'schedules_direct')
+                    ->where('sd_account_identifier', $credentialSnapshot['identifier'])
+                    ->where('sd_token', $authentication['token'])
+                    ->where('sd_token_expires_at', '>', now()->addSeconds(Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS))
+                    ->lockForUpdate()
+                    ->first(['sd_token', 'sd_token_expires_at']);
+
+                if (! $source) {
+                    $assertLockOwned();
+
+                    return null;
+                }
+
+                $authentication = [
+                    'token' => $source->sd_token,
+                    'expires' => Carbon::parse($source->sd_token_expires_at)->timestamp,
+                ];
+            }
+
+            $updated = $connection->table($epg->getTable())
+                ->where($epg->getKeyName(), $requestingEpg->getKey())
+                ->where('user_id', $credentialSnapshot['owner_id'])
+                ->where('source_type', 'schedules_direct')
+                ->where('sd_account_identifier', $credentialSnapshot['identifier'])
+                ->update([
+                    'sd_token' => $authentication['token'],
+                    'sd_token_expires_at' => Carbon::createFromTimestampUTC($authentication['expires']),
+                ]);
+
+            $assertLockOwned();
+
+            return $updated === 1 ? $authentication : null;
+        });
+    }
+
     private function authenticationHandoffKey(array $credentialSnapshot): string
     {
         return 'schedules-direct:authentication-handoff:'.$credentialSnapshot['identifier'];
+    }
+
+    /**
+     * @return array{token: string, expires: int}|null
+     */
+    private function getAuthenticationHandoff(array $credentialSnapshot): ?array
+    {
+        $store = $this->authenticationHandoffStore();
+        $key = $this->authenticationHandoffKey($credentialSnapshot);
+
+        if ($store instanceof ArrayStore) {
+            $authentication = $store->get($key);
+
+            return is_array($authentication) ? $authentication : null;
+        }
+
+        $authentication = $store->connection()->hgetall($this->authenticationHandoffRedisKey($store, $key));
+        $token = $authentication['token'] ?? null;
+        $expires = $authentication['expires'] ?? null;
+
+        if (! is_string($token) || ! is_numeric($expires)) {
+            return null;
+        }
+
+        return [
+            'token' => $token,
+            'expires' => (int) $expires,
+        ];
     }
 
     private function findCredentialMatchingEpg(array $credentialSnapshot, bool $requireValidToken = false): ?Epg
@@ -979,6 +1076,7 @@ class SchedulesDirectService
         ?Epg $epg = null,
         ?Closure $assertLockOwned = null,
         bool $quietLoginCooldown = false,
+        bool $quietExistingCooldown = false,
     ): array {
         $debugRetried = false;
 
@@ -989,8 +1087,13 @@ class SchedulesDirectService
                 return $reusableAuthentication['authentication'];
             }
 
-            if ($activeCooldown = $this->findActiveCooldown($credentialSnapshot, $quietLoginCooldown)) {
-                throw $this->activeLoginCooldownException($credentialSnapshot, $activeCooldown, $epg, $quietLoginCooldown);
+            if ($activeCooldown = $this->findActiveCooldown($credentialSnapshot, $quietLoginCooldown || $quietExistingCooldown)) {
+                throw $this->activeLoginCooldownException(
+                    $credentialSnapshot,
+                    $activeCooldown,
+                    $epg,
+                    $quietLoginCooldown || $quietExistingCooldown,
+                );
             }
 
             $assertLockOwned?->__invoke();
@@ -1103,8 +1206,8 @@ class SchedulesDirectService
                         ]);
 
                 if ($updatedRows === 0 && $storeHandoffWhenRowless) {
-                    $handoffStored = true;
                     $this->storeAuthenticationHandoff($credentialSnapshot, $authentication);
+                    $handoffStored = true;
                 }
 
                 $assertLockOwned?->__invoke();
@@ -1195,12 +1298,18 @@ class SchedulesDirectService
         $cooldown = $result['cooldown'];
 
         if ($quiet) {
-            return new SchedulesDirectLoginCooldownException($cooldown['cooldown_until']);
+            return new SchedulesDirectLoginCooldownException(
+                $cooldown['cooldown_until'],
+                providerRejectedAuthentication: true,
+            );
         }
 
         $this->sendLoginCooldownNotification($credentialSnapshot, $cooldown['cooldown_until'], $requestingEpg);
 
-        return new SchedulesDirectLoginCooldownException($cooldown['cooldown_until']);
+        return new SchedulesDirectLoginCooldownException(
+            $cooldown['cooldown_until'],
+            providerRejectedAuthentication: true,
+        );
     }
 
     /**
@@ -2774,41 +2883,89 @@ class SchedulesDirectService
 
     private function forgetRejectedAuthenticationHandoff(array $credentialSnapshot, ?string $rejectedToken): void
     {
-        $this->withAuthenticationHandoffMutation($credentialSnapshot, function () use ($credentialSnapshot, $rejectedToken): void {
-            $key = $this->authenticationHandoffKey($credentialSnapshot);
-            $authentication = Cache::get($key);
+        if (! is_string($rejectedToken)) {
+            return;
+        }
 
-            if (is_string($authentication['token'] ?? null)
-                && is_string($rejectedToken)
-                && hash_equals($authentication['token'], $rejectedToken)
-            ) {
-                Cache::forget($key);
-            }
-        });
+        $store = $this->authenticationHandoffStore();
+        $key = $this->authenticationHandoffKey($credentialSnapshot);
+        $authentication = $this->getAuthenticationHandoff($credentialSnapshot);
+
+        if (! is_string($authentication['token'] ?? null)
+            || ! hash_equals($authentication['token'], $rejectedToken)
+        ) {
+            return;
+        }
+
+        if ($store instanceof ArrayStore) {
+            $store->forget($key);
+
+            return;
+        }
+
+        $store->connection()->eval(
+            <<<'LUA'
+            if redis.call('hget', KEYS[1], 'token') == ARGV[1] then
+                return redis.call('del', KEYS[1])
+            end
+
+            return 0
+            LUA,
+            1,
+            $this->authenticationHandoffRedisKey($store, $key),
+            $rejectedToken,
+        );
     }
 
     private function storeAuthenticationHandoff(array $credentialSnapshot, array $authentication): void
     {
-        $this->withAuthenticationHandoffMutation($credentialSnapshot, function () use ($credentialSnapshot, $authentication): void {
-            Cache::put(
-                $this->authenticationHandoffKey($credentialSnapshot),
-                $authentication,
-                Carbon::createFromTimestampUTC($authentication['expires'])
-                    ->subSeconds(Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS),
-            );
-        });
+        $store = $this->authenticationHandoffStore();
+        $key = $this->authenticationHandoffKey($credentialSnapshot);
+        $expiresAt = $authentication['expires'] - Epg::SCHEDULES_DIRECT_TOKEN_EXPIRY_SKEW_SECONDS;
+
+        if ($expiresAt <= now()->timestamp) {
+            throw new Exception('Schedules Direct authentication handoff expired before it could be stored.');
+        }
+
+        if ($store instanceof ArrayStore) {
+            $store->put($key, $authentication, $expiresAt - now()->timestamp);
+
+            return;
+        }
+
+        $stored = $store->connection()->eval(
+            <<<'LUA'
+            redis.call('hset', KEYS[1], 'token', ARGV[1], 'expires', ARGV[2])
+            redis.call('expireat', KEYS[1], ARGV[3])
+
+            return 1
+            LUA,
+            1,
+            $this->authenticationHandoffRedisKey($store, $key),
+            $authentication['token'],
+            (string) $authentication['expires'],
+            (string) $expiresAt,
+        );
+
+        if ((int) $stored !== 1) {
+            throw new Exception('Schedules Direct authentication handoff could not be stored.');
+        }
     }
 
-    private function withAuthenticationHandoffMutation(array $credentialSnapshot, Closure $callback): void
+    private function authenticationHandoffStore(): ArrayStore|RedisStore
     {
-        try {
-            Cache::lock(
-                'schedules-direct:authentication-handoff-mutation:'.$credentialSnapshot['identifier'],
-                self::AUTHENTICATION_HANDOFF_LOCK_TTL_SECONDS,
-            )->block(self::AUTHENTICATION_HANDOFF_LOCK_WAIT_SECONDS, $callback);
-        } catch (LockTimeoutException) {
-            throw new SchedulesDirectAuthenticationInProgressException;
+        $store = Cache::getStore();
+
+        if (! $store instanceof ArrayStore && ! $store instanceof RedisStore) {
+            throw new Exception('Schedules Direct authentication handoffs require the Redis or array cache store.');
         }
+
+        return $store;
+    }
+
+    private function authenticationHandoffRedisKey(RedisStore $store, string $key): string
+    {
+        return $store->getPrefix().$key.':hash';
     }
 
     /**

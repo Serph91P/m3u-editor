@@ -43,14 +43,18 @@ class ViewEpg extends ViewRecord
                 ->color('gray')
                 ->action(function () {
                     $record = $this->getRecord();
-                    $record->update([
-                        'status' => Status::Processing,
-                        'progress' => 0,
-                        'sd_progress' => 0,
-                        'cache_progress' => 0,
-                    ]);
-                    app('Illuminate\Contracts\Bus\Dispatcher')
-                        ->dispatch(new ProcessEpgImport($record, force: true));
+                    ProcessEpgImport::dispatchIfAvailable(
+                        $record,
+                        force: true,
+                        beforeDispatch: function () use ($record): void {
+                            $record->update([
+                                'status' => Status::Processing,
+                                'progress' => 0,
+                                'sd_progress' => 0,
+                                'cache_progress' => 0,
+                            ]);
+                        },
+                    );
                 })->after(function () {
                     Notification::make()
                         ->success()

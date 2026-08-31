@@ -207,15 +207,19 @@ class EpgResource extends Resource implements CopilotResource
                         ->label(__('Process'))
                         ->icon('heroicon-o-arrow-path')
                         ->action(function ($record) {
-                            $record->update([
-                                'status' => Status::Processing,
-                                'progress' => 0,
-                                'sd_progress' => 0,
-                                'cache_progress' => 0,
-                                'resync_attempt' => 0,
-                            ]);
-                            app('Illuminate\Contracts\Bus\Dispatcher')
-                                ->dispatch(new ProcessEpgImport($record, force: true));
+                            ProcessEpgImport::dispatchIfAvailable(
+                                $record,
+                                force: true,
+                                beforeDispatch: function () use ($record): void {
+                                    $record->update([
+                                        'status' => Status::Processing,
+                                        'progress' => 0,
+                                        'sd_progress' => 0,
+                                        'cache_progress' => 0,
+                                        'resync_attempt' => 0,
+                                    ]);
+                                },
+                            );
                         })->after(function () {
                             Notification::make()
                                 ->success()
@@ -310,15 +314,19 @@ class EpgResource extends Resource implements CopilotResource
                         ->label(__('Process selected'))
                         ->action(function (Collection $records): void {
                             foreach ($records as $record) {
-                                $record->update([
-                                    'status' => Status::Processing,
-                                    'progress' => 0,
-                                    'sd_progress' => 0,
-                                    'cache_progress' => 0,
-                                    'resync_attempt' => 0,
-                                ]);
-                                app('Illuminate\Contracts\Bus\Dispatcher')
-                                    ->dispatch(new ProcessEpgImport($record, force: true));
+                                ProcessEpgImport::dispatchIfAvailable(
+                                    $record,
+                                    force: true,
+                                    beforeDispatch: function () use ($record): void {
+                                        $record->update([
+                                            'status' => Status::Processing,
+                                            'progress' => 0,
+                                            'sd_progress' => 0,
+                                            'cache_progress' => 0,
+                                            'resync_attempt' => 0,
+                                        ]);
+                                    },
+                                );
                             }
                         })->after(function () {
                             Notification::make()
