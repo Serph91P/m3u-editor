@@ -2,11 +2,14 @@
 
 use App\Enums\Status;
 use App\Enums\SyncRunStatus;
+use App\Jobs\ProcessEpgImport;
 use App\Jobs\ProcessM3uImport;
+use App\Models\Epg;
 use App\Models\Playlist;
 use App\Models\SyncRun;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 
@@ -75,4 +78,22 @@ it('resets a stuck playlist with auto_sync disabled to Pending without dispatchi
 
     Queue::assertNotPushed(ProcessM3uImport::class);
     expect($playlist->fresh()->status)->toBe(Status::Pending);
+});
+
+it('does not revoke an active EPG reservation during reset', function () {
+    $epg = Epg::factory()->for($this->user)->create([
+        'status' => Status::Processing,
+        'processing_phase' => 'import',
+        'auto_sync' => true,
+    ]);
+    expect(ProcessEpgImport::dispatchIfAvailable($epg))->toBeTrue();
+    $activeJob = Queue::pushed(ProcessEpgImport::class)->sole();
+
+    $this->artisan('app:reset-sync-process')->assertSuccessful();
+
+    Queue::assertPushed(ProcessEpgImport::class, 1);
+    expect(ProcessEpgImport::ownsReservation($epg->id, $activeJob->reservationOwner))->toBeTrue()
+        ->and($epg->fresh()->status)->toBe(Status::Processing);
+    $activeJob->failed(new RuntimeException('test cleanup'));
+    Cache::setDefaultDriver('array');
 });

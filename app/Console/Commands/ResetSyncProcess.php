@@ -95,6 +95,12 @@ class ResetSyncProcess extends Command
         }
 
         foreach ($hungEpgs->cursor() as $epg) {
+            if (ProcessEpgImport::hasActiveReservation($epg->id)) {
+                $this->line("  → Keeping active import reservation for \"{$epg->name}\"; retry after the bounded lease expires.");
+
+                continue;
+            }
+
             $this->info("🔄 Resetting stuck EPG(s): {$epg->name}");
             // Determine the appropriate status to set based on processing_phase if available
             $phase = $epg->processing_phase ?? ($epg->synced !== null ? 'cache' : 'import');
@@ -156,6 +162,10 @@ class ResetSyncProcess extends Command
         ]);
         $this->call('queue:clear', [
             '--queue' => 'file_sync',
+            '--force' => true,
+        ]);
+        $this->call('queue:clear', [
+            '--queue' => 'schedules-direct',
             '--force' => true,
         ]);
     }

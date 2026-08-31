@@ -169,23 +169,43 @@ class Epg extends Model
 
     public function activeSchedulesDirectLoginCooldownUntil(): ?Carbon
     {
+        $canonicalCooldownUntil = null;
+        $legacyCooldownUntil = $this->sd_login_cooldown_until?->isFuture()
+            ? $this->sd_login_cooldown_until
+            : null;
+
         if (filled($this->sd_username)) {
             $canonicalCooldown = DB::table('schedules_direct_login_cooldowns')
                 ->where('account_identifier', self::schedulesDirectProviderAccountIdentifier($this->sd_username))
                 ->first(['cooldown_until']);
 
             if ($canonicalCooldown) {
-                $cooldownUntil = $canonicalCooldown->cooldown_until
+                $canonicalCooldownUntil = $canonicalCooldown->cooldown_until
                     ? Carbon::parse($canonicalCooldown->cooldown_until)
                     : null;
+            }
 
-                return $cooldownUntil?->isFuture() ? $cooldownUntil : null;
+            $providerLegacyCooldownUntil = static::query()
+                ->whereRaw('LOWER(TRIM(sd_username)) = ?', [mb_strtolower(trim($this->sd_username))])
+                ->where('sd_login_cooldown_until', '>', now())
+                ->max('sd_login_cooldown_until');
+
+            if ($providerLegacyCooldownUntil) {
+                $providerLegacyCooldownUntil = Carbon::parse($providerLegacyCooldownUntil);
+
+                if (! $legacyCooldownUntil || $providerLegacyCooldownUntil->greaterThan($legacyCooldownUntil)) {
+                    $legacyCooldownUntil = $providerLegacyCooldownUntil;
+                }
             }
         }
 
-        return $this->sd_login_cooldown_until?->isFuture()
-            ? $this->sd_login_cooldown_until
-            : null;
+        if (! $canonicalCooldownUntil?->isFuture()) {
+            return $legacyCooldownUntil;
+        }
+
+        return $legacyCooldownUntil?->greaterThan($canonicalCooldownUntil)
+            ? $legacyCooldownUntil
+            : $canonicalCooldownUntil;
     }
 
     public function hasSchedulesDirectCredentials(): bool

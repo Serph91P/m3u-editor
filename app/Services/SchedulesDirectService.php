@@ -444,11 +444,24 @@ class SchedulesDirectService
         $driver = $connection->getDriverName();
 
         if (! in_array($driver, ['pgsql', 'mysql', 'mariadb'], true)) {
-            if (app()->isProduction()) {
+            if ($driver !== 'sqlite' && app()->isProduction()) {
                 throw new Exception('Schedules Direct authentication requires a database driver with advisory lock support.');
             }
 
             return $callback(null);
+        }
+
+        $persistenceConnection = null;
+        $capturedPdo = null;
+
+        if ($connection instanceof Connection) {
+            $capturedPdo = $connection->getPdo();
+            $persistenceConnection = clone $connection;
+            $persistenceConnection->setReadPdo($capturedPdo);
+            $persistenceConnection->setTransactionManager(null);
+            $persistenceConnection->setReconnector(
+                fn () => throw new Exception('Schedules Direct authentication lock ownership was lost. Please try again shortly.'),
+            );
         }
 
         $acquired = false;
@@ -459,7 +472,9 @@ class SchedulesDirectService
             $deadline = microtime(true) + self::AUTHENTICATION_LOCK_WAIT_SECONDS;
 
             for ($attempt = 0; $attempt < self::ADVISORY_LOCK_POLL_ATTEMPTS; $attempt++) {
-                $result = DB::selectOne('SELECT pg_try_advisory_lock(?, ?) AS acquired, pg_backend_pid() AS session_id', $keys);
+                $result = $persistenceConnection
+                    ? $persistenceConnection->selectOne('SELECT pg_try_advisory_lock(?, ?) AS acquired, pg_backend_pid() AS session_id', $keys, false)
+                    : DB::selectOne('SELECT pg_try_advisory_lock(?, ?) AS acquired, pg_backend_pid() AS session_id', $keys, false);
                 $acquired = in_array($result?->acquired, [true, 1, '1', 't'], true);
 
                 if ($acquired) {
@@ -477,28 +492,16 @@ class SchedulesDirectService
                 }
             }
         } else {
-            $result = DB::selectOne('SELECT GET_LOCK(?, ?) AS acquired, CONNECTION_ID() AS session_id', [
-                $providerAccountIdentifier,
-                self::AUTHENTICATION_LOCK_WAIT_SECONDS,
-            ]);
+            $bindings = [$providerAccountIdentifier, self::AUTHENTICATION_LOCK_WAIT_SECONDS];
+            $result = $persistenceConnection
+                ? $persistenceConnection->selectOne('SELECT GET_LOCK(?, ?) AS acquired, CONNECTION_ID() AS session_id', $bindings, false)
+                : DB::selectOne('SELECT GET_LOCK(?, ?) AS acquired, CONNECTION_ID() AS session_id', $bindings, false);
             $acquired = in_array($result?->acquired, [true, 1, '1'], true);
             $sessionId = $result?->session_id;
         }
 
         if (! $acquired || ! is_numeric($sessionId)) {
             throw new SchedulesDirectAuthenticationInProgressException;
-        }
-
-        $persistenceConnection = null;
-        $capturedPdo = null;
-
-        if ($connection instanceof Connection && $connection->getRawPdo() instanceof PDO) {
-            $capturedPdo = $connection->getRawPdo();
-            $persistenceConnection = clone $connection;
-            $persistenceConnection->setTransactionManager(null);
-            $persistenceConnection->setReconnector(
-                fn () => throw new Exception('Schedules Direct authentication lock ownership was lost. Please try again shortly.'),
-            );
         }
 
         $assertLockOwned = $this->advisoryLockOwnershipAssertion(
@@ -528,12 +531,12 @@ class SchedulesDirectService
 
                     if ($driver === 'pgsql') {
                         $result = $persistenceConnection
-                            ? $persistenceConnection->selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys)
-                            : DB::selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys);
+                            ? $persistenceConnection->selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys, false)
+                            : DB::selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys, false);
                     } else {
                         $result = $persistenceConnection
-                            ? $persistenceConnection->selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier])
-                            : DB::selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier]);
+                            ? $persistenceConnection->selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier], false)
+                            : DB::selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier], false);
                     }
 
                     if (! in_array($result?->released, [true, 1, '1', 't'], true)) {
@@ -543,9 +546,9 @@ class SchedulesDirectService
                     if ($persistenceConnection) {
                         try {
                             if ($driver === 'pgsql') {
-                                $persistenceConnection->selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys);
+                                $persistenceConnection->selectOne('SELECT pg_advisory_unlock(?, ?) AS released', $keys, false);
                             } else {
-                                $persistenceConnection->selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier]);
+                                $persistenceConnection->selectOne('SELECT RELEASE_LOCK(?) AS released', [$providerAccountIdentifier], false);
                             }
                         } catch (Throwable) {
                         }
@@ -594,6 +597,7 @@ class SchedulesDirectService
                             ) AS owns_lock
                             SQL,
                         $postgresKeys,
+                        false,
                     )
                     : DB::selectOne(
                         <<<'SQL'
@@ -609,6 +613,7 @@ class SchedulesDirectService
                         ) AS owns_lock
                         SQL,
                         $postgresKeys,
+                        false,
                     );
                 $ownsLock = in_array($result?->owns_lock, [true, 1, '1', 't'], true);
             } else {
@@ -616,10 +621,12 @@ class SchedulesDirectService
                     ? $persistenceConnection->selectOne(
                         'SELECT CONNECTION_ID() AS session_id, IS_USED_LOCK(?) AS owner_session_id',
                         [$providerAccountIdentifier],
+                        false,
                     )
                     : DB::selectOne(
                         'SELECT CONNECTION_ID() AS session_id, IS_USED_LOCK(?) AS owner_session_id',
                         [$providerAccountIdentifier],
+                        false,
                     );
                 $ownsLock = is_numeric($result?->owner_session_id)
                     && (int) $result->owner_session_id === $acquiringSessionId;
@@ -801,78 +808,84 @@ class SchedulesDirectService
     private function findActiveCooldown(array $credentialSnapshot, bool $quiet = false, bool $lockForUpdate = false, ?Connection $connection = null): ?array
     {
         $accountIdentifier = $credentialSnapshot['provider_identifier'];
-        $canonicalCooldownQuery = ($connection ?? DB::connection())->table(self::LOGIN_COOLDOWNS_TABLE)
+        $database = $connection ?? DB::connection();
+        $canonicalCooldownQuery = $database->table(self::LOGIN_COOLDOWNS_TABLE)
             ->where('account_identifier', $accountIdentifier);
 
         if ($lockForUpdate) {
             $canonicalCooldownQuery->lockForUpdate();
         }
 
-        $canonicalCooldown = $canonicalCooldownQuery->first();
+        $canonicalRow = $canonicalCooldownQuery->first();
+        $canonicalCooldown = $canonicalRow?->started_at
+            && $canonicalRow?->cooldown_until
+            && Carbon::parse($canonicalRow->cooldown_until)->isFuture()
+                ? $this->canonicalCooldownData($canonicalRow)
+                : null;
+        $legacyQuery = $connection
+            ? $this->providerAccountEpgTableQuery($credentialSnapshot, $connection)
+            : $this->providerAccountEpgQuery($credentialSnapshot);
+        $legacyRow = $legacyQuery
+            ->where('sd_login_cooldown_until', '>', now())
+            ->orderByDesc('sd_login_cooldown_until')
+            ->orderByDesc('sd_login_cooldown_started_at')
+            ->orderByDesc('id')
+            ->first([
+                'sd_login_cooldown_started_at',
+                'sd_login_cooldown_until',
+                'sd_login_cooldown_notified_at',
+            ]);
+        $legacyCooldown = $legacyRow ? [
+            'started_at' => $legacyRow->sd_login_cooldown_started_at
+                ? Carbon::parse($legacyRow->sd_login_cooldown_started_at)
+                : now(),
+            'cooldown_until' => Carbon::parse($legacyRow->sd_login_cooldown_until),
+            'notified_at' => $legacyRow->sd_login_cooldown_notified_at
+                ? Carbon::parse($legacyRow->sd_login_cooldown_notified_at)
+                : null,
+        ] : null;
+        $cooldown = $canonicalCooldown;
 
-        if ($canonicalCooldown) {
-            if ($canonicalCooldown->started_at && $canonicalCooldown->cooldown_until && Carbon::parse($canonicalCooldown->cooldown_until)->isFuture()) {
-                $cooldown = $this->canonicalCooldownData($canonicalCooldown);
+        if ($legacyCooldown && (! $cooldown || $legacyCooldown['cooldown_until']->greaterThan($cooldown['cooldown_until']))) {
+            $cooldown = $legacyCooldown;
+        }
 
-                if (! $quiet) {
-                    $this->mirrorLoginCooldown($credentialSnapshot, $cooldown);
+        if (! $cooldown || $quiet) {
+            return $cooldown;
+        }
+
+        if ($legacyCooldown === $cooldown) {
+            $database->transaction(function () use ($accountIdentifier, $database, $legacyCooldown): void {
+                $values = [
+                    'started_at' => $legacyCooldown['started_at'],
+                    'cooldown_until' => $legacyCooldown['cooldown_until'],
+                    'notified_at' => $legacyCooldown['notified_at'],
+                ];
+                $updated = $database->table(self::LOGIN_COOLDOWNS_TABLE)
+                    ->where('account_identifier', $accountIdentifier)
+                    ->where(function ($query) use ($legacyCooldown): void {
+                        $query->whereNull('cooldown_until')
+                            ->orWhere('cooldown_until', '<', $legacyCooldown['cooldown_until']);
+                    })
+                    ->update($values);
+
+                if ($updated === 0) {
+                    $database->table(self::LOGIN_COOLDOWNS_TABLE)->insertOrIgnore([
+                        'account_identifier' => $accountIdentifier,
+                        ...$values,
+                    ]);
                 }
+            });
 
-                return $cooldown;
-            }
-
-            return null;
-        }
-
-        if ($quiet) {
-            return null;
-        }
-
-        $legacyCooldowns = $this->providerAccountEpgQuery($credentialSnapshot)
-            ->where('sd_login_cooldown_until', '>', now());
-        $legacyCooldownUntil = (clone $legacyCooldowns)->max('sd_login_cooldown_until');
-
-        if (! $legacyCooldownUntil) {
-            return null;
-        }
-
-        $legacyStartedAt = (clone $legacyCooldowns)->min('sd_login_cooldown_started_at') ?? now();
-        $legacyNotifiedAt = (clone $legacyCooldowns)->whereNotNull('sd_login_cooldown_notified_at')->min('sd_login_cooldown_notified_at');
-
-        DB::transaction(function () use ($accountIdentifier, $legacyStartedAt, $legacyCooldownUntil, $legacyNotifiedAt): void {
-            $values = [
-                'started_at' => $legacyStartedAt,
-                'cooldown_until' => $legacyCooldownUntil,
-                'notified_at' => $legacyNotifiedAt,
-            ];
-            $updated = DB::table(self::LOGIN_COOLDOWNS_TABLE)
+            $canonicalRow = $database->table(self::LOGIN_COOLDOWNS_TABLE)
                 ->where('account_identifier', $accountIdentifier)
-                ->where(function ($query): void {
-                    $query->whereNull('cooldown_until')
-                        ->orWhere('cooldown_until', '<=', now());
-                })
-                ->update($values);
-
-            if ($updated === 0) {
-                DB::table(self::LOGIN_COOLDOWNS_TABLE)->insertOrIgnore([
-                    'account_identifier' => $accountIdentifier,
-                    ...$values,
-                ]);
-            }
-        });
-
-        $canonicalCooldown = DB::table(self::LOGIN_COOLDOWNS_TABLE)
-            ->where('account_identifier', $accountIdentifier)
-            ->whereNotNull('started_at')
-            ->where('cooldown_until', '>', now())
-            ->first();
-
-        if (! $canonicalCooldown) {
-            return null;
+                ->whereNotNull('started_at')
+                ->where('cooldown_until', '>', now())
+                ->first();
+            $cooldown = $canonicalRow ? $this->canonicalCooldownData($canonicalRow) : $cooldown;
         }
 
-        $cooldown = $this->canonicalCooldownData($canonicalCooldown);
-        $this->mirrorLoginCooldown($credentialSnapshot, $cooldown);
+        $this->mirrorLoginCooldown($credentialSnapshot, $cooldown, $connection);
 
         return $cooldown;
     }

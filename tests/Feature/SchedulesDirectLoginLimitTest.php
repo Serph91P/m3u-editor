@@ -18,6 +18,7 @@ use Illuminate\Cache\RedisStore;
 use Illuminate\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Database\Connection;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -922,15 +923,15 @@ it('acquires and releases the PostgreSQL provider advisory lock on success', fun
     DB::shouldReceive('connection')->once()->andReturn($connection);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'), false)
         ->andReturn((object) ['acquired' => true, 'session_id' => 101]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'), false)
         ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'), false)
         ->andReturn((object) ['released' => true]);
     $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
 
@@ -949,15 +950,15 @@ it('releases the provider advisory lock when the critical section throws', funct
     DB::shouldReceive('connection')->once()->andReturn($connection);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'), false)
         ->andReturn((object) ['acquired' => true, 'session_id' => 101]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'), false)
         ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'), false)
         ->andReturn((object) ['released' => true]);
     $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
 
@@ -975,9 +976,9 @@ it('bounds PostgreSQL provider advisory lock acquisition without a real wait', f
     DB::shouldReceive('connection')->once()->andReturn($connection);
     DB::shouldReceive('selectOne')
         ->times(100)
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'), false)
         ->andReturn((object) ['acquired' => false]);
-    DB::shouldNotReceive('selectOne')->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'));
+    DB::shouldNotReceive('selectOne')->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'), false);
     $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
 
     try {
@@ -1000,7 +1001,7 @@ it('keeps a persistence stall fenced after the cache lease can be reacquired', f
     $acquisitionAttempt = 0;
     DB::shouldReceive('selectOne')
         ->times(101)
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'), false)
         ->andReturnUsing(function () use (&$acquisitionAttempt): object {
             $acquisitionAttempt++;
 
@@ -1011,11 +1012,11 @@ it('keeps a persistence stall fenced after the cache lease can be reacquired', f
         });
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'), false)
         ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'), false)
         ->andReturn((object) ['released' => true]);
     $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
     $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier('account@example.com');
@@ -1404,21 +1405,99 @@ it('fails closed for unsupported production database authentication fencing', fu
     }
 });
 
+it('authenticates and reuses a token with production SQLite cache fencing', function () {
+    $originalEnvironment = app()->environment();
+    $epg = makeSchedulesDirectEpgForLoginLimitTests();
+    $expires = now()->addHours(23)->timestamp;
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response(
+            schedulesDirectTokenPayload('production-sqlite-token', $expires),
+        ),
+    ]);
+    app()->detectEnvironment(fn (): string => 'production');
+
+    try {
+        $first = (new SchedulesDirectService)->authenticateFromEpg($epg);
+        $second = (new SchedulesDirectService)->authenticateFromEpg($epg->fresh());
+
+        expect($first['token'])->toBe('production-sqlite-token')
+            ->and($second['token'])->toBe('production-sqlite-token')
+            ->and($epg->fresh()->sd_token)->toBe('production-sqlite-token');
+        expect(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+    } finally {
+        app()->detectEnvironment(fn (): string => $originalEnvironment);
+    }
+});
+
+it('pins advisory acquisition and persistence reads to the captured write PDO', function () {
+    $writePdo = new PDO('sqlite::memory:');
+    $readPdo = new PDO('sqlite::memory:');
+    $trace = new ArrayObject;
+    $connection = new class($writePdo, $trace) extends Connection
+    {
+        public function __construct(PDO $pdo, private ArrayObject $trace)
+        {
+            parent::__construct($pdo);
+        }
+
+        public function getDriverName(): string
+        {
+            return 'pgsql';
+        }
+
+        public function selectOne($query, $bindings = [], $useReadPdo = true): mixed
+        {
+            $this->trace[] = $useReadPdo ? $this->getReadPdo() : $this->getPdo();
+
+            return match (true) {
+                str_contains($query, 'pg_try_advisory_lock') => (object) ['acquired' => true, 'session_id' => 101],
+                str_contains($query, 'FROM pg_locks') => (object) ['session_id' => 101, 'owns_lock' => true],
+                default => (object) ['released' => true],
+            };
+        }
+    };
+    $connection->setReadPdo($readPdo);
+    DB::shouldReceive('connection')->once()->andReturn($connection);
+    DB::shouldNotReceive('selectOne');
+    $service = new SchedulesDirectService;
+    $method = new ReflectionMethod($service, 'withProviderAccountAdvisoryLock');
+    $persistenceProperty = new ReflectionProperty($service, 'authenticationPersistenceConnection');
+
+    $method->invoke(
+        $service,
+        Epg::schedulesDirectProviderAccountIdentifier('write-pdo@example.com'),
+        function (Closure $assertLockOwned) use ($persistenceProperty, $readPdo, $service, $writePdo): array {
+            $persistenceConnection = $persistenceProperty->getValue($service);
+            expect($persistenceConnection->getRawPdo())->toBe($writePdo)
+                ->and($persistenceConnection->getRawReadPdo())->toBe($writePdo)
+                ->and($persistenceConnection->getRawReadPdo())->not->toBe($readPdo);
+            $assertLockOwned();
+
+            return ['persisted' => true];
+        },
+    );
+
+    expect($trace)->toHaveCount(4);
+    foreach ($trace as $selectedPdo) {
+        expect($selectedPdo)->toBe($writePdo);
+    }
+});
+
 it('uses a bounded MySQL provider advisory lock and releases it', function () {
     $connection = Mockery::mock();
     $connection->shouldReceive('getDriverName')->once()->andReturn('mysql');
     DB::shouldReceive('connection')->once()->andReturn($connection);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'GET_LOCK')), Mockery::on(fn (array $bindings): bool => $bindings[1] === 5))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'GET_LOCK')), Mockery::on(fn (array $bindings): bool => $bindings[1] === 5), false)
         ->andReturn((object) ['acquired' => 1, 'session_id' => 101]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'IS_USED_LOCK')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'IS_USED_LOCK')), Mockery::type('array'), false)
         ->andReturn((object) ['session_id' => 101, 'owner_session_id' => 101]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'RELEASE_LOCK')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'RELEASE_LOCK')), Mockery::type('array'), false)
         ->andReturn((object) ['released' => 1]);
     $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
 
@@ -1437,15 +1516,15 @@ it('fails closed when advisory lock release cannot be verified', function () {
     DB::shouldReceive('connection')->once()->andReturn($connection);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_try_advisory_lock')), Mockery::type('array'), false)
         ->andReturn((object) ['acquired' => true, 'session_id' => 101]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'FROM pg_locks')), Mockery::type('array'), false)
         ->andReturn((object) ['session_id' => 101, 'owns_lock' => true]);
     DB::shouldReceive('selectOne')
         ->once()
-        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'))
+        ->with(Mockery::on(fn (string $sql): bool => str_contains($sql, 'pg_advisory_unlock')), Mockery::type('array'), false)
         ->andReturn((object) ['released' => false]);
     $method = new ReflectionMethod(SchedulesDirectService::class, 'withProviderAccountAdvisoryLock');
 
@@ -2005,7 +2084,7 @@ it('suppresses repeated rowless bare authentication without extending cooldown o
         ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
 });
 
-it('does not restore a stale EPG mirror after the canonical cooldown expires', function () {
+it('uses a future legacy cooldown after the canonical cooldown expires', function () {
     Carbon::setTestNow('2026-08-30 12:00:00 UTC');
     $username = 'canonical-expired@example.com';
     $password = 'canonical-expired-password';
@@ -2024,20 +2103,63 @@ it('does not restore a stale EPG mirror after the canonical cooldown expires', f
         'cooldown_until' => now()->subDay(),
         'notified_at' => now()->subDays(2),
     ]);
-    Http::fake([
-        'json.schedulesdirect.org/20141201/token' => Http::response(
-            schedulesDirectTokenPayload('canonical-resumed-token', now()->addDays(2)->timestamp),
-        ),
-    ]);
+    Http::preventStrayRequests();
 
-    $authentication = (new SchedulesDirectService)->authenticate($username, $password);
+    $exception = null;
+    try {
+        (new SchedulesDirectService)->authenticate($username, $password);
+    } catch (SchedulesDirectLoginCooldownException $throwable) {
+        $exception = $throwable;
+    }
     $epg->refresh();
 
-    expect($authentication['token'])->toBe('canonical-resumed-token')
-        ->and(DB::table('schedules_direct_login_cooldowns')->count())->toBe(0)
-        ->and($epg->sd_login_cooldown_started_at)->toBeNull()
-        ->and($epg->sd_login_cooldown_until)->toBeNull()
-        ->and(Http::recorded(fn (Request $request): bool => str_ends_with($request->url(), '/token')))->toHaveCount(1);
+    expect($exception)->toBeInstanceOf(SchedulesDirectLoginCooldownException::class)
+        ->and($exception->retryAt->equalTo(now()->addDay()))->toBeTrue()
+        ->and(Carbon::parse(DB::table('schedules_direct_login_cooldowns')->value('cooldown_until'))->equalTo(now()->addDay()))->toBeTrue()
+        ->and($epg->activeSchedulesDirectLoginCooldownUntil()?->equalTo(now()->addDay()))->toBeTrue();
+    Http::assertNothingSent();
+});
+
+it('uses the later future legacy cooldown over a shorter canonical cooldown', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_login_cooldown_started_at' => now()->subHour(),
+        'sd_login_cooldown_until' => now()->addHours(8),
+    ]);
+    DB::table('schedules_direct_login_cooldowns')->insert([
+        'account_identifier' => Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username),
+        'started_at' => now()->subHour(),
+        'cooldown_until' => now()->addHours(4),
+        'notified_at' => null,
+    ]);
+    Http::preventStrayRequests();
+
+    expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
+        ->toThrow(SchedulesDirectLoginCooldownException::class);
+
+    expect($epg->activeSchedulesDirectLoginCooldownUntil()?->equalTo(now()->addHours(8)))->toBeTrue()
+        ->and(Carbon::parse(DB::table('schedules_direct_login_cooldowns')->value('cooldown_until'))->equalTo(now()->addHours(8)))->toBeTrue();
+    Http::assertNothingSent();
+});
+
+it('uses the latest future legacy cooldown from another EPG on the same provider account', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_login_cooldown_until' => now()->addHours(2),
+    ]);
+    makeSchedulesDirectEpgForLoginLimitTests([
+        'sd_username' => $epg->sd_username,
+        'sd_password' => 'other-private-password',
+        'sd_login_cooldown_until' => now()->addHours(9),
+    ]);
+    DB::table('schedules_direct_login_cooldowns')->insert([
+        'account_identifier' => Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username),
+        'started_at' => now()->subHour(),
+        'cooldown_until' => now()->addHours(4),
+        'notified_at' => null,
+    ]);
+
+    expect($epg->activeSchedulesDirectLoginCooldownUntil()?->equalTo(now()->addHours(9)))->toBeTrue();
 });
 
 it('resumes rowless bare authentication after cooldown expiry and clears canonical state', function () {
@@ -2259,22 +2381,28 @@ it('quietly restores import state when a cooldown appears before authentication'
     $initialImportState = collect($epg->getRawOriginal())->only($importStateFields)->all();
     $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
     $cooldownInserted = false;
+    $service = new class($providerIdentifier, $cooldownInserted) extends SchedulesDirectService
+    {
+        public function __construct(private string $providerIdentifier, private bool &$cooldownInserted) {}
 
-    DB::listen(function ($query) use (&$cooldownInserted, $providerIdentifier): void {
-        if ($cooldownInserted || ! str_contains($query->sql, 'schedules_direct_login_cooldowns')) {
-            return;
+        public function authenticateFromEpg(
+            Epg $epg,
+            bool $quietLoginCooldown = false,
+            bool $quietExistingCooldown = false,
+        ): array {
+            $this->cooldownInserted = true;
+            DB::table('schedules_direct_login_cooldowns')->insert([
+                'account_identifier' => $this->providerIdentifier,
+                'started_at' => now(),
+                'cooldown_until' => now()->addDay(),
+                'notified_at' => null,
+            ]);
+
+            throw new SchedulesDirectLoginCooldownException(now()->addDay());
         }
+    };
 
-        $cooldownInserted = true;
-        DB::table('schedules_direct_login_cooldowns')->insert([
-            'account_identifier' => $providerIdentifier,
-            'started_at' => now(),
-            'cooldown_until' => now()->addDay(),
-            'notified_at' => null,
-        ]);
-    });
-
-    (new ProcessEpgImport($epg, force: true))->handle(new SchedulesDirectService);
+    (new ProcessEpgImport($epg, force: true))->handle($service);
 
     expect($cooldownInserted)->toBeTrue()
         ->and(collect($epg->fresh()->getRawOriginal())->only($importStateFields)->all())->toBe($initialImportState);
@@ -2282,6 +2410,62 @@ it('quietly restores import state when a cooldown appears before authentication'
     Event::assertNotDispatched(SyncCompleted::class);
     Http::assertNothingSent();
     Bus::assertNotDispatched(ProcessEpgImport::class);
+});
+
+it('does not roll back a newer writer when a cooldown appears during import authentication', function () {
+    Carbon::setTestNow('2026-08-30 12:00:00 UTC');
+    NotificationFacade::fake();
+    Event::fake([SyncCompleted::class]);
+    $epg = makeSchedulesDirectEpgForLoginLimitTests([
+        'status' => Status::Pending,
+        'progress' => 37,
+    ]);
+    $providerIdentifier = Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username);
+    $cooldownInserted = false;
+    $service = new class($providerIdentifier, $epg->id, $cooldownInserted) extends SchedulesDirectService
+    {
+        public function __construct(
+            private string $providerIdentifier,
+            private int $epgId,
+            private bool &$cooldownInserted,
+        ) {}
+
+        public function authenticateFromEpg(
+            Epg $epg,
+            bool $quietLoginCooldown = false,
+            bool $quietExistingCooldown = false,
+        ): array {
+            $this->cooldownInserted = true;
+            DB::table('schedules_direct_login_cooldowns')->insert([
+                'account_identifier' => $this->providerIdentifier,
+                'started_at' => now(),
+                'cooldown_until' => now()->addDay(),
+                'notified_at' => null,
+            ]);
+            DB::table('epgs')->where('id', $this->epgId)->update([
+                'status' => Status::Processing->value,
+                'processing' => true,
+                'processing_phase' => 'import',
+                'progress' => 88,
+                'errors' => 'newer writer state',
+                'updated_at' => now()->addSecond(),
+            ]);
+
+            throw new SchedulesDirectLoginCooldownException(now()->addDay());
+        }
+    };
+
+    (new ProcessEpgImport($epg, force: true))->handle($service);
+
+    $persisted = $epg->fresh();
+    expect($cooldownInserted)->toBeTrue()
+        ->and($persisted->status)->toBe(Status::Processing)
+        ->and($persisted->processing)->toBeTrue()
+        ->and($persisted->progress)->toBe(88.0)
+        ->and($persisted->errors)->toBe('newer writer state');
+    NotificationFacade::assertNothingSent();
+    Event::assertNotDispatched(SyncCompleted::class);
+    Http::assertNothingSent();
 });
 
 it('returns quietly when a canonical cooldown appears during import authentication', function () {
@@ -2736,7 +2920,7 @@ it('does not suppress scheduled work that can use a valid isolated token during 
     Http::assertNothingSent();
 });
 
-it('does not suppress refresh after canonical cooldown expiry when the EPG mirror is stale', function () {
+it('suppresses refresh when a future legacy cooldown outlives the canonical cooldown', function () {
     $epg = makeSchedulesDirectEpgForLoginLimitTests([
         'sd_login_cooldown_started_at' => now()->subHour(),
         'sd_login_cooldown_until' => now()->addDay(),
@@ -2751,7 +2935,40 @@ it('does not suppress refresh after canonical cooldown expiry when the EPG mirro
 
     $this->artisan('app:refresh-epg', ['epg' => $epg->id, 'force' => 1])->assertSuccessful();
 
-    Bus::assertDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epgId === $epg->id);
+    Bus::assertNotDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epgId === $epg->id);
+    Http::assertNothingSent();
+});
+
+it('suppresses sibling refreshes when another EPG has a newer legacy provider cooldown', function () {
+    $username = 'shared.legacy.scheduler@example.com';
+    $eligibleEpg = makeSchedulesDirectEpgForLoginLimitTests([
+        'auto_sync' => true,
+        'status' => Status::Pending,
+        'synced' => null,
+        'sd_username' => $username,
+        'sd_login_cooldown_until' => null,
+    ]);
+    $legacyCooldownEpg = makeSchedulesDirectEpgForLoginLimitTests([
+        'auto_sync' => true,
+        'status' => Status::Pending,
+        'synced' => null,
+        'sd_username' => $username,
+        'sd_login_cooldown_until' => now()->addDay(),
+    ]);
+    DB::table('schedules_direct_login_cooldowns')->insert([
+        'account_identifier' => Epg::schedulesDirectProviderAccountIdentifier($username),
+        'started_at' => now()->subDays(2),
+        'cooldown_until' => now()->subDay(),
+        'notified_at' => now()->subDays(2),
+    ]);
+    Bus::fake();
+
+    $this->artisan('app:refresh-epg')->assertSuccessful();
+
+    foreach ([$eligibleEpg, $legacyCooldownEpg] as $epg) {
+        Bus::assertNotDispatched(ProcessEpgImport::class, fn (ProcessEpgImport $job): bool => $job->epgId === $epg->id);
+    }
+    Http::assertNothingSent();
 });
 
 it('does not dispatch a Schedules Direct EPG with an active cooldown from the refresh command', function (bool $explicit) {

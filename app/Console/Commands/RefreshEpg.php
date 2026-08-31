@@ -107,8 +107,24 @@ class RefreshEpg extends Command
                         ->get(['account_identifier', 'cooldown_until'])
                         ->pluck('cooldown_until', 'account_identifier')
                         ->all();
+                $normalizedUsernames = $epgChunk
+                    ->filter(fn (Epg $epg): bool => $epg->isSchedulesDirect()
+                        && ! $epg->hasValidSchedulesDirectToken()
+                        && filled($epg->sd_username))
+                    ->map(fn (Epg $epg): string => mb_strtolower(trim($epg->sd_username)))
+                    ->unique()
+                    ->values();
+                $legacyCooldowns = $normalizedUsernames->isEmpty()
+                    ? []
+                    : Epg::query()
+                        ->whereIn(DB::raw('LOWER(TRIM(sd_username))'), $normalizedUsernames)
+                        ->where('sd_login_cooldown_until', '>', now())
+                        ->selectRaw('LOWER(TRIM(sd_username)) AS normalized_username, MAX(sd_login_cooldown_until) AS cooldown_until')
+                        ->groupByRaw('LOWER(TRIM(sd_username))')
+                        ->pluck('cooldown_until', 'normalized_username')
+                        ->all();
 
-                $epgChunk->each(function (Epg $epg) use (&$count, $failedRetryCooldown, $canonicalCooldowns): void {
+                $epgChunk->each(function (Epg $epg) use (&$count, $failedRetryCooldown, $canonicalCooldowns, $legacyCooldowns): void {
                     if ($epg->isSchedulesDirect() && ! $epg->hasValidSchedulesDirectToken()) {
                         $providerIdentifier = filled($epg->sd_username)
                             ? Epg::schedulesDirectProviderAccountIdentifier($epg->sd_username)
@@ -122,7 +138,17 @@ class RefreshEpg extends Command
                             if ($cooldownUntil?->isFuture()) {
                                 return;
                             }
-                        } elseif ($epg->sd_login_cooldown_until?->isFuture()) {
+                        }
+
+                        $normalizedUsername = filled($epg->sd_username)
+                            ? mb_strtolower(trim($epg->sd_username))
+                            : null;
+                        $legacyCooldownUntil = $normalizedUsername !== null
+                            && array_key_exists($normalizedUsername, $legacyCooldowns)
+                                ? Carbon::parse($legacyCooldowns[$normalizedUsername])
+                                : $epg->sd_login_cooldown_until;
+
+                        if ($legacyCooldownUntil?->isFuture()) {
                             return;
                         }
                     }

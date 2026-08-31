@@ -53,9 +53,15 @@ class ProcessEpgImport implements ShouldQueue
     // Giving a timeout of 60 minutes to the Job to process the file
     public $timeout = 60 * 60;
 
-    public int $epgId;
+    private const RESERVATION_TTL_SECONDS = 7200;
 
-    private ?Epg $epg = null;
+    public ?int $epgId = null;
+
+    public ?Epg $epg = null;
+
+    public ?bool $force = false;
+
+    public ?string $reservationOwner = null;
 
     /**
      * Sanitize UTF-8 string to remove invalid sequences
@@ -80,14 +86,15 @@ class ProcessEpgImport implements ShouldQueue
      */
     public function __construct(
         Epg $epg,
-        public ?bool $force = false,
-        public ?string $reservationOwner = null,
+        ?bool $force = false,
+        ?string $reservationOwner = null,
     ) {
         $this->epgId = $epg->getKey();
+        $this->force = $force;
+        $this->reservationOwner = $reservationOwner;
 
         if ($this->reservationOwner === null) {
-            $reservation = static::reservationCache()->lock(self::reservationKey($this->epgId));
-            $this->reservationOwner = $reservation->get() ? $reservation->owner() : null;
+            $this->reservationOwner = static::acquireReservation($this->epgId);
         }
 
         // SchedulesDirect syncs share a single external account/API per user, and
@@ -106,7 +113,16 @@ class ProcessEpgImport implements ShouldQueue
      */
     public function handle(SchedulesDirectService $service): void
     {
-        if (! $this->ownsImportReservation()) {
+        if ($this->epgId === null && $this->epg instanceof Epg) {
+            $this->epgId = $this->epg->getKey();
+            $this->reservationOwner ??= static::acquireReservation($this->epgId);
+        }
+
+        if ($this->epgId === null || ! is_string($this->reservationOwner)) {
+            return;
+        }
+
+        if (! static::refreshReservation($this->epgId, $this->reservationOwner)) {
             return;
         }
 
@@ -132,7 +148,7 @@ class ProcessEpgImport implements ShouldQueue
     private function handleReservedImport(SchedulesDirectService $service): void
     {
         $this->epg->refresh();
-        $initialImportState = $this->epg->only([
+        $initialImportState = collect($this->epg->getRawOriginal())->only([
             'processing',
             'status',
             'processing_started_at',
@@ -145,7 +161,7 @@ class ProcessEpgImport implements ShouldQueue
             'sd_progress',
             'sd_station_ids',
             'updated_at',
-        ]);
+        ])->all();
 
         if ($this->epg->isSchedulesDirect() && ! $this->epg->hasValidSchedulesDirectToken() && $this->epg->hasActiveSchedulesDirectLoginCooldown()) {
             return;
@@ -169,14 +185,26 @@ class ProcessEpgImport implements ShouldQueue
         }
 
         // Update the EPG status to processing
-        $this->epg->update([
-            'processing' => true,
-            'status' => Status::Processing,
-            'processing_started_at' => now(),
-            'processing_phase' => 'import',
-            'errors' => null,
-            'progress' => 0,
-        ]);
+        $processingStartedAt = now();
+        $startedProcessing = Epg::query()
+            ->whereKey($this->epgId)
+            ->where('updated_at', $initialImportState['updated_at'])
+            ->where('processing', $initialImportState['processing'])
+            ->where('status', $initialImportState['status'])
+            ->update([
+                'processing' => true,
+                'status' => Status::Processing->value,
+                'processing_started_at' => $processingStartedAt,
+                'processing_phase' => 'import',
+                'errors' => null,
+                'progress' => 0,
+            ]);
+
+        if ($startedProcessing !== 1) {
+            return;
+        }
+
+        $this->epg->refresh();
 
         // Flag job start time
         $start = now();
@@ -491,7 +519,12 @@ class ProcessEpgImport implements ShouldQueue
                 $batchCount = Job::where('batch_no', $batchNo)->count();
                 $jobsBatch = Job::where('batch_no', $batchNo)->select('id')->cursor();
                 $jobsBatch->chunk(100)->each(function ($chunk) use (&$jobs, $batchCount) {
-                    $jobs[] = new ProcessEpgImportChunk($chunk->pluck('id')->toArray(), $batchCount);
+                    $jobs[] = new ProcessEpgImportChunk(
+                        $chunk->pluck('id')->toArray(),
+                        $batchCount,
+                        $this->epgId,
+                        $this->reservationOwner,
+                    );
                 });
 
                 // Run completion after channels imported
@@ -503,6 +536,10 @@ class ProcessEpgImport implements ShouldQueue
                     $start,
                     $this->reservationOwner,
                 );
+                if (! static::refreshReservation($epgId, $this->reservationOwner)) {
+                    throw new \RuntimeException('EPG import reservation ownership was lost before chain dispatch.');
+                }
+
                 Bus::chain($jobs)
                     ->onConnection('redis') // force to use redis connection
                     ->onQueue('import')
@@ -547,7 +584,11 @@ class ProcessEpgImport implements ShouldQueue
             }
         } catch (SchedulesDirectLoginCooldownException $e) {
             if (! $e->providerRejectedAuthentication) {
-                $this->epg->forceFill($initialImportState)->saveQuietly();
+                $this->restoreInitialImportState(
+                    $initialImportState,
+                    $processingStartedAt,
+                    $this->epg->getRawOriginal('updated_at'),
+                );
 
                 return;
             }
@@ -598,13 +639,14 @@ class ProcessEpgImport implements ShouldQueue
 
             event(new SyncCompleted($this->epg));
         } catch (Exception $e) {
+            $processingStateUpdatedAt = $this->epg->getRawOriginal('updated_at');
             $this->epg->refresh();
 
             if ($this->epg->isSchedulesDirect()
                 && ! $this->epg->hasValidSchedulesDirectToken()
                 && $this->epg->hasActiveSchedulesDirectLoginCooldown()
             ) {
-                $this->epg->forceFill($initialImportState)->saveQuietly();
+                $this->restoreInitialImportState($initialImportState, $processingStartedAt, $processingStateUpdatedAt);
 
                 return;
             }
@@ -650,6 +692,7 @@ class ProcessEpgImport implements ShouldQueue
         Epg $epg,
         ?self $currentJob = null,
         ?string $reservationOwner = null,
+        ?Closure $onReservationTransferred = null,
     ): bool {
         $epg->refresh();
 
@@ -666,27 +709,47 @@ class ProcessEpgImport implements ShouldQueue
 
         $reservationOwner ??= $currentJob?->reservationOwner;
         $retryAt = now()->addSeconds($delaySeconds);
+        $statePrepared = Epg::query()
+            ->whereKey($epg->getKey())
+            ->where('resync_attempt', $newAttempt - 1)
+            ->update(['resync_attempt' => $newAttempt]);
+
+        if ($statePrepared !== 1) {
+            return false;
+        }
+
         $dispatched = $reservationOwner
             ? static::dispatchContinuation($epg, $reservationOwner, force: true, delay: $retryAt)
             : static::dispatchIfAvailable($epg, force: true, delay: $retryAt);
 
         if (! $dispatched) {
+            Epg::query()
+                ->whereKey($epg->getKey())
+                ->where('resync_attempt', $newAttempt)
+                ->update(['resync_attempt' => $newAttempt - 1]);
+
             return false;
         }
 
         if ($currentJob) {
             $currentJob->reservationTransferred = true;
         }
-
-        $epg->update(['resync_attempt' => $newAttempt]);
+        $onReservationTransferred?->__invoke();
 
         Log::info("ProcessEpgImport: scheduling resync attempt {$newAttempt}/{$epg->auto_resync_retries} for EPG {$epg->id} in {$delaySeconds}s");
 
-        Notification::make()
-            ->warning()
-            ->title('EPG resync queued')
-            ->body("Retry {$newAttempt} of {$epg->auto_resync_retries} scheduled for \"{$epg->name}\" (delay: {$delaySeconds}s).")
-            ->sendToDatabase($epg->user);
+        try {
+            Notification::make()
+                ->warning()
+                ->title('EPG resync queued')
+                ->body("Retry {$newAttempt} of {$epg->auto_resync_retries} scheduled for \"{$epg->name}\" (delay: {$delaySeconds}s).")
+                ->sendToDatabase($epg->user);
+        } catch (Throwable $throwable) {
+            Log::warning('Failed to send EPG resync queued notification', [
+                'epg_id' => $epg->id,
+                'error_class' => $throwable::class,
+            ]);
+        }
 
         return true;
     }
@@ -721,7 +784,7 @@ class ProcessEpgImport implements ShouldQueue
 
     public static function handleImportChainFailure(int $epgId, ?string $reservationOwner, Throwable $throwable): void
     {
-        if (! is_string($reservationOwner) || ! static::ownsReservation($epgId, $reservationOwner)) {
+        if (! is_string($reservationOwner) || ! static::refreshReservation($epgId, $reservationOwner)) {
             return;
         }
 
@@ -755,9 +818,12 @@ class ProcessEpgImport implements ShouldQueue
                 'processing_phase' => null,
             ]);
             event(new SyncCompleted($epg));
-            $reservationTransferred = static::scheduleResyncIfNeeded(
+            static::scheduleResyncIfNeeded(
                 $epg,
                 reservationOwner: $reservationOwner,
+                onReservationTransferred: function () use (&$reservationTransferred): void {
+                    $reservationTransferred = true;
+                },
             );
         } finally {
             if (! $reservationTransferred) {
@@ -777,7 +843,7 @@ class ProcessEpgImport implements ShouldQueue
         ?bool $force = false,
         DateTimeInterface|DateInterval|int|null $delay = null,
     ): bool {
-        if (! static::ownsReservation($epg->getKey(), $reservationOwner)) {
+        if (! static::refreshReservation($epg->getKey(), $reservationOwner)) {
             return false;
         }
 
@@ -798,15 +864,29 @@ class ProcessEpgImport implements ShouldQueue
             ->isOwnedByCurrentProcess();
     }
 
+    public static function hasActiveReservation(int $epgId): bool
+    {
+        return static::reservationCache()->lock(
+            static::reservationKey($epgId),
+            self::RESERVATION_TTL_SECONDS,
+        )->isLocked();
+    }
+
+    public static function refreshReservation(int $epgId, string $reservationOwner): bool
+    {
+        $lock = static::reservationCache()->restoreLock(static::reservationKey($epgId), $reservationOwner);
+
+        return method_exists($lock, 'refresh') && $lock->refresh(self::RESERVATION_TTL_SECONDS);
+    }
+
+    public static function forceReleaseReservation(int $epgId): void
+    {
+        static::reservationCache()->lock(static::reservationKey($epgId), self::RESERVATION_TTL_SECONDS)->forceRelease();
+    }
+
     public static function releaseReservation(int $epgId, string $reservationOwner): void
     {
         static::reservationCache()->restoreLock(static::reservationKey($epgId), $reservationOwner)->release();
-    }
-
-    private function ownsImportReservation(): bool
-    {
-        return is_string($this->reservationOwner)
-            && static::ownsReservation($this->epgId, $this->reservationOwner);
     }
 
     private function releaseImportReservation(): void
@@ -816,9 +896,69 @@ class ProcessEpgImport implements ShouldQueue
         }
     }
 
+    public static function acquireCompatibilityReservation(int $epgId, string $batchNo): ?string
+    {
+        $cache = static::reservationCache();
+        $compatibilityKey = static::compatibilityReservationKey($epgId, $batchNo);
+        $reservationOwner = $cache->get($compatibilityKey);
+
+        if (is_string($reservationOwner) && static::refreshReservation($epgId, $reservationOwner)) {
+            $cache->put($compatibilityKey, $reservationOwner, self::RESERVATION_TTL_SECONDS);
+
+            return $reservationOwner;
+        }
+
+        $cache->forget($compatibilityKey);
+        $reservationOwner = static::acquireReservation($epgId);
+
+        if (is_string($reservationOwner)) {
+            $cache->put($compatibilityKey, $reservationOwner, self::RESERVATION_TTL_SECONDS);
+        }
+
+        return $reservationOwner;
+    }
+
+    public static function forgetCompatibilityReservation(int $epgId, string $batchNo): void
+    {
+        static::reservationCache()->forget(static::compatibilityReservationKey($epgId, $batchNo));
+    }
+
+    private static function acquireReservation(int $epgId): ?string
+    {
+        $reservation = static::reservationCache()->lock(
+            self::reservationKey($epgId),
+            self::RESERVATION_TTL_SECONDS,
+        );
+
+        return $reservation->get() ? $reservation->owner() : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $initialImportState
+     */
+    private function restoreInitialImportState(
+        array $initialImportState,
+        Carbon $processingStartedAt,
+        mixed $processingStateUpdatedAt,
+    ): void {
+        Epg::query()
+            ->whereKey($this->epgId)
+            ->where('processing', true)
+            ->where('status', Status::Processing->value)
+            ->where('processing_started_at', $processingStartedAt)
+            ->where('processing_phase', 'import')
+            ->where('updated_at', $processingStateUpdatedAt)
+            ->update($initialImportState);
+    }
+
     private static function reservationKey(int $epgId): string
     {
         return 'epg-import:execution:'.$epgId;
+    }
+
+    private static function compatibilityReservationKey(int $epgId, string $batchNo): string
+    {
+        return 'epg-import:legacy-batch:'.$epgId.':'.$batchNo;
     }
 
     private static function reservationCache(): Repository

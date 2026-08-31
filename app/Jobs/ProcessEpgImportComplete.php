@@ -19,6 +19,8 @@ class ProcessEpgImportComplete implements ShouldQueue
 
     public $deleteWhenMissingModels = true;
 
+    public ?string $reservationOwner = null;
+
     /**
      * Create a new job instance.
      */
@@ -27,9 +29,9 @@ class ProcessEpgImportComplete implements ShouldQueue
         public int $epgId,
         public string $batchNo,
         public Carbon $start,
-        public string $reservationOwner,
+        ?string $reservationOwner = null,
     ) {
-        //
+        $this->reservationOwner = $reservationOwner;
     }
 
     /**
@@ -37,11 +39,35 @@ class ProcessEpgImportComplete implements ShouldQueue
      */
     public function handle(): void
     {
-        if (! ProcessEpgImport::ownsReservation($this->epgId, $this->reservationOwner)) {
-            return;
+        $legacyReservation = $this->reservationOwner === null;
+        $this->reservationOwner ??= ProcessEpgImport::acquireCompatibilityReservation(
+            $this->epgId,
+            $this->batchNo,
+        );
+
+        if (! is_string($this->reservationOwner)
+            || ! ProcessEpgImport::refreshReservation($this->epgId, $this->reservationOwner)
+        ) {
+            throw new \RuntimeException('EPG import completion reservation ownership was lost.');
         }
 
-        $this->handleReservedCompletion();
+        try {
+            $this->handleReservedCompletion();
+        } catch (\Throwable $throwable) {
+            if ($legacyReservation) {
+                ProcessEpgImport::forgetCompatibilityReservation($this->epgId, $this->batchNo);
+
+                if (! $this->reservationTransferred) {
+                    ProcessEpgImport::releaseReservation($this->epgId, $this->reservationOwner);
+                }
+            }
+
+            throw $throwable;
+        }
+
+        if ($legacyReservation) {
+            ProcessEpgImport::forgetCompatibilityReservation($this->epgId, $this->batchNo);
+        }
 
         if (! $this->reservationTransferred) {
             ProcessEpgImport::releaseReservation($this->epgId, $this->reservationOwner);
