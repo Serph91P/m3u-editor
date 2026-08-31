@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Enums\EpgSourceType;
 use App\Enums\Status;
 use App\Enums\SyncRunPhase;
 use App\Models\Channel;
@@ -295,14 +296,23 @@ class ProcessM3uImportComplete implements ShouldQueue
                 $password = urlencode($playlist->xtream_config['password']);
                 $epgUrl = "$baseUrl/xmltv.php?username=$username&password=$password";
 
-                // Make sure EPG doesn't already exist
-                $epg = $user->epgs()->where('url', $epgUrl)->first();
+                // Make sure EPG doesn't already exist. Prefer the provider tie:
+                // a URL EPG already linked to this playlist is the one we would
+                // have created, regardless of what host DNS failover left its URL
+                // pointing at. Fall back to a URL match so an EPG the user
+                // deliberately unlinked is not recreated on the next sync.
+                $epg = $user->epgs()
+                    ->where('playlist_id', $playlist->id)
+                    ->where('source_type', EpgSourceType::URL)
+                    ->first()
+                    ?? $user->epgs()->where('url', $epgUrl)->first();
                 if (! $epg) {
                     // Create EPG to trigger sync
                     $epg = $user->epgs()->create([
                         'name' => $playlist->name.' EPG',
                         'url' => $epgUrl,
                         'user_id' => $user->id,
+                        'playlist_id' => $playlist->id,
                         'user_agent' => $playlist->user_agent,
                         'disable_ssl_verification' => $playlist->disable_ssl_verification,
                     ]);

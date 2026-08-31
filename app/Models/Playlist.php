@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\EpgSourceType;
 use App\Enums\PlaylistChannelId;
 use App\Enums\PlaylistSourceType;
 use App\Enums\Status;
@@ -268,6 +269,15 @@ class Playlist extends Model
         return $this->hasMany(EpgMap::class);
     }
 
+    /**
+     * EPGs tied to this playlist as the same provider source. Optional link
+     * used for DNS failover URL sync and optimized EPG import.
+     */
+    public function epgs(): HasMany
+    {
+        return $this->hasMany(Epg::class);
+    }
+
     public function dvrSetting(): HasOne
     {
         return $this->hasOne(DvrSetting::class);
@@ -456,13 +466,26 @@ class Playlist extends Model
         $config = $this->xtream_config;
         $config['url'] = $workingUrl;
 
-        // Update any associated EPG whose URL points to any of the old Xtream endpoints.
-        // Using whereIn across all non-primary URLs guards against cases where a previous
-        // failover already moved the EPG to a fallback URL rather than the original primary.
+        // Keep any tied provider EPG's URL pointing at the working endpoint.
         $username = urlencode($this->xtream_config['username'] ?? '');
         $password = urlencode($this->xtream_config['password'] ?? '');
         $newEpgUrl = "{$workingUrl}/xmltv.php?username={$username}&password={$password}";
 
+        // Primary path: EPGs explicitly tied to this playlist as the same
+        // provider. The provider tie survives DNS failover rewriting the host,
+        // which URL string matching cannot. Limited to remote URL EPGs so a
+        // uploaded file or a SchedulesDirect EPG a user linked is never touched.
+        Epg::query()
+            ->where('playlist_id', $this->id)
+            ->where('source_type', EpgSourceType::URL)
+            ->where('is_merged', false)
+            ->whereNotNull('url')
+            ->where('url', 'like', 'http%')
+            ->update(['url' => $newEpgUrl]);
+
+        // Fallback path (untied EPGs): match on any of the now non-primary URLs,
+        // guarding against a previous failover having already moved the EPG to a
+        // fallback URL. Retained for EPGs not yet reconciled to a provider tie.
         if (! empty($newFallbacks)) {
             $oldEpgUrls = array_map(
                 fn (string $url) => $url."/xmltv.php?username={$username}&password={$password}",
@@ -470,6 +493,7 @@ class Playlist extends Model
             );
 
             Epg::where('user_id', $this->user_id)
+                ->whereNull('playlist_id')
                 ->whereIn('url', $oldEpgUrls)
                 ->update(['url' => $newEpgUrl]);
         }

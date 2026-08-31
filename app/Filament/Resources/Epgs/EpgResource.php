@@ -13,6 +13,7 @@ use App\Filament\Resources\Epgs\Pages\ViewEpg;
 use App\Jobs\GenerateEpgCache;
 use App\Jobs\ProcessEpgImport;
 use App\Models\Epg;
+use App\Models\Playlist;
 use App\Rules\CheckIfUrlOrLocalPath;
 use App\Rules\Cron;
 use App\Services\DateFormatService;
@@ -762,6 +763,25 @@ class EpgResource extends Resource implements CopilotResource
                         ]),
                 ]),
 
+            Section::make(__('Provider'))
+                ->description(__('Optionally tie this EPG to a playlist from the same provider.'))
+                ->visible(fn (Get $get): bool => ($get('source_type') ?: EpgSourceType::URL->value) === EpgSourceType::URL->value)
+                ->schema([
+                    Select::make('playlist_id')
+                        ->label(__('Provider Playlist'))
+                        ->helperText(__('Tie this EPG to a playlist from the same provider so the playlist\'s DNS failover keeps this EPG\'s URL in sync (optional).'))
+                        ->relationship('playlist', 'name')
+                        ->searchable()
+                        ->preload()
+                        ->nullable()
+                        ->live(),
+                    Placeholder::make('provider_mismatch_notice')
+                        ->hiddenLabel()
+                        ->columnSpanFull()
+                        ->visible(fn (Get $get): bool => self::providerHostsMismatch($get('url'), $get('playlist_id')))
+                        ->content(__('This EPG\'s source does not appear to match the selected playlist\'s provider. The link still works, but DNS sync and optimized import are designed for same-provider pairs.')),
+                ]),
+
             Section::make(__('Scheduling'))
                 ->description(__('Auto sync and scheduling options'))
                 ->columns(2)
@@ -824,6 +844,40 @@ class EpgResource extends Resource implements CopilotResource
                         ->maxLength(10),
                 ]),
         ];
+    }
+
+    /**
+     * True when a provider playlist is selected but its host(s) don't line up
+     * with the EPG URL's host, so the form can warn that this isn't a
+     * same-provider pair. Non-xtream playlists always count as a mismatch.
+     */
+    public static function providerHostsMismatch(?string $epgUrl, int|string|null $playlistId): bool
+    {
+        if (blank($playlistId) || blank($epgUrl)) {
+            return false;
+        }
+
+        $epgHost = parse_url((string) $epgUrl, PHP_URL_HOST);
+        if (! $epgHost) {
+            return false;
+        }
+
+        $playlist = Playlist::find($playlistId);
+        if (! $playlist) {
+            return false;
+        }
+
+        $providerHosts = collect($playlist->getOrderedXtreamUrls())
+            ->map(fn (string $url): ?string => parse_url($url, PHP_URL_HOST))
+            ->filter()
+            ->values()
+            ->all();
+
+        if (empty($providerHosts)) {
+            return true;
+        }
+
+        return ! in_array($epgHost, $providerHosts, true);
     }
 
     /**
