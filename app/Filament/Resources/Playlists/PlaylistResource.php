@@ -67,7 +67,6 @@ use Filament\Actions\ViewAction;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\ModalTableSelect;
-use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TagsInput;
@@ -77,6 +76,7 @@ use Filament\Forms\Components\ToggleButtons;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Actions;
+use Filament\Schemas\Components\Callout;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Group as ComponentsGroup;
@@ -1190,9 +1190,9 @@ class PlaylistResource extends Resource implements CopilotResource
                                         ->inline(false)
                                         ->live()
                                         ->default(false),
-                                    Placeholder::make('bypass_provider_limits_warning')
-                                        ->label(__('Provider Limits Warning'))
-                                        ->content('⚠️ Provider connection limits will not be enforced. If the provider strictly enforces its limit, streams may fail at the provider level rather than being blocked by the proxy.')
+                                    Callout::make(__('Provider Limits Warning'))
+                                        ->warning()
+                                        ->description('Provider connection limits will not be enforced. If the provider strictly enforces its limit, streams may fail at the provider level rather than being blocked by the proxy.')
                                         ->visible(fn (Get $get): bool => (bool) $get('profiles_enabled') && (bool) $get('bypass_provider_limits')),
                                 ]),
 
@@ -1212,9 +1212,8 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->columns(2)
                         ->visible(fn (Get $get): bool => $get('profiles_enabled'))
                         ->schema([
-                            Placeholder::make('primary_profile_info')
-                                ->label(__('Primary Account'))
-                                ->content(function (?Playlist $record): string {
+                            Callout::make(__('Primary Account'))
+                                ->description(function (?Playlist $record): string {
                                     if (! $record || ! $record->xtream_config) {
                                         return 'Configure Xtream credentials above first.';
                                     }
@@ -1489,9 +1488,8 @@ class PlaylistResource extends Resource implements CopilotResource
                             return $data;
                         }),
 
-                    Placeholder::make('pool_status')
-                        ->label(__('Pool Status'))
-                        ->content(function (?Playlist $record, Get $get): HtmlString {
+                    Callout::make(__('Pool Status'))
+                        ->description(function (?Playlist $record, Get $get): HtmlString {
                             if (! $record || ! $record->profiles_enabled) {
                                 return new HtmlString('Enable profiles to see pool status.');
                             }
@@ -1576,10 +1574,9 @@ class PlaylistResource extends Resource implements CopilotResource
                             : 'Specify the CRON schedule for automatic sync, e.g. "0 3 * * *".')
                         ->hidden(fn (Get $get): bool => ! $get('auto_sync')),
 
-                    Placeholder::make('synced')
+                    Callout::make(__('Last Synced'))
                         ->columnSpan(2)
-                        ->label(__('Last Synced'))
-                        ->content(fn ($record) => app(DateFormatService::class)->format($record?->synced)),
+                        ->description(fn ($record) => app(DateFormatService::class)->format($record?->synced)),
                 ]),
         ];
 

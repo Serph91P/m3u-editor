@@ -33,7 +33,6 @@ use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms;
 use Filament\Forms\Components\FileUpload;
-use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -41,6 +40,7 @@ use Filament\Forms\Components\ToggleButtons;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Actions;
+use Filament\Schemas\Components\Callout;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
@@ -775,11 +775,11 @@ class EpgResource extends Resource implements CopilotResource
                         ->preload()
                         ->nullable()
                         ->live(),
-                    Placeholder::make('provider_mismatch_notice')
-                        ->hiddenLabel()
+                    Callout::make()
+                        ->warning()
                         ->columnSpanFull()
                         ->visible(fn (Get $get): bool => self::providerHostsMismatch($get('url'), $get('playlist_id')))
-                        ->content(__('This EPG\'s source does not appear to match the selected playlist\'s provider. The link still works, but DNS sync and optimized import are designed for same-provider pairs.')),
+                        ->description(__('This EPG\'s source does not appear to match the selected playlist\'s provider. The link still works, but DNS sync and optimized import are designed for same-provider pairs.')),
                 ]),
 
             Section::make(__('Scheduling'))
@@ -827,10 +827,9 @@ class EpgResource extends Resource implements CopilotResource
                                 ->helperText(__('Number of retry attempts before giving up. Each retry waits attempt × 60 seconds (1 min, 2 min, 3 min…).'))
                                 ->hidden(fn (Get $get): bool => ! $get('auto_resync_on_failure')),
                         ])->hidden(fn (Get $get): bool => ! $get('auto_sync')),
-                    Placeholder::make('synced')
+                    Callout::make(__('Last Synced'))
                         ->columnSpanFull()
-                        ->label(__('Last Synced'))
-                        ->content(fn ($record) => app(DateFormatService::class)->format($record?->synced)),
+                        ->description(fn ($record) => app(DateFormatService::class)->format($record?->synced)),
                 ]),
 
             Section::make(__('Mapping'))
