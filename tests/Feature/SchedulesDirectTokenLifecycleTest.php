@@ -259,3 +259,88 @@ it('does not schedule the 60/120/180s resync when the sync hits the SD login lim
     expect($fresh->errors)->not->toContain('super-secret-password');
     expect($fresh->errors)->toContain('login limit');
 });
+
+it('reuses a sibling EPG token for the same provider account instead of logging in', function () {
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response([
+            'code' => 0, 'token' => 'should-not-be-requested', 'tokenExpires' => now()->addDay()->timestamp,
+        ]),
+    ]);
+
+    $userId = User::factory()->create()->id;
+    $withToken = sdEpg([
+        'user_id' => $userId,
+        'sd_token' => 'shared-account-token',
+        'sd_token_expires_at' => now()->addHours(20),
+    ]);
+    $withoutToken = sdEpg(['user_id' => $userId]);
+
+    $result = (new SchedulesDirectService)->authenticateFromEpg($withoutToken);
+
+    Http::assertNothingSent();
+    expect($result['token'])->toBe('shared-account-token');
+    expect($withoutToken->fresh()->sd_token)->toBe('shared-account-token');
+});
+
+it('does not borrow a token across owners even when the SD username matches', function () {
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response([
+            'code' => 0, 'token' => 'freshly-issued', 'tokenExpires' => now()->addDay()->timestamp,
+        ]),
+    ]);
+
+    sdEpg([
+        'user_id' => User::factory()->create()->id,
+        'sd_token' => 'other-owner-token',
+        'sd_token_expires_at' => now()->addHours(20),
+    ]);
+    $mine = sdEpg(['user_id' => User::factory()->create()->id]);
+
+    $result = (new SchedulesDirectService)->authenticateFromEpg($mine);
+
+    Http::assertSentCount(1);
+    expect($result['token'])->toBe('freshly-issued');
+});
+
+it('fences every EPG on the provider account when one trips the 4009 login limit', function () {
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response([
+            'response' => 'TOO_MANY_LOGINS', 'code' => 4009, 'message' => 'Exceeded maximum number of logins in 24 hours.',
+        ], 429),
+    ]);
+
+    $userId = User::factory()->create()->id;
+    $first = sdEpg(['user_id' => $userId]);
+    $second = sdEpg(['user_id' => $userId]);
+
+    expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($first))
+        ->toThrow(SchedulesDirectRateLimitException::class);
+
+    // The second EPG is now in cooldown without ever calling /token itself.
+    expect($second->fresh()->sd_login_cooldown_until)->not->toBeNull();
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response(['code' => 0, 'token' => 'x', 'tokenExpires' => now()->addDay()->timestamp]),
+    ]);
+    expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($second))
+        ->toThrow(SchedulesDirectRateLimitException::class);
+    Http::assertNothingSent();
+});
+
+it('clears the stale cooldown from sibling EPGs after a later successful login', function () {
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response([
+            'code' => 0, 'token' => 'recovered', 'tokenExpires' => now()->addDay()->timestamp,
+        ]),
+    ]);
+
+    $userId = User::factory()->create()->id;
+    // The account cooldown has elapsed on every row; the timestamps are just stale.
+    $recovering = sdEpg(['user_id' => $userId, 'sd_login_cooldown_until' => now()->subMinutes(5)]);
+    $sibling = sdEpg(['user_id' => $userId, 'sd_login_cooldown_until' => now()->subMinute()]);
+
+    (new SchedulesDirectService)->authenticateFromEpg($recovering);
+
+    expect($recovering->fresh()->sd_login_cooldown_until)->toBeNull();
+    expect($sibling->fresh()->sd_login_cooldown_until)->toBeNull();
+});

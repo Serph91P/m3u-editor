@@ -67,6 +67,12 @@ class SchedulesDirectService
     /** Length of the cooldown entered after a TOO_MANY_LOGINS (4009) rejection. */
     private const LOGIN_COOLDOWN_HOURS = 24;
 
+    /**
+     * Hard cap on a single /token HTTP call. A hung authentication must not pin
+     * the per-account lock for its full TTL or stall the worker.
+     */
+    private const TOKEN_HTTP_TIMEOUT_SECONDS = 45;
+
     /** How long a single-flight authentication holds the per-account lock. */
     private const AUTH_LOCK_SECONDS = 30;
 
@@ -260,7 +266,9 @@ class SchedulesDirectService
 
         $payload = ['username' => $username, 'password' => $passwordHash];
 
-        $response = Http::withHeaders($headers)->post(self::BASE_URL.'/'.self::API_VERSION.'/token', $payload);
+        $response = Http::withHeaders($headers)
+            ->timeout(self::TOKEN_HTTP_TIMEOUT_SECONDS)
+            ->post(self::BASE_URL.'/'.self::API_VERSION.'/token', $payload);
         $data = $response->json() ?? [];
 
         if (($data['code'] ?? null) === self::DEBUG_NOT_ENABLED_CODE) {
@@ -268,6 +276,7 @@ class SchedulesDirectService
 
             Log::debug('Retrying authentication without debug header');
             $response = Http::withHeaders(['User-Agent' => self::$USER_AGENT])
+                ->timeout(self::TOKEN_HTTP_TIMEOUT_SECONDS)
                 ->post(self::BASE_URL.'/'.self::API_VERSION.'/token', $payload);
             $data = $response->json() ?? [];
         }
@@ -313,6 +322,11 @@ class SchedulesDirectService
      * Workers that arrive while a peer is authenticating wait for the lock, then
      * reuse the token the peer stored instead of logging in again.
      *
+     * Coordination is per provider account, not per EPG row: several EPGs may
+     * share one Schedules Direct login, so a still-valid token is copied from a
+     * sibling before requesting a new one, and a 4009 cooldown fences the whole
+     * account.
+     *
      * @return array{token: string, expires: int}
      *
      * @throws SchedulesDirectRateLimitException when a 4009 cooldown is active or freshly triggered
@@ -326,25 +340,34 @@ class SchedulesDirectService
         // Set the current EPG for debug header tracking
         $this->setCurrentEpg($epg);
 
-        if ($epg->isInSchedulesDirectLoginCooldown()) {
-            throw new SchedulesDirectRateLimitException($epg->sd_login_cooldown_until);
+        if ($retryAt = $epg->activeSchedulesDirectAccountCooldownUntil()) {
+            throw new SchedulesDirectRateLimitException($retryAt);
         }
 
         // Namespacing hash only, not a security boundary: keeps the lock key
-        // stable and free of characters the cache store might choke on.
-        $lock = Cache::lock('sd-auth:'.hash('sha256', (string) $epg->sd_username), self::AUTH_LOCK_SECONDS);
+        // stable and free of characters the cache store might choke on. Folded
+        // to lowercase so rows that differ only by username casing still share
+        // the lock.
+        $lock = Cache::lock(
+            'sd-auth:'.hash('sha256', mb_strtolower(trim((string) $epg->sd_username))),
+            self::AUTH_LOCK_SECONDS,
+        );
 
         try {
             $lock->block(self::AUTH_LOCK_WAIT_SECONDS);
         } catch (LockTimeoutException) {
             // A peer is authenticating and is taking longer than our patience.
-            // Reuse whatever it has stored by now, otherwise give up for this run.
+            // Reuse whatever it (or a sibling EPG) has stored by now, otherwise
+            // give up for this run.
             $epg->refresh();
             if ($epg->hasValidSchedulesDirectToken()) {
                 return ['token' => $epg->sd_token, 'expires' => $epg->sd_token_expires_at->getTimestamp()];
             }
-            if ($epg->isInSchedulesDirectLoginCooldown()) {
-                throw new SchedulesDirectRateLimitException($epg->sd_login_cooldown_until);
+            if ($reused = $this->reuseSiblingSchedulesDirectToken($epg)) {
+                return $reused;
+            }
+            if ($retryAt = $epg->activeSchedulesDirectAccountCooldownUntil()) {
+                throw new SchedulesDirectRateLimitException($retryAt);
             }
             throw new Exception('Timed out waiting for a concurrent SchedulesDirect authentication');
         }
@@ -356,8 +379,11 @@ class SchedulesDirectService
             if ($epg->hasValidSchedulesDirectToken()) {
                 return ['token' => $epg->sd_token, 'expires' => $epg->sd_token_expires_at->getTimestamp()];
             }
-            if ($epg->isInSchedulesDirectLoginCooldown()) {
-                throw new SchedulesDirectRateLimitException($epg->sd_login_cooldown_until);
+            if ($reused = $this->reuseSiblingSchedulesDirectToken($epg)) {
+                return $reused;
+            }
+            if ($retryAt = $epg->activeSchedulesDirectAccountCooldownUntil()) {
+                throw new SchedulesDirectRateLimitException($retryAt);
             }
 
             $data = $this->postToken($epg->sd_username, hash('sha1', $epg->sd_password), withEpgHeaders: true);
@@ -380,6 +406,10 @@ class SchedulesDirectService
                 'sd_login_cooldown_until' => null,
             ]);
 
+            // The provider account is authenticating again, so lift the cooldown
+            // from every sibling EPG that shares this login.
+            $this->clearSiblingSchedulesDirectLoginCooldown($epg);
+
             return [
                 'token' => $data['token'],
                 'expires' => $expiresAt->getTimestamp(),
@@ -387,6 +417,65 @@ class SchedulesDirectService
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * Copy a still-valid Schedules Direct token from another EPG that shares this
+     * provider account onto $epg, so no /token request is needed. The provider
+     * issues one token per account; sharing it avoids a redundant login.
+     *
+     * @return array{token: string, expires: int}|null
+     */
+    private function reuseSiblingSchedulesDirectToken(Epg $epg): ?array
+    {
+        if (! $epg->sd_username) {
+            return null;
+        }
+
+        $sibling = Epg::query()
+            ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
+            ->whereKeyNot($epg->getKey())
+            ->whereNotNull('sd_token')
+            ->where('sd_token_expires_at', '>', now()->addSeconds(60))
+            ->orderByDesc('sd_token_expires_at')
+            ->first();
+
+        if (! $sibling || ! $sibling->hasValidSchedulesDirectToken()) {
+            return null;
+        }
+
+        $epg->update([
+            'sd_token' => $sibling->sd_token,
+            'sd_token_expires_at' => $sibling->sd_token_expires_at,
+            'sd_login_cooldown_until' => null,
+        ]);
+
+        Log::debug('SchedulesDirect token reused from a sibling EPG on the same account', [
+            'epg_id' => $epg->id,
+            'sibling_epg_id' => $sibling->id,
+        ]);
+
+        return [
+            'token' => $sibling->sd_token,
+            'expires' => $sibling->sd_token_expires_at->getTimestamp(),
+        ];
+    }
+
+    /**
+     * Clear the login-limit cooldown on every other EPG that shares this
+     * provider account after a successful authentication.
+     */
+    private function clearSiblingSchedulesDirectLoginCooldown(Epg $epg): void
+    {
+        if (! $epg->sd_username) {
+            return;
+        }
+
+        Epg::query()
+            ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
+            ->whereKeyNot($epg->getKey())
+            ->whereNotNull('sd_login_cooldown_until')
+            ->update(['sd_login_cooldown_until' => null]);
     }
 
     /**
@@ -399,21 +488,29 @@ class SchedulesDirectService
     }
 
     /**
-     * Enter a bounded cooldown after a 4009 rejection. An already-active cooldown
-     * is never pushed forward, so attempts that are locally suppressed during the
-     * window cannot extend it.
+     * Enter a bounded cooldown after a 4009 rejection. The limit is enforced by
+     * the provider per account, so every EPG that shares this login is fenced,
+     * not just the one that hit it. An already-active cooldown is never pushed
+     * forward, so attempts that are locally suppressed during the window cannot
+     * extend it.
      */
     private function beginLoginCooldown(Epg $epg): Carbon
     {
-        if ($epg->isInSchedulesDirectLoginCooldown()) {
-            return $epg->sd_login_cooldown_until;
+        if ($active = $epg->activeSchedulesDirectAccountCooldownUntil()) {
+            return $active;
         }
 
         $retryAt = now()->addHours(self::LOGIN_COOLDOWN_HOURS);
-        $epg->update(['sd_login_cooldown_until' => $retryAt]);
+
+        $fenced = Epg::query()
+            ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
+            ->update(['sd_login_cooldown_until' => $retryAt]);
+
+        $epg->forceFill(['sd_login_cooldown_until' => $retryAt])->syncOriginalAttribute('sd_login_cooldown_until');
 
         Log::warning('SchedulesDirect login limit reached (4009); entering cooldown', [
             'epg_id' => $epg->id,
+            'epgs_fenced' => $fenced,
             'retry_at' => $retryAt->toIso8601String(),
         ]);
 

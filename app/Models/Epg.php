@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Str;
 
@@ -130,6 +131,39 @@ class Epg extends Model
     {
         return $this->sd_login_cooldown_until
             && $this->sd_login_cooldown_until->isFuture();
+    }
+
+    /**
+     * Scope to the Schedules Direct EPGs that authenticate against one provider
+     * account: the same owner and the same username (case/whitespace-folded).
+     * A Schedules Direct token and its TOO_MANY_LOGINS (4009) cooldown belong to
+     * the provider account, so every row here shares both.
+     */
+    public function scopeSchedulesDirectAccount(Builder $query, string $username, ?int $userId = null): Builder
+    {
+        return $query
+            ->where('source_type', EpgSourceType::SCHEDULES_DIRECT)
+            ->whereRaw('LOWER(TRIM(sd_username)) = ?', [mb_strtolower(trim($username))])
+            ->when($userId !== null, fn (Builder $inner) => $inner->where('user_id', $userId));
+    }
+
+    /**
+     * The latest still-active Schedules Direct login cooldown (code 4009) across
+     * every EPG that shares this provider account, or null when none is active.
+     * The provider rate-limits logins per account, not per EPG row.
+     */
+    public function activeSchedulesDirectAccountCooldownUntil(): ?Carbon
+    {
+        if (empty($this->sd_username)) {
+            return $this->isInSchedulesDirectLoginCooldown() ? $this->sd_login_cooldown_until : null;
+        }
+
+        $until = static::query()
+            ->schedulesDirectAccount((string) $this->sd_username, $this->user_id)
+            ->where('sd_login_cooldown_until', '>', now())
+            ->max('sd_login_cooldown_until');
+
+        return $until ? Carbon::parse($until) : null;
     }
 
     public function hasSchedulesDirectCredentials(): bool
