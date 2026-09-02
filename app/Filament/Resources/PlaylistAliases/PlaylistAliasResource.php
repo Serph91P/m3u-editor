@@ -6,6 +6,7 @@ use App\Facades\PlaylistFacade;
 use App\Filament\Actions\GeneratePasswordAction;
 use App\Filament\Concerns\HasCopilotSupport;
 use App\Filament\Resources\CustomPlaylists\CustomPlaylistResource;
+use App\Filament\Resources\MergedPlaylists\MergedPlaylistResource;
 use App\Filament\Resources\Playlists\PlaylistResource;
 use App\Filament\Tables\CustomPlaylistCategoriesTable;
 use App\Filament\Tables\CustomPlaylistGroupsTable;
@@ -13,6 +14,7 @@ use App\Filament\Tables\SourceCategoriesTable;
 use App\Filament\Tables\SourceGroupsTable;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
+use App\Models\MergedPlaylist;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\SourceCategory;
@@ -93,7 +95,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
         return $table
             ->recordTitleAttribute('name')
             ->modifyQueryUsing(function (Builder $query) {
-                $query->with(['playlist', 'customPlaylist']);
+                $query->with(['playlist', 'customPlaylist', 'mergedPlaylist']);
             })
             ->deferLoading()
             ->columns([
@@ -108,7 +110,11 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                     ->getStateUsing(function ($record) {
                         $playlist = $record->getEffectivePlaylist();
                         if ($playlist) {
-                            $type = $playlist instanceof Playlist ? 'Playlist' : 'Custom Playlist';
+                            $type = match (true) {
+                                $playlist instanceof Playlist => 'Playlist',
+                                $playlist instanceof MergedPlaylist => 'Merged Playlist',
+                                default => 'Custom Playlist',
+                            };
 
                             return $playlist->name.' ('.$type.')';
                         }
@@ -121,6 +127,8 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                             return PlaylistResource::getUrl('edit', ['record' => $playlist->id]);
                         } elseif ($playlist instanceof CustomPlaylist) {
                             return CustomPlaylistResource::getUrl('edit', ['record' => $playlist->id]);
+                        } elseif ($playlist instanceof MergedPlaylist) {
+                            return MergedPlaylistResource::getUrl('edit', ['record' => $playlist->id]);
                         }
 
                         return null;
@@ -322,56 +330,85 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                 ->helperText(__('3-36 characters. Only letters, numbers, hyphens, and underscores are allowed.'))
                 ->hintIcon(
                     'heroicon-m-exclamation-triangle',
-                    tooltip: 'Be careful changing this value as this will change the URLs for the Playlist, its EPG, and HDHR.'
+                    tooltip: __('Be careful changing this value as this will change the URLs for the Playlist, its EPG, and HDHR.')
                 )
                 ->hidden(fn ($get): bool => ! $get('edit_uuid'))
                 ->required(),
 
             Schemas\Components\Fieldset::make(__('Source Playlist'))
                 ->schema([
-                    Forms\Components\Select::make('playlist_id')
-                        ->label(__('Standard Playlist'))
-                        ->options(fn () => Playlist::where('user_id', auth()->id())->pluck('name', 'id'))
-                        ->searchable()
-                        ->live()
-                        ->afterStateUpdated(function (Set $set, Get $get, $state) {
-                            if ($state) {
-                                $set('custom_playlist_id', null);
-                                $set('group', null);
-                                $set('group_id', null);
-                                self::resetGroupFilter($set);
-                                // Reset to single-provider config when switching to standard playlist
-                                self::initializeXtreamConfigForPlaylist($set, $state);
-                            }
-                        })
-                        ->requiredWithout('custom_playlist_id')
-                        ->validationMessages([
-                            'required_without' => 'Playlist is required if not using a custom playlist.',
+                    // The alias persists to one of three FK columns (playlist_id /
+                    // custom_playlist_id / merged_playlist_id). The form presents that as a
+                    // type + playlist pair (matching the notification-target picker in
+                    // Preferences). source_type / source_id are UI-only (never dehydrated);
+                    // the hidden FK fields below are the persisted state and are kept in sync
+                    // by afterStateUpdated on the way in, and by formatStateUsing on the way out.
+                    Forms\Components\Select::make('source_type')
+                        ->label(__('Playlist type'))
+                        ->options([
+                            'playlist' => __('Standard Playlist'),
+                            'custom_playlist' => __('Custom Playlist'),
+                            'merged_playlist' => __('Merged Playlist'),
                         ])
-                        ->helperText(__('Select a standard Playlist (only one set of alternative credentials can be configured).'))
-                        ->rules(['exists:playlists,id']),
-                    Forms\Components\Select::make('custom_playlist_id')
-                        ->label(__('Custom Playlist'))
-                        ->options(fn () => CustomPlaylist::where('user_id', auth()->id())->pluck('name', 'id'))
-                        ->searchable()
+                        ->default('playlist')
+                        ->selectablePlaceholder(false)
+                        ->required()
+                        ->dehydrated(false)
                         ->live()
-                        ->afterStateUpdated(function (Set $set, Get $get, $state) {
-                            if ($state) {
-                                $set('playlist_id', null);
-                                $set('group', null);
-                                $set('group_id', null);
-                                self::resetGroupFilter($set);
-                                // Initialize multi-provider config when switching to custom playlist
-                                self::initializeXtreamConfigForCustomPlaylist($set, $state);
-                            }
+                        ->formatStateUsing(fn (?PlaylistAlias $record): string => match (true) {
+                            $record?->custom_playlist_id !== null => 'custom_playlist',
+                            $record?->merged_playlist_id !== null => 'merged_playlist',
+                            default => 'playlist',
                         })
-                        ->requiredWithout('playlist_id')
-                        ->validationMessages([
-                            'required_without' => 'Custom Playlist is required if not using a standard playlist.',
-                        ])
-                        ->helperText(__('Select a Custom Playlist (multiple provider credentials can be configured to match source providers).'))
-                        ->dehydrated(true)
-                        ->rules(['exists:custom_playlists,id']),
+                        ->afterStateUpdated(function (Set $set): void {
+                            // Switching type clears the chosen playlist and any type-specific state.
+                            $set('source_id', null);
+                            $set('playlist_id', null);
+                            $set('custom_playlist_id', null);
+                            $set('merged_playlist_id', null);
+                            $set('group', null);
+                            $set('group_id', null);
+                            self::resetGroupFilter($set);
+                            $set('xtream_config', [[]]);
+                        })
+                        ->helperText(__('Choose the kind of playlist this alias points at. Changing it clears the selected playlist.')),
+                    Forms\Components\Select::make('source_id')
+                        ->label(__('Playlist'))
+                        ->options(fn (Get $get): array => self::sourcePlaylistOptions($get('source_type')))
+                        ->searchable()
+                        ->preload()
+                        ->required()
+                        ->dehydrated(false)
+                        ->live()
+                        ->formatStateUsing(fn (?PlaylistAlias $record): ?int => $record?->custom_playlist_id
+                            ?? $record?->merged_playlist_id
+                            ?? $record?->playlist_id)
+                        ->afterStateUpdated(function (Set $set, Get $get, $state): void {
+                            $type = $get('source_type') ?: 'playlist';
+                            $id = $state ? (int) $state : null;
+
+                            // Mirror the selection into the concrete FK field that is actually
+                            // persisted and that the rest of the form (group filter, credential
+                            // repeater) still reads.
+                            $set('playlist_id', $type === 'playlist' ? $id : null);
+                            $set('custom_playlist_id', $type === 'custom_playlist' ? $id : null);
+                            $set('merged_playlist_id', $type === 'merged_playlist' ? $id : null);
+                            $set('group', null);
+                            $set('group_id', null);
+                            self::resetGroupFilter($set);
+
+                            match ($type) {
+                                'custom_playlist' => self::initializeXtreamConfigForCustomPlaylist($set, $id),
+                                'merged_playlist' => self::initializeXtreamConfigForMergedPlaylist($set, $id),
+                                default => self::initializeXtreamConfigForPlaylist($set, $id),
+                            };
+                        })
+                        ->helperText(fn (Get $get): string => in_array($get('source_type'), ['custom_playlist', 'merged_playlist'], true)
+                            ? __('Multiple provider credentials can be configured to match source providers. Group and category filtering is not available for merged playlist aliases yet.')
+                            : __('Only one set of alternative credentials can be configured.')),
+                    Forms\Components\Hidden::make('playlist_id'),
+                    Forms\Components\Hidden::make('custom_playlist_id'),
+                    Forms\Components\Hidden::make('merged_playlist_id'),
                 ]),
 
             Schemas\Components\Fieldset::make(__('Provider Credentials'))
@@ -389,9 +426,9 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                         ->defaultItems(0)
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'The credential(s) URL will be used to match the provider for credential swap. If a URL in the source playlist matches a credential URL, the credentials will be swapped with the ones defined here.'
+                            tooltip: __('The credential(s) URL will be used to match the provider for credential swap. If a URL in the source playlist matches a credential URL, the credentials will be swapped with the ones defined here.')
                         )
-                        ->maxItems(fn ($get) => $get('custom_playlist_id') ? null : 1)
+                        ->maxItems(fn (Get $get) => in_array($get('source_type'), ['custom_playlist', 'merged_playlist'], true) ? null : 1)
                         ->minItems(1)
                         ->collapsible()
                         ->itemLabel(fn (array $state): ?string => 'Provider: '.parse_url($state['url'] ?? '', PHP_URL_HOST))
@@ -522,7 +559,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                         ->columnSpanfull()
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: 'Enter 0 to use to use provider defined value. This value is also used when generating the Xtream API user info response.'
+                            tooltip: __('Enter 0 to use to use provider defined value. This value is also used when generating the Xtream API user info response.')
                         )
                         ->rules(['min:0'])
                         ->type('number')
@@ -596,7 +633,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->nullable()
                                 ->hintIcon(
                                     'heroicon-m-question-mark-circle',
-                                    tooltip: 'Time seeking is not supported when transcoding VOD or Series streams. This is a limitation of live-transcoding. Leave empty to allow time seeking.'
+                                    tooltip: __('Time seeking is not supported when transcoding VOD or Series streams. This is a limitation of live-transcoding. Leave empty to allow time seeking.')
                                 )
                                 ->helperText(__('Select a transcoding profile to apply to VOD and Series streams for external clients (VLC, Kodi, etc.). Does not affect the in-app player. Leave empty for direct stream proxying.'))
                                 ->placeholder(__('Leave empty for direct stream proxying')),
@@ -657,11 +694,10 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                 ->columnSpanFull()
                 ->hidden(fn (Get $get): bool => ! $get('playlist_id') && ! $get('custom_playlist_id'))
                 ->schema([
-                    Forms\Components\Placeholder::make('custom_playlist_filter_note')
-                        ->label(__('What you can select'))
+                    Schemas\Components\Callout::make(__('What you can select'))
                         ->columnSpanFull()
                         ->visible(fn (Get $get): bool => (bool) $get('custom_playlist_id'))
-                        ->content(__('The lists below combine any groups you created in the custom playlist with the original source playlist groups.')),
+                        ->description(__('The lists below combine any groups you created in the custom playlist with the original source playlist groups.')),
 
                     Schemas\Components\Fieldset::make(__('Live channel groups'))
                         ->schema([
@@ -1052,6 +1088,22 @@ class PlaylistAliasResource extends Resource implements CopilotResource
     }
 
     /**
+     * Options for the "Playlist" select, scoped to the current user and the chosen type.
+     *
+     * @return array<int, string>
+     */
+    protected static function sourcePlaylistOptions(?string $type): array
+    {
+        $userId = auth()->id();
+
+        return match ($type) {
+            'custom_playlist' => CustomPlaylist::query()->where('user_id', $userId)->orderBy('name')->pluck('name', 'id')->all(),
+            'merged_playlist' => MergedPlaylist::query()->where('user_id', $userId)->orderBy('name')->pluck('name', 'id')->all(),
+            default => Playlist::query()->where('user_id', $userId)->orderBy('name')->pluck('name', 'id')->all(),
+        };
+    }
+
+    /**
      * Clear any channel filter selection when the alias is pointed at a different playlist,
      * since the previously selected group and category names no longer exist there.
      */
@@ -1238,6 +1290,41 @@ class PlaylistAliasResource extends Resource implements CopilotResource
         }
 
         $count = count($configs);
+        $set('xtream_config', $configs);
+    }
+
+    /**
+     * Initialize xtream_config for multi-provider format when switching to a Merged Playlist.
+     */
+    protected static function initializeXtreamConfigForMergedPlaylist(Set $set, ?int $mergedPlaylistId): void
+    {
+        if (! $mergedPlaylistId) {
+            return;
+        }
+
+        $mergedPlaylist = MergedPlaylist::find($mergedPlaylistId);
+        if (! $mergedPlaylist) {
+            return;
+        }
+
+        // Pre-populate one credential row per source playlist that exposes an Xtream URL.
+        $sourcePlaylists = $mergedPlaylist->getSourcePlaylistsForAlias();
+
+        if (empty($sourcePlaylists)) {
+            $set('xtream_config', [[]]);
+
+            return;
+        }
+
+        $configs = [];
+        foreach ($sourcePlaylists as $source) {
+            $configs[] = [
+                'url' => $source['url'] ?? '',
+                'username' => '',
+                'password' => '',
+            ];
+        }
+
         $set('xtream_config', $configs);
     }
 }

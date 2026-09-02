@@ -21,6 +21,11 @@ Schedule::command('app:refresh-playlist')
     ->everyMinute()
     ->withoutOverlapping();
 
+// Refresh TMDB dynamic groups (trending/popular/etc.) independent of playlist syncs
+Schedule::command('app:refresh-dynamic-groups')
+    ->dailyAt('04:15')
+    ->withoutOverlapping();
+
 // Refresh media server integrations
 Schedule::command('app:refresh-media-server-integrations')
     ->everyMinute()
@@ -85,7 +90,7 @@ Schedule::command('plugins:run-scheduled')
     ->withoutOverlapping();
 
 // Mark abandoned plugin runs stale so operators can resume them.
-Schedule::command('plugins:recover-stale-runs --minutes=15')
+Schedule::command('plugins:recover-stale-runs')
     ->everyMinute()
     ->withoutOverlapping();
 

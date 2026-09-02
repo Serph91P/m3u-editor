@@ -575,7 +575,12 @@ class ProcessM3uImport implements ShouldQueue
 
                     return;
                 }
-                $seriesCategories = collect($seriesCategoriesResponse->json());
+                // Some panels return a 200 with malformed entries (null/scalar elements)
+                // mixed into the category list. Drop anything that isn't a category array so
+                // downstream loops and job builders can rely on the shape.
+                $seriesCategories = collect($seriesCategoriesResponse->json())
+                    ->filter(fn ($category): bool => is_array($category))
+                    ->values();
             } else {
                 $seriesCategories = null;
             }
@@ -679,7 +684,7 @@ class ProcessM3uImport implements ShouldQueue
                             'source_id' => $item->stream_id, // source ID for the channel
                             'channel' => $item->num ?? null,
                             'catchup' => $item->tv_archive ?? null,
-                            'shift' => $item->tv_archive_duration ?? 0,
+                            'shift' => (int) ($item->tv_archive_duration ?? 0) * 24,
                             // 'tvg_shift' => $item->tvg_shift ?? null, // @TODO: check if this is on Xtream API, not seeing it as a deffinition in the API docs
                         ];
                         if ($autoSort) {
@@ -980,10 +985,12 @@ class ProcessM3uImport implements ShouldQueue
                                     }
                                 }
 
-                                // Catch-up window (in hours, matching Xtream's tv_archive_duration).
-                                // Providers use different attributes for this: 'timeshift'/'tvg-shift' are
-                                // already in hours, while 'catchup-days'/'tvg-rec' express it in days.
-                                // Check in precedence order and stop at the first one present.
+                                // Catch-up window in hours. Providers use different attributes for this:
+                                // 'timeshift'/'tvg-shift' are already in hours, while 'catchup-days'/
+                                // 'tvg-rec' express it in days. Xtream's 'tv_archive_duration' is also
+                                // days (see XtreamApiController::resolveTvArchiveDuration, #1389) and is
+                                // converted days→hours at the Xtream ingest site. Check in precedence
+                                // order and stop at the first one present.
                                 foreach ([
                                     'timeshift' => 1,
                                     'tvg-shift' => 1,
@@ -1517,27 +1524,31 @@ class ProcessM3uImport implements ShouldQueue
         // exist in the DB by the time the SyncPipeline is built. This guarantees the
         // FindReplace phase can see (and rewrite) series titles before STRM filenames are
         // generated. See SYNC_RUN_SUMMARY.md for full pipeline ordering rationale.
+        $seriesCategoryCount = 0;
         if ($seriesCategories) {
-            $categoryCount = $seriesCategories->count();
-            $seriesCategories->each(function ($category, $index) use (&$jobs, $playlistId, $batchNo, $categoryCount) {
-                if (! $this->preprocess || $this->shouldIncludeSeries($category['category_name'] ?? '')) {
-                    // Check if category is auto-enabled
-                    $autoEnable = (bool) ($this->playlist->enable_series
-                        || $this->enabledCategories->contains($category['category_name'] ?? ''));
+            $seriesCategoriesToImport = $seriesCategories
+                ->filter(fn ($category): bool => ! $this->preprocess
+                    || $this->shouldIncludeSeries($category['category_name'] ?? ''))
+                ->values();
+            $seriesCategoryCount = $seriesCategoriesToImport->count();
 
-                    // Create a job for each series category
-                    $jobs[] = new ProcessM3uImportSeriesChunk(
-                        [
-                            'categoryId' => $category['category_id'],
-                            'categoryName' => $category['category_name'],
-                            'playlistId' => $playlistId,
-                        ],
-                        $categoryCount,
-                        $batchNo,
-                        $index,
-                        $autoEnable
-                    );
-                }
+            $seriesCategoriesToImport->each(function ($category, $index) use (&$jobs, $playlistId, $batchNo, $seriesCategoryCount) {
+                // Check if category is auto-enabled
+                $autoEnable = (bool) ($this->playlist->enable_series
+                    || $this->enabledCategories->contains($category['category_name'] ?? ''));
+
+                // Create a job for each series category
+                $jobs[] = new ProcessM3uImportSeriesChunk(
+                    [
+                        'categoryId' => $category['category_id'],
+                        'categoryName' => $category['category_name'],
+                        'playlistId' => $playlistId,
+                    ],
+                    $seriesCategoryCount,
+                    $batchNo,
+                    $index,
+                    $autoEnable
+                );
             });
         }
 
@@ -1551,6 +1562,11 @@ class ProcessM3uImport implements ShouldQueue
             isNew: $this->isNew,
             runningLiveImport: $liveStreamsEnabled,
             runningVodImport: $vodStreamsEnabled,
+            // Only finalize series_progress at 100 when series categories were actually
+            // imported. A disabled series import, or an enabled one that resolved to zero
+            // selected/available categories, must leave series_progress at its start value
+            // (0) so the UI does not show a completed phase that never ran.
+            runningSeriesImport: $seriesCategoryCount > 0,
             syncRunId: $this->syncRunId,
         );
 

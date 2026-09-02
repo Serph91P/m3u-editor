@@ -182,6 +182,46 @@ class Episode extends Model
     }
 
     /**
+     * The next enabled episode in the same series: the next episode in this
+     * season, or - failing that - the first episode of the next season.
+     *
+     * Uses the ordering the rest of the app treats as canonical for series
+     * playback (`season`, `episode_num`, `id`). Returns null when this is the
+     * last available episode.
+     */
+    public function nextInSeries(): ?Episode
+    {
+        if ($this->series_id === null) {
+            return null;
+        }
+
+        $base = static::query()
+            ->with('series')
+            ->where('series_id', $this->series_id)
+            ->where('enabled', true);
+
+        $nextInSeason = $this->season === null
+            ? null
+            : (clone $base)
+                ->where('season', $this->season)
+                ->where('episode_num', '>', $this->episode_num)
+                ->orderBy('episode_num')
+                ->orderBy('id')
+                ->first();
+
+        if ($nextInSeason !== null) {
+            return $nextInSeason;
+        }
+
+        return (clone $base)
+            ->where('season', '>', $this->season ?? 0)
+            ->orderBy('season')
+            ->orderBy('episode_num')
+            ->orderBy('id')
+            ->first();
+    }
+
+    /**
      * AIOStreams-added episodes can't be probed.
      */
     public function scopeNotAioManaged(Builder $query): Builder
