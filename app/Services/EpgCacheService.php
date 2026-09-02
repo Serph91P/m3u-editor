@@ -191,6 +191,12 @@ class EpgCacheService
             $stats = $this->parseAndSaveEpgDataSinglePass($epg, $filePath, $totalChannels, $totalProgrammes);
             Log::debug("Processed {$stats['channels']} channels and {$stats['programmes']} programmes across {$stats['date_count']} dates");
 
+            // Drop any read handle memoized before this rebuild so the freshly
+            // swapped-in SQLite store (not the pre-rebuild file, or a cached
+            // "no store, use JSONL" null) is what populateDvrProgrammes and
+            // later reads on this instance pick up.
+            $this->forgetProgrammeStore($epg);
+
             // Save metadata
             $metadata = [
                 'cache_created' => time(),
@@ -221,8 +227,16 @@ class EpgCacheService
             // Populate epg_programmes DB table for DVR-enabled playlists
             $this->populateDvrProgrammes($epg);
 
+            // Release the read handle opened while populating DVR so a long-lived
+            // service instance (a command caching several EPGs) does not hold one
+            // open PDO connection per EPG for the rest of its life.
+            $this->forgetProgrammeStore($epg);
+
             return true;
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // \Throwable, not Exception: a TypeError/Error mid-parse (or a failed
+            // store swap) must still leave the EPG flagged as a failed cache
+            // rather than propagating past a "success" metadata write.
             Log::error("Failed to cache EPG data for {$epg->name}: {$e->getMessage()}");
 
             return false;
@@ -558,182 +572,18 @@ class EpgCacheService
     }
 
     /**
-     * Parse and save channels (DEPRECATED - kept for backward compatibility)
-     * Use parseAndSaveEpgDataSinglePass instead for better performance
+     * Close and forget the memoized programme store read handle for an EPG.
+     * Called after a cache rebuild so the next {@see programmeStore()} reopens
+     * against the freshly written SQLite file, and so a long-lived service
+     * instance (e.g. a command caching several EPGs) does not accumulate open
+     * PDO handles.
      */
-    private function parseAndSaveChannels(Epg $epg, string $filePath, int $totalChannels): int
+    private function forgetProgrammeStore(Epg $epg): void
     {
-        $channelCount = 0;
-        $batchSize = 1000; // Process channels in batches
-        $channelBatch = [];
-
-        foreach ($this->parseChannelsStream($filePath) as $channelId => $channel) {
-            $channelBatch[$channelId] = $channel;
-            $channelCount++;
-
-            // Save in batches to manage memory
-            if (count($channelBatch) >= $batchSize) {
-                $this->saveChannelBatch($epg, $channelBatch, $channelCount <= $batchSize);
-                $channelBatch = [];
-
-                // Update progress
-                // Max is 20% for channels since programmes are more intensive
-                $progress = $totalChannels > 0
-                    ? min(20, round(($channelCount / $totalChannels) * 20))
-                    : 20;
-                $epg->update(['cache_progress' => $progress]);
-            }
+        if (array_key_exists($epg->id, $this->programmeStores)) {
+            $this->programmeStores[$epg->id]?->close();
+            unset($this->programmeStores[$epg->id]);
         }
-
-        // Save remaining channels
-        if (! empty($channelBatch)) {
-            $this->saveChannelBatch($epg, $channelBatch, $channelCount <= $batchSize);
-        }
-
-        return $channelCount;
-    }
-
-    /**
-     * Parse and save programmes using direct file append
-     */
-    private function parseAndSaveProgrammes(Epg $epg, string $filePath, int $totalChannels, int $totalProgrammes): array
-    {
-        $parsedProgrammes = 0;
-        $dateRangeTracker = ['min_date' => null, 'max_date' => null];
-        $processedDates = [];
-        $openFiles = []; // Keep track of open file handles
-
-        foreach ($this->parseProgrammesStream($filePath) as $programme) {
-            $date = Carbon::parse($programme['start'])->format('Y-m-d');
-
-            // Track date range
-            if ($dateRangeTracker['min_date'] === null || $date < $dateRangeTracker['min_date']) {
-                $dateRangeTracker['min_date'] = $date;
-            }
-            if ($dateRangeTracker['max_date'] === null || $date > $dateRangeTracker['max_date']) {
-                $dateRangeTracker['max_date'] = $date;
-            }
-
-            // Use direct file append with minimal memory footprint
-            $this->directAppendProgramme($epg, $date, $programme['channel'], $programme, $openFiles);
-            $parsedProgrammes++;
-            $processedDates[$date] = true;
-
-            // Force garbage collection every 50 programmes (more frequent)
-            if ($parsedProgrammes % 50 === 0) {
-                if (function_exists('gc_collect_cycles')) {
-                    gc_collect_cycles();
-                }
-
-                // Close file handles periodically to prevent too many open files
-                if (count($openFiles) > 10) {
-                    foreach ($openFiles as $handle) {
-                        if (is_resource($handle)) {
-                            fclose($handle);
-                        }
-                    }
-                    $openFiles = [];
-                }
-
-                // Update progress
-                $progress = $totalChannels > 0
-                    ? min(99, 20 + round(($parsedProgrammes / $totalProgrammes) * 80))
-                    : 99;
-                $epg->update(['cache_progress' => $progress]);
-            }
-        }
-
-        // Close any remaining file handles
-        foreach ($openFiles as $handle) {
-            if (is_resource($handle)) {
-                fclose($handle);
-            }
-        }
-
-        return [
-            'total' => $totalProgrammes,
-            'date_count' => count($processedDates),
-            'date_range' => $dateRangeTracker,
-        ];
-    }
-
-    /**
-     * Direct append programme - JSONL format for efficiency
-     */
-    private function directAppendProgramme(Epg $epg, string $date, string $channelId, array $programme, array &$openFiles): void
-    {
-        $filename = "programmes-{$date}.jsonl"; // Use JSONL format for line-by-line append
-        $programmesPath = $this->getCacheFilePath($epg, $filename);
-        $fullPath = Storage::disk('local')->path($programmesPath);
-
-        // Ensure directory exists
-        $dir = dirname($fullPath);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-
-        // Prepare the programme record with channel info
-        $record = [
-            'channel' => $channelId,
-            'programme' => $programme,
-        ];
-
-        // Append to file using direct file operations (most memory efficient)
-        $line = json_encode($record, JSON_UNESCAPED_UNICODE)."\n";
-
-        try {
-            // Use file_put_contents with append flag - minimal memory usage
-            file_put_contents($fullPath, $line, FILE_APPEND | LOCK_EX);
-        } catch (Exception $e) {
-            Log::error("Failed to append programme to {$filename}: {$e->getMessage()}");
-        }
-    }
-
-    /**
-     * Stream parse channels from EPG file using generators
-     */
-    private function parseChannelsStream(string $filePath): Generator
-    {
-        $channelReader = new XMLReader;
-        $channelReader->open('compress.zlib://'.$filePath);
-
-        while (@$channelReader->read()) {
-            if ($channelReader->nodeType == XMLReader::ELEMENT && $channelReader->name === 'channel') {
-                $channelId = trim($channelReader->getAttribute('id') ?: '');
-                $innerXML = $channelReader->readOuterXml();
-                $innerReader = new XMLReader;
-                $innerReader->xml($innerXML);
-
-                $channel = [
-                    'id' => $channelId,
-                    'display_name' => '',
-                    'icon' => '',
-                    'lang' => 'en',
-                ];
-
-                while (@$innerReader->read()) {
-                    if ($innerReader->nodeType == XMLReader::ELEMENT) {
-                        switch ($innerReader->name) {
-                            case 'display-name':
-                                if (! $channel['display_name']) {
-                                    $channel['display_name'] = trim($innerReader->readString() ?: '');
-                                    $channel['lang'] = trim($innerReader->getAttribute('lang') ?: '') ?: 'en';
-                                }
-                                break;
-                            case 'icon':
-                                $channel['icon'] = trim($innerReader->getAttribute('src') ?: '');
-                                break;
-                        }
-                    }
-                }
-                $innerReader->close();
-
-                if ($channelId) {
-                    yield $channelId => $channel;
-                }
-            }
-        }
-        $channelReader->close();
     }
 
     /**
@@ -810,48 +660,6 @@ class EpgCacheService
             }
         }
         $programReader->close();
-    }
-
-    /**
-     * Save channel batch to file
-     */
-    private function saveChannelBatch(Epg $epg, array $channelBatch, bool $isFirst): void
-    {
-        $channelsPath = $this->getCacheFilePath($epg, self::CHANNELS_FILE);
-
-        if ($isFirst) {
-            // First batch - create new file
-            Storage::disk('local')->put(
-                $channelsPath,
-                json_encode($channelBatch, JSON_UNESCAPED_UNICODE)
-            );
-        } else {
-            // Subsequent batches - merge with existing data using JsonMachine
-            $existingData = [];
-
-            if (Storage::disk('local')->exists($channelsPath)) {
-                try {
-                    $existingStream = Items::fromFile(
-                        Storage::disk('local')->path($channelsPath),
-                        ['decoder' => new ExtJsonDecoder(true)]
-                    );
-
-                    // Convert existing data to array (should be relatively small for channels)
-                    foreach ($existingStream as $channelId => $channel) {
-                        $existingData[$channelId] = $channel;
-                    }
-                } catch (Exception $e) {
-                    Log::warning("Could not read existing channel data, creating new file: {$e->getMessage()}");
-                    $existingData = [];
-                }
-            }
-
-            $mergedData = array_merge($existingData, $channelBatch);
-            Storage::disk('local')->put(
-                $channelsPath,
-                json_encode($mergedData, JSON_UNESCAPED_UNICODE)
-            );
-        }
     }
 
     /**

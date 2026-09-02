@@ -11,13 +11,14 @@ use App\Models\PlaylistAlias;
 use App\Plugins\PluginHookDispatcher;
 use App\Services\EpgCacheService;
 use Filament\Notifications\Notification;
+use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
-class GenerateEpgCache implements ShouldQueue
+class GenerateEpgCache implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
@@ -30,6 +31,19 @@ class GenerateEpgCache implements ShouldQueue
 
     // Delay between attempts if it fails
     public $backoff = 300; // 5 minutes
+
+    // Hold the uniqueness lock for slightly longer than the timeout so a crashed
+    // worker cannot leave a stale lock, while still blocking a second concurrent
+    // rebuild of the same EPG (overlapping runs corrupt the shared SQLite store).
+    public int $uniqueFor = 60 * 120 + 300;
+
+    /**
+     * One in-flight cache generation per EPG. Different EPGs run in parallel.
+     */
+    public function uniqueId(): string
+    {
+        return 'generate-epg-cache-'.$this->uuid;
+    }
 
     /**
      * Create a new job instance.
