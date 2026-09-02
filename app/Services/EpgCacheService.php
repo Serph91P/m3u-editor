@@ -45,33 +45,25 @@ class EpgCacheService
     private const MAX_PROGRAMMES = 10000000; // Safety limit
 
     /**
-     * Suffix for the per-date channel offset index written alongside each
-     * `programmes-{date}.jsonl`. Maps an EPG channel id to the byte ranges of
-     * its lines in that file so reads can seek to just the requested channels
-     * instead of scanning and JSON-decoding every line. Optional: reads fall
-     * back to a full scan when the file is absent (legacy caches, or an index
-     * build that was skipped for being too large).
-     */
-    private const PROGRAMME_INDEX_SUFFIX = '.index.json';
-
-    /** Temporary sidecar the parse pass appends channel byte ranges to before compaction. */
-    private const PROGRAMME_RANGES_SUFFIX = '.ranges.tmp';
-
-    /**
-     * Safety valve for {@see buildProgrammeIndexes()}: if a single date would
-     * hold more merged ranges than this, its index is skipped and readers scan
-     * that date instead. Contiguous-run merging keeps real feeds far below this.
-     */
-    private const MAX_INDEX_ENTRIES = 5000000;
-
-    /**
-     * Per-instance memo of decoded programme indexes, keyed by "{epgId}:{date}".
-     * Indexes are small (offsets only) and a single request can read the same
-     * date many times (the batch endpoint alone reads date + next day).
+     * Single-file SQLite store of all cached programmes for an EPG, written
+     * inside the versioned cache dir. Replaces the legacy per-date
+     * `programmes-{date}.jsonl` files and their `.index.json` offset index;
+     * reads fall back to the JSONL scan when this file is absent (v1 caches, or
+     * v2 caches written before the SQLite switch).
      *
-     * @var array<string, array<string, list<array{0: int, 1: int}>>|null>
+     * @see EpgProgrammeStore
      */
-    private array $programmeIndexCache = [];
+    private const PROGRAMMES_DB_FILE = 'programmes.sqlite';
+
+    /**
+     * Per-instance memo of opened {@see EpgProgrammeStore} read handles, keyed
+     * by EPG id (null = no SQLite store, use the JSONL fallback). A single
+     * request reads the same store repeatedly (the batch endpoint alone reads
+     * date + next day for up to 100 channels).
+     *
+     * @var array<int, EpgProgrammeStore|null>
+     */
+    private array $programmeStores = [];
 
     /**
      * Get the cache directory path for an EPG
@@ -351,11 +343,11 @@ class EpgCacheService
         $channelBatch = [];
         $dateRangeTracker = ['min_date' => null, 'max_date' => null];
         $processedDates = [];
-        $programmeFileHandles = []; // Keep file handles open for better performance
-        $programmeWriteOffsets = []; // date => bytes written so far, for the offset index
-        $rangeFileHandles = []; // date => handle to the ".ranges.tmp" sidecar
         $lastProgressUpdate = 0;
         $progressUpdateInterval = 5000; // Update progress every 5000 items instead of 50
+
+        $store = new EpgProgrammeStore;
+        $store->beginWrite(Storage::disk('local')->path($this->getCacheFilePath($epg, self::PROGRAMMES_DB_FILE)));
 
         try {
             while (@$reader->read()) {
@@ -440,25 +432,10 @@ class EpgCacheService
                     $innerReader = new XMLReader;
                     $innerReader->xml($innerXML);
 
-                    $programme = [
-                        'channel' => $channelId,
-                        'start' => $startDateTime->toISOString(),
-                        'stop' => $stopDateTime ? $stopDateTime->toISOString() : null,
-                        'title' => '',
-                        'subtitle' => '',
-                        'desc' => '',
-                        'category' => '',
-                        'episode_num' => '',
-                        'episode_nums' => [],
-                        'rating' => '',
-                        'icon' => '',
-                        'images' => [],
-                        'new' => false,
-                        'previously_shown' => false,
-                        'premiere' => false,
-                        'urls' => [],
-                        'production_year' => null,
-                    ];
+                    $programme = EpgProgrammeStore::EMPTY_PROGRAMME;
+                    $programme['channel'] = $channelId;
+                    $programme['start'] = $startDateTime->toISOString();
+                    $programme['stop'] = $stopDateTime ? $stopDateTime->toISOString() : null;
 
                     while (@$innerReader->read()) {
                         if ($innerReader->nodeType == XMLReader::ELEMENT) {
@@ -468,15 +445,12 @@ class EpgCacheService
                     $innerReader->close();
 
                     if ($programme['title']) {
-                        // Use persistent file handles for better performance
-                        $this->directAppendProgrammeOptimized(
-                            $epg,
-                            $date,
+                        $store->insert(
                             $channelId,
+                            $date,
+                            $startDateTime->getTimestamp(),
+                            $stopDateTime?->getTimestamp(),
                             $programme,
-                            $programmeFileHandles,
-                            $programmeWriteOffsets,
-                            $rangeFileHandles,
                         );
                         $processedDates[$date] = true;
                     }
@@ -504,21 +478,11 @@ class EpgCacheService
                 $this->saveChannelBatchOptimized($epg, $channelBatch, $channelCount <= $channelBatchSize);
             }
 
-            // Close all programme file handles
-            foreach ($programmeFileHandles as $handle) {
-                if (is_resource($handle)) {
-                    fclose($handle);
-                }
-            }
-            foreach ($rangeFileHandles as $handle) {
-                if (is_resource($handle)) {
-                    fclose($handle);
-                }
-            }
-
-            // Compact the per-date ".ranges.tmp" sidecars into seekable offset
-            // indexes. Best-effort: a failure here just means readers scan.
-            $this->buildProgrammeIndexes($epg, array_keys($processedDates));
+            // Commit, index, and atomically swap the SQLite store into place.
+            $store->finish();
+        } catch (\Throwable $e) {
+            $store->discard();
+            throw $e;
         } finally {
             $reader->close();
         }
@@ -567,282 +531,30 @@ class EpgCacheService
     }
 
     /**
-     * Optimized direct append using persistent file handles.
-     *
-     * Also records each written line's byte range in a per-date ".ranges.tmp"
-     * sidecar (offset, length, channel id) which {@see buildProgrammeIndexes()}
-     * later compacts into a seekable channel offset index.
-     *
-     * @param  array<string, resource>  $fileHandles  date => open programmes-{date}.jsonl handle
-     * @param  array<string, int>  $writeOffsets  date => bytes written so far to that file
-     * @param  array<string, resource>  $rangeHandles  date => open programmes-{date}.jsonl.ranges.tmp handle
+     * Open (once per request) the SQLite programme store for an EPG, or null
+     * when the active cache predates the SQLite switch (v1 caches, or v2 caches
+     * still holding `programmes-{date}.jsonl`) so callers use the JSONL scan.
      */
-    private function directAppendProgrammeOptimized(
-        Epg $epg,
-        string $date,
-        string $channelId,
-        array $programme,
-        array &$fileHandles,
-        array &$writeOffsets,
-        array &$rangeHandles,
-    ): void {
-        $filename = "programmes-{$date}.jsonl";
-
-        // Reuse file handle if already open
-        if (! isset($fileHandles[$date])) {
-            $programmesPath = $this->getCacheFilePath($epg, $filename);
-            $fullPath = Storage::disk('local')->path($programmesPath);
-
-            // Ensure directory exists
-            $dir = dirname($fullPath);
-            if (! is_dir($dir)) {
-                mkdir($dir, 0755, true);
-            }
-
-            $fileHandles[$date] = fopen($fullPath, 'a');
-            if (! $fileHandles[$date]) {
-                Log::error("Failed to open file handle for {$filename}");
-
-                return;
-            }
-            // Track the write position ourselves rather than trusting ftell()
-            // on an append handle: clearCache() emptied the dir, so this run is
-            // the sole writer and the running byte count is the file size.
-            $writeOffsets[$date] ??= 0;
-        }
-
-        if (! isset($rangeHandles[$date])) {
-            $rangesPath = $this->getCacheFilePath($epg, $filename.self::PROGRAMME_RANGES_SUFFIX);
-            $rangeHandles[$date] = fopen(Storage::disk('local')->path($rangesPath), 'a');
-        }
-
-        $record = [
-            'channel' => $channelId,
-            'programme' => $programme,
-        ];
-
-        $line = json_encode($record, JSON_UNESCAPED_UNICODE)."\n";
-        $offset = $writeOffsets[$date] ?? 0;
-        $length = strlen($line);
-        fwrite($fileHandles[$date], $line);
-        $writeOffsets[$date] = $offset + $length;
-
-        if (is_resource($rangeHandles[$date] ?? null)) {
-            // channel id is written last so it can carry tabs without ambiguity
-            fwrite($rangeHandles[$date], "{$offset}\t{$length}\t{$channelId}\n");
-        }
-
-        // Close handles if we have too many open (prevent "too many open files" error)
-        if (count($fileHandles) > 50) {
-            foreach ($fileHandles as $d => $handle) {
-                if ($d !== $date && is_resource($handle)) {
-                    fclose($handle);
-                    unset($fileHandles[$d]);
-                }
-            }
-            foreach ($rangeHandles as $d => $handle) {
-                if ($d !== $date && is_resource($handle)) {
-                    fclose($handle);
-                    unset($rangeHandles[$d]);
-                }
-            }
-        }
-    }
-
-    /**
-     * Compact each date's ".ranges.tmp" sidecar into a
-     * "programmes-{date}.jsonl.index.json" map of channel id => merged byte
-     * ranges, then delete the sidecar.
-     *
-     * Ranges are recorded in file (offset-ascending) order, so consecutive
-     * lines for the same channel collapse into a single [offset, length] run -
-     * feeds that group programmes by channel end up with one run per channel.
-     *
-     * Best-effort: any failure (or a date exceeding {@see MAX_INDEX_ENTRIES})
-     * leaves no index file for that date, and readers fall back to a full scan.
-     *
-     * @param  list<string>  $dates
-     */
-    private function buildProgrammeIndexes(Epg $epg, array $dates): void
+    private function programmeStore(Epg $epg): ?EpgProgrammeStore
     {
-        $disk = Storage::disk('local');
-
-        foreach ($dates as $date) {
-            $jsonlName = "programmes-{$date}.jsonl";
-            $rangesPath = $this->getCacheFilePath($epg, $jsonlName.self::PROGRAMME_RANGES_SUFFIX);
-
-            if (! $disk->exists($rangesPath)) {
-                continue;
-            }
-
-            try {
-                $handle = fopen($disk->path($rangesPath), 'r');
-                if ($handle === false) {
-                    continue;
-                }
-
-                /** @var array<string, list<array{0: int, 1: int}>> $channels */
-                $channels = [];
-                $entryCount = 0;
-                $tooLarge = false;
-
-                while (($line = fgets($handle)) !== false) {
-                    $line = rtrim($line, "\r\n");
-                    if ($line === '') {
-                        continue;
-                    }
-
-                    $parts = explode("\t", $line, 3);
-                    if (count($parts) !== 3) {
-                        continue;
-                    }
-
-                    [$offset, $length, $channelId] = $parts;
-                    $offset = (int) $offset;
-                    $length = (int) $length;
-
-                    $runs = $channels[$channelId] ?? [];
-                    $last = $runs === [] ? null : $runs[count($runs) - 1];
-
-                    if ($last !== null && $offset === $last[0] + $last[1]) {
-                        $runs[count($runs) - 1][1] = $last[1] + $length;
-                    } else {
-                        $runs[] = [$offset, $length];
-                        $entryCount++;
-                    }
-
-                    $channels[$channelId] = $runs;
-
-                    if ($entryCount > self::MAX_INDEX_ENTRIES) {
-                        $tooLarge = true;
-                        break;
-                    }
-                }
-
-                fclose($handle);
-
-                if ($tooLarge) {
-                    Log::warning("EPG programme index for {$date} exceeded ".self::MAX_INDEX_ENTRIES.' ranges; skipping (reads will scan)');
-                } else {
-                    $disk->put(
-                        $this->getCacheFilePath($epg, $jsonlName.self::PROGRAMME_INDEX_SUFFIX),
-                        json_encode(['v' => 1, 'channels' => $channels], JSON_UNESCAPED_UNICODE)
-                    );
-                }
-
-                unset($channels);
-            } catch (Exception $e) {
-                Log::warning("Failed to build EPG programme index for {$date}: {$e->getMessage()}");
-            } finally {
-                $disk->delete($rangesPath);
-            }
-        }
-    }
-
-    /**
-     * Load and memoize the decoded channel offset index for a date, or null
-     * when no usable index exists (legacy cache, skipped build, corrupt file).
-     *
-     * @return array<string, list<array{0: int, 1: int}>>|null
-     */
-    private function loadProgrammeIndex(Epg $epg, string $date): ?array
-    {
-        $memoKey = "{$epg->id}:{$date}";
-        if (array_key_exists($memoKey, $this->programmeIndexCache)) {
-            return $this->programmeIndexCache[$memoKey];
+        if (array_key_exists($epg->id, $this->programmeStores)) {
+            return $this->programmeStores[$epg->id];
         }
 
-        $indexPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl".self::PROGRAMME_INDEX_SUFFIX);
-        $index = null;
-
-        if (Storage::disk('local')->exists($indexPath)) {
-            try {
-                $decoded = json_decode(Storage::disk('local')->get($indexPath), true);
-                if (is_array($decoded) && isset($decoded['channels']) && is_array($decoded['channels'])) {
-                    $index = $decoded['channels'];
-                }
-            } catch (Exception $e) {
-                Log::warning("Failed to read EPG programme index for {$date}: {$e->getMessage()}");
-            }
-        }
-
-        return $this->programmeIndexCache[$memoKey] = $index;
-    }
-
-    /**
-     * Seek-read only the requested channels' programmes for a date using the
-     * offset index. Returns null (caller should fall back to a full scan) when
-     * there is no index, no channel filter, or the request covers most of the
-     * indexed channels (where a sequential scan beats thousands of seeks).
-     *
-     * @param  list<string>  $channelIds
-     * @return array<string, list<array<string, mixed>>>|null
-     */
-    private function readIndexedProgrammes(Epg $epg, string $date, array $channelIds): ?array
-    {
-        if ($channelIds === []) {
-            return null;
-        }
-
-        $index = $this->loadProgrammeIndex($epg, $date);
-        if ($index === null) {
-            return null;
-        }
-
-        $wanted = array_values(array_unique($channelIds));
-        // A near-full read pays more in seeks than one linear pass would cost.
-        if (count($index) > 0 && count($wanted) > (int) (count($index) * 0.5)) {
-            return null;
-        }
-
-        $programmesPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
-        if (! Storage::disk('local')->exists($programmesPath)) {
-            return [];
-        }
-
-        $result = [];
-        $handle = fopen(Storage::disk('local')->path($programmesPath), 'r');
-        if ($handle === false) {
-            return null;
+        $path = $this->getActiveCacheFilePath($epg, self::PROGRAMMES_DB_FILE);
+        if (! Storage::disk('local')->exists($path)) {
+            return $this->programmeStores[$epg->id] = null;
         }
 
         try {
-            foreach ($wanted as $channelId) {
-                $runs = $index[$channelId] ?? null;
-                if ($runs === null) {
-                    continue;
-                }
+            return $this->programmeStores[$epg->id] = EpgProgrammeStore::openRead(
+                Storage::disk('local')->path($path)
+            );
+        } catch (Exception $e) {
+            Log::warning("Failed to open EPG programme store for {$epg->uuid}: {$e->getMessage()}");
 
-                foreach ($runs as [$offset, $length]) {
-                    if (fseek($handle, $offset) !== 0) {
-                        continue;
-                    }
-                    $buffer = fread($handle, $length);
-                    if ($buffer === false || $buffer === '') {
-                        continue;
-                    }
-
-                    foreach (explode("\n", $buffer) as $rawLine) {
-                        $rawLine = trim($rawLine);
-                        if ($rawLine === '') {
-                            continue;
-                        }
-                        $record = json_decode($rawLine, true);
-                        if (! is_array($record) || ! isset($record['channel'], $record['programme'])) {
-                            continue;
-                        }
-                        if ($record['channel'] !== $channelId) {
-                            continue;
-                        }
-                        $result[$channelId][] = $record['programme'];
-                    }
-                }
-            }
-        } finally {
-            fclose($handle);
+            return $this->programmeStores[$epg->id] = null;
         }
-
-        return $result;
     }
 
     /**
@@ -1229,11 +941,18 @@ class EpgCacheService
      */
     public function getCachedProgrammes(Epg $epg, string $date, array $channelIds = []): array
     {
-        $indexed = $this->readIndexedProgrammes($epg, $date, array_values($channelIds));
-        if ($indexed !== null) {
-            return $indexed;
+        $store = $this->programmeStore($epg);
+        if ($store !== null) {
+            try {
+                return $store->read($date, array_values($channelIds));
+            } catch (Exception $e) {
+                Log::error("Error reading programme store for date {$date}: {$e->getMessage()}");
+
+                return [];
+            }
         }
 
+        // Legacy JSONL scan: v1 caches, or v2 caches written before the SQLite switch.
         $programmesPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
 
         if (! Storage::disk('local')->exists($programmesPath)) {
@@ -1324,15 +1043,20 @@ class EpgCacheService
      */
     private function streamCachedProgrammesForDate(Epg $epg, string $date, array $channelIds = []): Generator
     {
-        $indexed = $this->readIndexedProgrammes($epg, $date, array_values($channelIds));
-        if ($indexed !== null) {
-            foreach ($indexed as $channelId => $programmes) {
-                yield $channelId => $programmes;
+        $store = $this->programmeStore($epg);
+        if ($store !== null) {
+            try {
+                foreach ($store->read($date, array_values($channelIds)) as $channelId => $programmes) {
+                    yield $channelId => $programmes;
+                }
+            } catch (Exception $e) {
+                Log::error("Error streaming programme store for date {$date}: {$e->getMessage()}");
             }
 
             return;
         }
 
+        // Legacy JSONL scan: v1 caches, or v2 caches written before the SQLite switch.
         $programmesPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
         if (! Storage::disk('local')->exists($programmesPath)) {
             return;
@@ -1856,121 +1580,51 @@ class EpgCacheService
         $to = $now->copy()->addDays(30)->endOfDay();
 
         $batch = [];
-        $batchSize = 500;
         $inserted = 0;
         $skipped = 0;
 
-        $current = $from->copy();
-        while ($current->lte($to)) {
-            $date = $current->format('Y-m-d');
-
-            // Use the active cache path so legacy v1/root caches are found too
-            $filePath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
-
-            if (! Storage::disk('local')->exists($filePath)) {
-                $current->addDay();
-
-                continue;
+        $store = $this->programmeStore($epg);
+        if ($store !== null) {
+            foreach ($store->readForDvr($from->format('Y-m-d'), $to->format('Y-m-d')) as [$channelId, $programme]) {
+                $this->bufferDvrProgramme($epg, $channelId, $programme, $batch, $inserted, $skipped);
             }
+        } else {
+            // Legacy JSONL scan: v1 caches, or v2 caches written before the SQLite switch.
+            $current = $from->copy();
+            while ($current->lte($to)) {
+                $date = $current->format('Y-m-d');
+                $filePath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
 
-            $fullPath = Storage::disk('local')->path($filePath);
-            $handle = fopen($fullPath, 'r');
-            if (! $handle) {
-                $current->addDay();
+                if (! Storage::disk('local')->exists($filePath)) {
+                    $current->addDay();
 
-                continue;
-            }
-
-            while (($line = fgets($handle)) !== false) {
-                $line = trim($line);
-                if (empty($line)) {
                     continue;
                 }
 
-                try {
+                $handle = fopen(Storage::disk('local')->path($filePath), 'r');
+                if (! $handle) {
+                    $current->addDay();
+
+                    continue;
+                }
+
+                while (($line = fgets($handle)) !== false) {
+                    $line = trim($line);
+                    if (empty($line)) {
+                        continue;
+                    }
+
                     $record = json_decode($line, true);
                     if (! $record || ! isset($record['channel'], $record['programme'])) {
                         continue;
                     }
 
-                    $p = $record['programme'];
-                    $appTz = config('app.timezone', 'UTC');
-                    $startTime = isset($p['start']) ? Carbon::parse($p['start'])->setTimezone($appTz) : null;
-                    $endTime = isset($p['stop']) ? Carbon::parse($p['stop'])->setTimezone($appTz) : null;
-
-                    if (! $startTime || ! $endTime) {
-                        $skipped++;
-
-                        continue;
-                    }
-
-                    // Parse season/episode from all episode-num entries in the programme.
-                    [$season, $episode] = $this->parseEpisodeNumbers($p);
-
-                    // Normalize provider-quirky free-text fields. Some feeds smuggle a
-                    // "ᴺᵉʷ" superscript marker into the title and prefix descriptions
-                    // with "S## E### Subtitle\nDescription" instead of using proper
-                    // <new/> / <episode-num> / <subtitle> elements.
-                    $titleNorm = EpgProgrammeNormalizer::normalizeTitle($p['title'] ?? null);
-                    $subtitle = $this->nullableString($p['subtitle'] ?? null, 500);
-                    $description = $this->nullableString($p['desc'] ?? null);
-                    if ($subtitle === null || $season === null || $episode === null) {
-                        $extracted = EpgProgrammeNormalizer::extractSeasonEpisodeFromDescription($description);
-                        if ($extracted['season'] !== null || $extracted['episode'] !== null) {
-                            $season ??= $extracted['season'];
-                            $episode ??= $extracted['episode'];
-                            if ($subtitle === null && $extracted['subtitle'] !== null) {
-                                $subtitle = mb_substr($extracted['subtitle'], 0, 500);
-                            }
-                            $description = $extracted['description'];
-                        }
-                    }
-
-                    $batch[] = [
-                        'epg_id' => $epg->id,
-                        'epg_channel_id' => mb_substr((string) $record['channel'], 0, 500),
-                        'title' => mb_substr($titleNorm['title'], 0, 500),
-                        'subtitle' => $subtitle,
-                        'description' => $description,
-                        'category' => $this->nullableString($p['category'] ?? null, 255),
-                        // Raw insert bypasses Eloquent casts. The `start_time`/`end_time`
-                        // columns are cast as `datetime` which Eloquent interprets in
-                        // `app.timezone`. We must therefore write the wall-clock of
-                        // `app.timezone` (NOT UTC) so round-tripping yields correct UTC.
-                        'start_time' => $startTime->copy()->tz(config('app.timezone'))->toDateTimeString(),
-                        'end_time' => $endTime->copy()->tz(config('app.timezone'))->toDateTimeString(),
-                        'episode_num' => $this->nullableString($p['episode_num'] ?? null, 255),
-                        'season' => $season,
-                        'episode' => $episode,
-                        'is_new' => (bool) ($p['new'] ?? false) || $titleNorm['isNew'],
-                        'previously_shown' => (bool) ($p['previously_shown'] ?? false),
-                        'premiere' => (bool) ($p['premiere'] ?? false),
-                        'icon' => $this->nullableString($p['icon'] ?? null, 500),
-                        'rating' => $this->nullableString($p['rating'] ?? null, 50),
-                        'created_at' => now()->toDateTimeString(),
-                        'updated_at' => now()->toDateTimeString(),
-                    ];
-                } catch (Exception $e) {
-                    Log::warning("DVR programme parse error (EPG {$epg->id}): {$e->getMessage()}");
-                    $skipped++;
+                    $this->bufferDvrProgramme($epg, (string) $record['channel'], $record['programme'], $batch, $inserted, $skipped);
                 }
 
-                // Flush batch outside the per-line try-catch so a failed insert
-                // doesn't leave the batch in a dirty state and cascade failures.
-                if (count($batch) >= $batchSize) {
-                    try {
-                        EpgProgramme::insert($batch);
-                        $inserted += count($batch);
-                    } catch (Exception $e) {
-                        Log::error("DVR programme batch insert failed (EPG {$epg->id}): {$e->getMessage()}");
-                        $skipped += count($batch);
-                    }
-                    $batch = [];
-                }
+                fclose($handle);
+                $current->addDay();
             }
-
-            fclose($handle);
-            $current->addDay();
         }
 
         // Flush remaining
@@ -1988,6 +1642,92 @@ class EpgCacheService
             'epg_id' => $epg->id,
             'epg_name' => $epg->name,
         ]);
+    }
+
+    /**
+     * Normalize one cached programme into an `epg_programmes` row and append it
+     * to $batch, flushing to the DB every 500 rows. Shared by the SQLite and
+     * legacy-JSONL code paths in {@see populateDvrProgrammes()}.
+     *
+     * @param  array<string, mixed>  $p  programme payload (canonical shape)
+     * @param  list<array<string, mixed>>  $batch
+     */
+    private function bufferDvrProgramme(Epg $epg, string $epgChannelId, array $p, array &$batch, int &$inserted, int &$skipped): void
+    {
+        try {
+            $appTz = config('app.timezone', 'UTC');
+            $startTime = isset($p['start']) ? Carbon::parse($p['start'])->setTimezone($appTz) : null;
+            $endTime = isset($p['stop']) ? Carbon::parse($p['stop'])->setTimezone($appTz) : null;
+
+            if (! $startTime || ! $endTime) {
+                $skipped++;
+
+                return;
+            }
+
+            // Parse season/episode from all episode-num entries in the programme.
+            [$season, $episode] = $this->parseEpisodeNumbers($p);
+
+            // Normalize provider-quirky free-text fields. Some feeds smuggle a
+            // "ᴺᵉʷ" superscript marker into the title and prefix descriptions
+            // with "S## E### Subtitle\nDescription" instead of using proper
+            // <new/> / <episode-num> / <subtitle> elements.
+            $titleNorm = EpgProgrammeNormalizer::normalizeTitle($p['title'] ?? null);
+            $subtitle = $this->nullableString($p['subtitle'] ?? null, 500);
+            $description = $this->nullableString($p['desc'] ?? null);
+            if ($subtitle === null || $season === null || $episode === null) {
+                $extracted = EpgProgrammeNormalizer::extractSeasonEpisodeFromDescription($description);
+                if ($extracted['season'] !== null || $extracted['episode'] !== null) {
+                    $season ??= $extracted['season'];
+                    $episode ??= $extracted['episode'];
+                    if ($subtitle === null && $extracted['subtitle'] !== null) {
+                        $subtitle = mb_substr($extracted['subtitle'], 0, 500);
+                    }
+                    $description = $extracted['description'];
+                }
+            }
+
+            $batch[] = [
+                'epg_id' => $epg->id,
+                'epg_channel_id' => mb_substr($epgChannelId, 0, 500),
+                'title' => mb_substr($titleNorm['title'], 0, 500),
+                'subtitle' => $subtitle,
+                'description' => $description,
+                'category' => $this->nullableString($p['category'] ?? null, 255),
+                // Raw insert bypasses Eloquent casts. The `start_time`/`end_time`
+                // columns are cast as `datetime` which Eloquent interprets in
+                // `app.timezone`. We must therefore write the wall-clock of
+                // `app.timezone` (NOT UTC) so round-tripping yields correct UTC.
+                'start_time' => $startTime->copy()->tz(config('app.timezone'))->toDateTimeString(),
+                'end_time' => $endTime->copy()->tz(config('app.timezone'))->toDateTimeString(),
+                'episode_num' => $this->nullableString($p['episode_num'] ?? null, 255),
+                'season' => $season,
+                'episode' => $episode,
+                'is_new' => (bool) ($p['new'] ?? false) || $titleNorm['isNew'],
+                'previously_shown' => (bool) ($p['previously_shown'] ?? false),
+                'premiere' => (bool) ($p['premiere'] ?? false),
+                'icon' => $this->nullableString($p['icon'] ?? null, 500),
+                'rating' => $this->nullableString($p['rating'] ?? null, 50),
+                'created_at' => now()->toDateTimeString(),
+                'updated_at' => now()->toDateTimeString(),
+            ];
+        } catch (Exception $e) {
+            Log::warning("DVR programme parse error (EPG {$epg->id}): {$e->getMessage()}");
+            $skipped++;
+        }
+
+        // Flush outside the per-record try-catch so a failed insert doesn't
+        // leave the batch dirty and cascade failures.
+        if (count($batch) >= 500) {
+            try {
+                EpgProgramme::insert($batch);
+                $inserted += count($batch);
+            } catch (Exception $e) {
+                Log::error("DVR programme batch insert failed (EPG {$epg->id}): {$e->getMessage()}");
+                $skipped += count($batch);
+            }
+            $batch = [];
+        }
     }
 
     /**

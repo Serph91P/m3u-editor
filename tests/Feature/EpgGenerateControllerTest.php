@@ -384,8 +384,8 @@ XML;
 
     expect(app(EpgCacheService::class)->cacheEpgData($epg))->toBeTrue();
 
-    $cacheLine = Storage::disk('local')->get("epg-cache/{$epg->uuid}/v2/programmes-{$date}.jsonl");
-    $cachedProgramme = json_decode(trim($cacheLine), true, flags: JSON_THROW_ON_ERROR)['programme'];
+    $cachedProgramme = app(EpgCacheService::class)
+        ->getCachedProgrammes($epg, $date, ['source.identity'])['source.identity'][0];
     $expectedEpisodeNumbers = [
         ['system' => 'xmltv_ns', 'value' => '1 . 4/10 .'],
         ['system' => 'dd_progid', 'value' => 'EP012345670089'],

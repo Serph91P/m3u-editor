@@ -1,11 +1,14 @@
 <?php
 
 use App\Models\Channel;
+use App\Models\DvrSetting;
 use App\Models\Epg;
 use App\Models\EpgChannel;
+use App\Models\EpgProgramme;
 use App\Models\Playlist;
 use App\Models\User;
 use App\Services\EpgCacheService;
+use App\Services\EpgProgrammeStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
 
@@ -17,10 +20,14 @@ beforeEach(function () {
 
 /**
  * Builds a gzipped XMLTV document whose <programme> elements are emitted in the
- * given order so tests can exercise both contiguous and interleaved channel
- * layouts, then runs the real cache generation.
+ * given order (so tests can exercise contiguous and interleaved channel
+ * layouts), then runs the real cache generation against the new SQLite store.
  *
- * @param  list<array{channel: string, title: string, startHour: int}>  $programmes
+ * Each programme spec is {channel, title, startHour, xml?} where `xml` is an
+ * optional raw fragment injected inside the <programme> element.
+ *
+ * @param  list<array{channel: string, title: string, startHour: int, xml?: string}>  $programmes
+ * @return array{epg: Epg, playlist: Playlist, date: string}
  */
 function cacheXmltvForIndex(array $channelIds, array $programmes): array
 {
@@ -51,6 +58,7 @@ function cacheXmltvForIndex(array $channelIds, array $programmes): array
 
             return "  <programme start=\"{$start}\" stop=\"{$stop}\" channel=\"{$p['channel']}\">\n".
                 "    <title>{$p['title']}</title>\n".
+                ($p['xml'] ?? '').
                 '  </programme>';
         })
         ->implode("\n");
@@ -60,11 +68,11 @@ function cacheXmltvForIndex(array $channelIds, array $programmes): array
 
     expect(app(EpgCacheService::class)->cacheEpgData($epg))->toBeTrue();
 
-    return ['epg' => $epg, 'date' => now()->format('Y-m-d')];
+    return ['epg' => $epg, 'playlist' => $playlist, 'date' => now()->format('Y-m-d')];
 }
 
-it('writes a seekable offset index alongside the programmes file and removes the sidecar', function () {
-    ['epg' => $epg, 'date' => $date] = cacheXmltvForIndex(
+it('writes a single programmes.sqlite and no legacy jsonl artifacts', function () {
+    ['epg' => $epg] = cacheXmltvForIndex(
         ['channel.a', 'channel.b'],
         [
             ['channel' => 'channel.a', 'title' => 'A One', 'startHour' => 1],
@@ -73,47 +81,30 @@ it('writes a seekable offset index alongside the programmes file and removes the
         ],
     );
 
-    $dir = "epg-cache/{$epg->uuid}/v2";
+    $files = Storage::disk('local')->files("epg-cache/{$epg->uuid}/v2");
 
-    expect(Storage::disk('local')->exists("{$dir}/programmes-{$date}.jsonl.index.json"))->toBeTrue()
-        ->and(Storage::disk('local')->exists("{$dir}/programmes-{$date}.jsonl.ranges.tmp"))->toBeFalse();
-
-    $index = json_decode(Storage::disk('local')->get("{$dir}/programmes-{$date}.jsonl.index.json"), true);
-    $jsonl = Storage::disk('local')->get("{$dir}/programmes-{$date}.jsonl");
-
-    expect($index['v'])->toBe(1)
-        ->and(array_keys($index['channels']))->toEqualCanonicalizing(['channel.a', 'channel.b'])
-        // channel.a's two consecutive lines collapse into a single contiguous run
-        ->and($index['channels']['channel.a'])->toHaveCount(1);
-
-    // Every recorded range points at exactly the right slice of the file.
-    foreach ($index['channels'] as $channelId => $runs) {
-        foreach ($runs as [$offset, $length]) {
-            $slice = substr($jsonl, $offset, $length);
-            foreach (explode("\n", trim($slice)) as $line) {
-                expect(json_decode($line, true)['channel'])->toBe($channelId);
-            }
-        }
-    }
+    expect($files)->toContain("epg-cache/{$epg->uuid}/v2/programmes.sqlite")
+        ->and(collect($files)->filter(fn ($f) => str_contains($f, '.jsonl'))->all())->toBe([])
+        ->and(collect($files)->filter(fn ($f) => str_contains($f, '.building'))->all())->toBe([]);
 });
 
-it('returns only the requested channel when reading through the index', function () {
+it('returns only the requested channel, ordered by start', function () {
     ['epg' => $epg, 'date' => $date] = cacheXmltvForIndex(
         ['channel.a', 'channel.b'],
         [
             ['channel' => 'channel.a', 'title' => 'A One', 'startHour' => 1],
-            ['channel' => 'channel.b', 'title' => 'B One', 'startHour' => 1],
-            ['channel' => 'channel.b', 'title' => 'B Two', 'startHour' => 3],
+            ['channel' => 'channel.b', 'title' => 'B Late', 'startHour' => 5],
+            ['channel' => 'channel.b', 'title' => 'B Early', 'startHour' => 1],
         ],
     );
 
     $programmes = app(EpgCacheService::class)->getCachedProgrammes($epg, $date, ['channel.b']);
 
     expect(array_keys($programmes))->toBe(['channel.b'])
-        ->and(collect($programmes['channel.b'])->pluck('title')->all())->toBe(['B One', 'B Two']);
+        ->and(collect($programmes['channel.b'])->pluck('title')->all())->toBe(['B Early', 'B Late']);
 });
 
-it('resolves non-contiguous channel runs from an interleaved source file', function () {
+it('resolves interleaved channels and the range reader agrees', function () {
     ['epg' => $epg, 'date' => $date] = cacheXmltvForIndex(
         ['channel.a', 'channel.b'],
         [
@@ -124,27 +115,58 @@ it('resolves non-contiguous channel runs from an interleaved source file', funct
         ],
     );
 
-    $index = json_decode(
-        Storage::disk('local')->get("epg-cache/{$epg->uuid}/v2/programmes-{$date}.jsonl.index.json"),
-        true,
-    );
-
-    // Interleaved layout means each channel has two separate runs.
-    expect($index['channels']['channel.b'])->toHaveCount(2);
-
     $service = app(EpgCacheService::class);
 
     expect(collect($service->getCachedProgrammes($epg, $date, ['channel.b'])['channel.b'])->pluck('title')->all())
         ->toBe(['B One', 'B Two']);
 
-    // getCachedProgrammesRange streams via the same index path.
     $range = $service->getCachedProgrammesRange($epg, $date, $date, ['channel.a']);
     expect(collect($range['channel.a'])->pluck('title')->all())->toBe(['A One', 'A Two']);
 });
 
-it('still reads a legacy cache that has no offset index by scanning', function () {
+it('round-trips the full programme shape through dehydrate and hydrate', function () {
+    ['epg' => $epg, 'date' => $date] = cacheXmltvForIndex(
+        ['channel.a'],
+        [
+            [
+                'channel' => 'channel.a',
+                'title' => 'Rich One',
+                'startHour' => 1,
+                'xml' => "    <sub-title>Pilot</sub-title>\n".
+                    "    <desc>The big one</desc>\n".
+                    "    <category>News</category>\n".
+                    "    <icon src=\"http://img/poster.png\"/>\n".
+                    "    <episode-num system=\"onscreen\">S01E02</episode-num>\n".
+                    "    <new/>\n",
+            ],
+            ['channel' => 'channel.a', 'title' => 'Bare Two', 'startHour' => 2],
+        ],
+    );
+
+    $programmes = app(EpgCacheService::class)->getCachedProgrammes($epg, $date, ['channel.a']);
+    [$rich, $bare] = $programmes['channel.a'];
+
+    expect($rich['title'])->toBe('Rich One')
+        ->and($rich['subtitle'])->toBe('Pilot')
+        ->and($rich['desc'])->toBe('The big one')
+        ->and($rich['category'])->toBe('News')
+        ->and($rich['icon'])->toBe('http://img/poster.png')
+        ->and($rich['new'])->toBeTrue()
+        ->and($rich['episode_nums'])->not->toBe([])
+        ->and($rich['channel'])->toBe('channel.a')
+        ->and($rich['start'])->toEndWith('.000000Z');
+
+    // A programme with only a title still comes back with every canonical key.
+    expect(array_keys($bare))->toEqualCanonicalizing(array_keys(EpgProgrammeStore::EMPTY_PROGRAMME))
+        ->and($bare['desc'])->toBe('')
+        ->and($bare['new'])->toBeFalse()
+        ->and($bare['images'])->toBe([])
+        ->and($bare['production_year'])->toBeNull();
+});
+
+it('still reads a legacy jsonl cache that has no sqlite store', function () {
     $user = User::factory()->create();
-    $playlist = Playlist::factory()->for($user)->create(['dummy_epg' => false]);
+    Playlist::factory()->for($user)->create(['dummy_epg' => false]);
     $epg = Epg::factory()->for($user)->create(['is_cached' => true]);
     $date = now()->format('Y-m-d');
 
@@ -158,4 +180,36 @@ it('still reads a legacy cache that has no offset index by scanning', function (
     $programmes = app(EpgCacheService::class)->getCachedProgrammes($epg, $date, ['legacy.b']);
 
     expect($programmes)->toBe(['legacy.b' => [['title' => 'Legacy B', 'start' => '2026-01-01T00:00:00Z']]]);
+});
+
+it('populates epg_programmes for DVR from the sqlite store', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->create(['dummy_epg' => false]);
+    $epg = Epg::factory()->for($user)->create(['url' => 'https://example.com/index.xml']);
+    DvrSetting::factory()->enabled()->for($user)->for($playlist)->create();
+
+    $epgChannel = EpgChannel::factory()->for($user)->for($epg)->create([
+        'channel_id' => 'dvr.a',
+        'display_name' => 'dvr.a',
+    ]);
+    Channel::factory()->for($user)->for($playlist)->create([
+        'enabled' => true,
+        'is_vod' => false,
+        'epg_channel_id' => $epgChannel->id,
+    ]);
+
+    $start = now()->addHours(2);
+    $stop = now()->addHours(3);
+    $xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<tv>\n".
+        "  <channel id=\"dvr.a\"><display-name>dvr.a</display-name></channel>\n".
+        "  <programme start=\"{$start->format('YmdHis O')}\" stop=\"{$stop->format('YmdHis O')}\" channel=\"dvr.a\">\n".
+        "    <title>DVR Show</title>\n    <desc>Body</desc>\n  </programme>\n</tv>";
+    Storage::disk('local')->put($epg->file_path, gzencode($xml));
+
+    expect(app(EpgCacheService::class)->cacheEpgData($epg))->toBeTrue();
+
+    $row = EpgProgramme::where('epg_id', $epg->id)->where('epg_channel_id', 'dvr.a')->first();
+    expect($row)->not->toBeNull()
+        ->and($row->title)->toBe('DVR Show')
+        ->and($row->description)->toBe('Body');
 });
