@@ -1043,7 +1043,7 @@ class TmdbService
      * Get cast for a TV series from TMDB.
      * Returns the same shape as TvMazeService cast so it can be used as a fallback.
      *
-     * @return array<int, array{actor: string, character: string, photo: ?string}>
+     * @return array<int, array{id: int, actor: string, character: string, photo: ?string}>
      */
     public function getTvCast(int $tmdbId): array
     {
@@ -1051,7 +1051,11 @@ class TmdbService
             return [];
         }
 
-        $cacheKey = "tmdb_tv_cast_v1_{$tmdbId}_{$this->language}";
+        // v2: the mapped row gained an `id` field. Bumping the key avoids
+        // serving pre-upgrade cache entries (shaped without `id`) for up to
+        // 60 minutes, which would emit `cast_list[].id = null` downstream.
+        // Mirrors the getMovieCast() v1 -> v2 bump in #1212.
+        $cacheKey = "tmdb_tv_cast_v2_{$tmdbId}_{$this->language}";
 
         return Cache::remember($cacheKey, now()->addMinutes(60), function () use ($tmdbId) {
             $this->waitForRateLimit();
@@ -1069,6 +1073,7 @@ class TmdbService
                 return collect($response->json()['cast'] ?? [])
                     ->take(15)
                     ->map(fn ($p) => [
+                        'id' => (int) ($p['id'] ?? 0),
                         'actor' => $p['name'] ?? '',
                         'character' => $p['character'] ?? '',
                         'photo' => ! empty($p['profile_path'])
