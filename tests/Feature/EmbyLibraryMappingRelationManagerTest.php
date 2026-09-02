@@ -201,7 +201,7 @@ it('offers only source-compatible libraries with a companion-approved writable p
     $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
         'type' => 'emby',
         'emby_managed_setup_root' => '/srv/emby/managed',
-        'emby_publisher_writable_paths' => ['/srv/emby/stale'],
+        'emby_publisher_writable_paths' => ['/srv/emby/legacy'],
         'available_libraries' => [
             [
                 'id' => 'compatible-movies',
@@ -210,10 +210,10 @@ it('offers only source-compatible libraries with a companion-approved writable p
                 'paths' => ['/srv/emby/managed/movies'],
             ],
             [
-                'id' => 'stale-movies',
-                'name' => 'Stale Movies',
+                'id' => 'legacy-movies',
+                'name' => 'Legacy Movies',
                 'type' => 'movies',
-                'paths' => ['/srv/emby/stale/movies'],
+                'paths' => ['/srv/emby/legacy/movies'],
             ],
             [
                 'id' => 'unwritable-movies',
@@ -236,7 +236,7 @@ it('offers only source-compatible libraries with a companion-approved writable p
     ])->mountAction(TestAction::make('create')->table())
         ->set('mountedActions.0.data.source', 'vod:'.$group->id)
         ->assertMountedActionModalSee('Compatible Movies')
-        ->assertMountedActionModalDontSee('Stale Movies')
+        ->assertMountedActionModalSee('Legacy Movies')
         ->assertMountedActionModalDontSee('Unwritable Movies')
         ->assertMountedActionModalDontSee('Compatible TV');
 });
@@ -390,7 +390,9 @@ it('publishes to an existing compatible library using only source and destinatio
         ->output_path->toBe('/srv/emby/managed/movies')
         ->is_managed->toBeFalse()
         ->and(app(EmbyPublicationCatalogService::class)->buildMapping($mapping)['target_library']['managed'])
-        ->toBeTrue();
+        ->toBeTrue()
+        ->and($integration->refresh()->getImportLibraryIdsForType('movies'))
+        ->toBe([]);
 });
 
 it('keeps confirmed setup while rolling back mapping state when Emby rejects library creation', function () {

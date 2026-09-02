@@ -40,12 +40,17 @@ class EmbyManagedSetupService
             return $this->failure();
         }
 
+        $publisherWritablePaths = $integration->getEmbyPublisherWritablePaths();
+        if (! in_array($root, $publisherWritablePaths, true)) {
+            $publisherWritablePaths[] = $root;
+        }
+
         $integration->updateQuietly([
             'emby_managed_setup_binding_id' => $data['IntegrationId'],
             'emby_managed_setup_root' => $root,
             'emby_managed_setup_capability_version' => $data['CapabilityVersion'],
             'emby_managed_setup_contract_version' => self::CONTRACT_VERSION,
-            'emby_publisher_writable_paths' => [$root],
+            'emby_publisher_writable_paths' => $publisherWritablePaths,
             'emby_publisher_capabilities_updated_at' => now(),
         ]);
 

@@ -54,6 +54,7 @@ it('bootstraps managed publishing over trusted Docker HTTP with the saved admini
         ->emby_managed_setup_contract_version->toBe(1)
         ->and($this->integration->emby_publisher_writable_paths)
         ->toBe([
+            '/srv/emby',
             '/config/plugins/m3u-editor/managed-publishing',
         ]);
     Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
@@ -103,7 +104,7 @@ it('allows managed setup only over approved transport origins', function (string
     'query-like host over HTTPS' => ['emby.example.com?target=private', true, false],
 ]);
 
-it('replaces stale publisher roots while preserving existing mappings during setup', function () {
+it('adds the confirmed managed root while preserving existing publisher roots and mappings', function () {
     $mapping = EmbyLibraryMapping::factory()
         ->for($this->integration->user)
         ->for($this->integration, 'integration')
@@ -123,21 +124,15 @@ it('replaces stale publisher roots while preserving existing mappings during set
     ]);
 
     $result = app(EmbyManagedSetupService::class)->setup($this->integration);
-    $staleLibraryResult = MediaServerService::make($this->integration->refresh())->createLibrary(
-        name: 'Stale Movies',
-        collectionType: 'movies',
-        paths: ['/srv/emby/stale-library'],
-        refreshLibrary: false,
-    );
-
     expect($result['success'])->toBeTrue()
         ->and($this->integration->emby_publisher_writable_paths)->toBe([
+            '/srv/emby',
             '/config/plugins/m3u-editor/managed-publishing',
         ])
         ->and($this->integration->getEmbyPublisherWritablePaths())->toBe([
             '/config/plugins/m3u-editor/managed-publishing',
+            '/srv/emby',
         ])
-        ->and($staleLibraryResult['success'])->toBeFalse()
         ->and($mapping->refresh())
         ->output_path->toBe('/srv/emby/existing-library')
         ->target_library_id->toBe('existing-library');
@@ -212,7 +207,7 @@ it('keeps the confirmed managed root usable after fifty legacy writable roots', 
 
     expect(app(EmbyManagedSetupService::class)->setup($this->integration)['success'])->toBeTrue()
         ->and($this->integration->refresh()->getEmbyPublisherWritablePaths())
-        ->toBe(['/srv/managed']);
+        ->toBe(['/srv/managed', ...$legacyRoots]);
 });
 
 it('returns the sanitized retry error when the managed companion is unavailable', function () {

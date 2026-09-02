@@ -367,13 +367,15 @@ class MediaServerIntegration extends Model
      */
     public function getEmbyPublisherWritablePaths(): array
     {
+        $paths = [];
+
         if (is_string($this->emby_managed_setup_root)) {
             $managedRoot = trim($this->emby_managed_setup_root);
 
-            return static::isSafeWritablePath($managedRoot) ? [$managedRoot] : [];
+            if (static::isSafeWritablePath($managedRoot)) {
+                $paths[$managedRoot] = $managedRoot;
+            }
         }
-
-        $paths = [];
 
         foreach (array_slice($this->emby_publisher_writable_paths ?? [], 0, 50) as $path) {
             if (! is_string($path)) {
@@ -564,11 +566,12 @@ class MediaServerIntegration extends Model
     public function getImportLibraryIdsForType(string $type): ?array
     {
         $managedMappings = $this->embyLibraryMappings()
-            ->where('is_managed', true)
             ->where('collection_type', $type)
             ->where(fn (Builder $query): Builder => $query
                 ->whereNotNull('target_library_id')
-                ->orWhere('enabled', true))
+                ->orWhere(fn (Builder $unresolvedQuery): Builder => $unresolvedQuery
+                    ->where('is_managed', true)
+                    ->where('enabled', true)))
             ->select(['id', 'target_library_id'])
             ->cursor();
 
