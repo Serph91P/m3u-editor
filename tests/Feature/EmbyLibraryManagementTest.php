@@ -53,10 +53,7 @@ it('bootstraps managed publishing over trusted Docker HTTP with the saved admini
         ->emby_managed_setup_capability_version->toBe(1)
         ->emby_managed_setup_contract_version->toBe(1)
         ->and($this->integration->emby_publisher_writable_paths)
-        ->toBe([
-            '/srv/emby',
-            '/config/plugins/m3u-editor/managed-publishing',
-        ]);
+        ->toBe(['/srv/emby']);
     Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
         && $request->url() === 'http://emby:8096/M3uEditor/Managed/Setup/V1'
         && $request->hasHeader('X-Emby-Token', 'emby-secret')
@@ -125,10 +122,7 @@ it('adds the confirmed managed root while preserving existing publisher roots an
 
     $result = app(EmbyManagedSetupService::class)->setup($this->integration);
     expect($result['success'])->toBeTrue()
-        ->and($this->integration->emby_publisher_writable_paths)->toBe([
-            '/srv/emby',
-            '/config/plugins/m3u-editor/managed-publishing',
-        ])
+        ->and($this->integration->emby_publisher_writable_paths)->toBe(['/srv/emby'])
         ->and($this->integration->getEmbyPublisherWritablePaths())->toBe([
             '/config/plugins/m3u-editor/managed-publishing',
             '/srv/emby',
@@ -192,22 +186,28 @@ it('fails closed without state changes for rejected or partial managed setup res
     ], 200],
 ]);
 
-it('keeps the confirmed managed root usable after fifty legacy writable roots', function () {
+it('preserves fifty legacy writable roots across repeated managed setup', function () {
     $legacyRoots = array_map(fn (int $index): string => "/srv/legacy/{$index}", range(1, 50));
     $this->integration->update(['emby_publisher_writable_paths' => $legacyRoots]);
+    $response = [
+        'CapabilityVersion' => 1,
+        'IntegrationId' => $this->integration->id,
+        'ConfirmedRoot' => '/srv/managed',
+        'Ready' => true,
+    ];
     Http::preventStrayRequests();
-    Http::fake([
-        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
-            'CapabilityVersion' => 1,
-            'IntegrationId' => $this->integration->id,
-            'ConfirmedRoot' => '/srv/managed',
-            'Ready' => true,
-        ]),
-    ]);
+    Http::fakeSequence('https://emby.test:8096/M3uEditor/Managed/Setup/V1')
+        ->push($response)
+        ->push($response)
+        ->push($response);
 
     expect(app(EmbyManagedSetupService::class)->setup($this->integration)['success'])->toBeTrue()
-        ->and($this->integration->refresh()->getEmbyPublisherWritablePaths())
+        ->and(app(EmbyManagedSetupService::class)->setup($this->integration->refresh())['success'])->toBeTrue()
+        ->and(app(EmbyManagedSetupService::class)->setup($this->integration->refresh())['success'])->toBeTrue()
+        ->and($this->integration->refresh()->emby_publisher_writable_paths)->toBe($legacyRoots)
+        ->and($this->integration->getEmbyPublisherWritablePaths())
         ->toBe(['/srv/managed', ...$legacyRoots]);
+    Http::assertSentCount(3);
 });
 
 it('returns the sanitized retry error when the managed companion is unavailable', function () {

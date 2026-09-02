@@ -445,7 +445,9 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
         ->and($integration->refresh())
         ->emby_managed_setup_binding_id->toBe($integration->id)
         ->emby_managed_setup_root->toBe('/config/plugins/m3u-editor/managed-publishing')
-        ->emby_publisher_writable_paths->toBe(['/config/plugins/m3u-editor/managed-publishing']);
+        ->emby_publisher_writable_paths->toBeNull()
+        ->and($integration->getEmbyPublisherWritablePaths())
+        ->toBe(['/config/plugins/m3u-editor/managed-publishing']);
 });
 
 it('creates an owned mapping from eligible unified source and destination choices', function () {
