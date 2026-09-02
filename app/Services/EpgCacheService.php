@@ -45,6 +45,35 @@ class EpgCacheService
     private const MAX_PROGRAMMES = 10000000; // Safety limit
 
     /**
+     * Suffix for the per-date channel offset index written alongside each
+     * `programmes-{date}.jsonl`. Maps an EPG channel id to the byte ranges of
+     * its lines in that file so reads can seek to just the requested channels
+     * instead of scanning and JSON-decoding every line. Optional: reads fall
+     * back to a full scan when the file is absent (legacy caches, or an index
+     * build that was skipped for being too large).
+     */
+    private const PROGRAMME_INDEX_SUFFIX = '.index.json';
+
+    /** Temporary sidecar the parse pass appends channel byte ranges to before compaction. */
+    private const PROGRAMME_RANGES_SUFFIX = '.ranges.tmp';
+
+    /**
+     * Safety valve for {@see buildProgrammeIndexes()}: if a single date would
+     * hold more merged ranges than this, its index is skipped and readers scan
+     * that date instead. Contiguous-run merging keeps real feeds far below this.
+     */
+    private const MAX_INDEX_ENTRIES = 5000000;
+
+    /**
+     * Per-instance memo of decoded programme indexes, keyed by "{epgId}:{date}".
+     * Indexes are small (offsets only) and a single request can read the same
+     * date many times (the batch endpoint alone reads date + next day).
+     *
+     * @var array<string, array<string, list<array{0: int, 1: int}>>|null>
+     */
+    private array $programmeIndexCache = [];
+
+    /**
      * Get the cache directory path for an EPG
      */
     private function getCacheDir(Epg $epg): string
@@ -323,6 +352,8 @@ class EpgCacheService
         $dateRangeTracker = ['min_date' => null, 'max_date' => null];
         $processedDates = [];
         $programmeFileHandles = []; // Keep file handles open for better performance
+        $programmeWriteOffsets = []; // date => bytes written so far, for the offset index
+        $rangeFileHandles = []; // date => handle to the ".ranges.tmp" sidecar
         $lastProgressUpdate = 0;
         $progressUpdateInterval = 5000; // Update progress every 5000 items instead of 50
 
@@ -438,7 +469,15 @@ class EpgCacheService
 
                     if ($programme['title']) {
                         // Use persistent file handles for better performance
-                        $this->directAppendProgrammeOptimized($epg, $date, $channelId, $programme, $programmeFileHandles);
+                        $this->directAppendProgrammeOptimized(
+                            $epg,
+                            $date,
+                            $channelId,
+                            $programme,
+                            $programmeFileHandles,
+                            $programmeWriteOffsets,
+                            $rangeFileHandles,
+                        );
                         $processedDates[$date] = true;
                     }
 
@@ -471,6 +510,15 @@ class EpgCacheService
                     fclose($handle);
                 }
             }
+            foreach ($rangeFileHandles as $handle) {
+                if (is_resource($handle)) {
+                    fclose($handle);
+                }
+            }
+
+            // Compact the per-date ".ranges.tmp" sidecars into seekable offset
+            // indexes. Best-effort: a failure here just means readers scan.
+            $this->buildProgrammeIndexes($epg, array_keys($processedDates));
         } finally {
             $reader->close();
         }
@@ -519,10 +567,25 @@ class EpgCacheService
     }
 
     /**
-     * Optimized direct append using persistent file handles
+     * Optimized direct append using persistent file handles.
+     *
+     * Also records each written line's byte range in a per-date ".ranges.tmp"
+     * sidecar (offset, length, channel id) which {@see buildProgrammeIndexes()}
+     * later compacts into a seekable channel offset index.
+     *
+     * @param  array<string, resource>  $fileHandles  date => open programmes-{date}.jsonl handle
+     * @param  array<string, int>  $writeOffsets  date => bytes written so far to that file
+     * @param  array<string, resource>  $rangeHandles  date => open programmes-{date}.jsonl.ranges.tmp handle
      */
-    private function directAppendProgrammeOptimized(Epg $epg, string $date, string $channelId, array $programme, array &$fileHandles): void
-    {
+    private function directAppendProgrammeOptimized(
+        Epg $epg,
+        string $date,
+        string $channelId,
+        array $programme,
+        array &$fileHandles,
+        array &$writeOffsets,
+        array &$rangeHandles,
+    ): void {
         $filename = "programmes-{$date}.jsonl";
 
         // Reuse file handle if already open
@@ -542,6 +605,15 @@ class EpgCacheService
 
                 return;
             }
+            // Track the write position ourselves rather than trusting ftell()
+            // on an append handle: clearCache() emptied the dir, so this run is
+            // the sole writer and the running byte count is the file size.
+            $writeOffsets[$date] ??= 0;
+        }
+
+        if (! isset($rangeHandles[$date])) {
+            $rangesPath = $this->getCacheFilePath($epg, $filename.self::PROGRAMME_RANGES_SUFFIX);
+            $rangeHandles[$date] = fopen(Storage::disk('local')->path($rangesPath), 'a');
         }
 
         $record = [
@@ -550,7 +622,15 @@ class EpgCacheService
         ];
 
         $line = json_encode($record, JSON_UNESCAPED_UNICODE)."\n";
+        $offset = $writeOffsets[$date] ?? 0;
+        $length = strlen($line);
         fwrite($fileHandles[$date], $line);
+        $writeOffsets[$date] = $offset + $length;
+
+        if (is_resource($rangeHandles[$date] ?? null)) {
+            // channel id is written last so it can carry tabs without ambiguity
+            fwrite($rangeHandles[$date], "{$offset}\t{$length}\t{$channelId}\n");
+        }
 
         // Close handles if we have too many open (prevent "too many open files" error)
         if (count($fileHandles) > 50) {
@@ -560,7 +640,209 @@ class EpgCacheService
                     unset($fileHandles[$d]);
                 }
             }
+            foreach ($rangeHandles as $d => $handle) {
+                if ($d !== $date && is_resource($handle)) {
+                    fclose($handle);
+                    unset($rangeHandles[$d]);
+                }
+            }
         }
+    }
+
+    /**
+     * Compact each date's ".ranges.tmp" sidecar into a
+     * "programmes-{date}.jsonl.index.json" map of channel id => merged byte
+     * ranges, then delete the sidecar.
+     *
+     * Ranges are recorded in file (offset-ascending) order, so consecutive
+     * lines for the same channel collapse into a single [offset, length] run -
+     * feeds that group programmes by channel end up with one run per channel.
+     *
+     * Best-effort: any failure (or a date exceeding {@see MAX_INDEX_ENTRIES})
+     * leaves no index file for that date, and readers fall back to a full scan.
+     *
+     * @param  list<string>  $dates
+     */
+    private function buildProgrammeIndexes(Epg $epg, array $dates): void
+    {
+        $disk = Storage::disk('local');
+
+        foreach ($dates as $date) {
+            $jsonlName = "programmes-{$date}.jsonl";
+            $rangesPath = $this->getCacheFilePath($epg, $jsonlName.self::PROGRAMME_RANGES_SUFFIX);
+
+            if (! $disk->exists($rangesPath)) {
+                continue;
+            }
+
+            try {
+                $handle = fopen($disk->path($rangesPath), 'r');
+                if ($handle === false) {
+                    continue;
+                }
+
+                /** @var array<string, list<array{0: int, 1: int}>> $channels */
+                $channels = [];
+                $entryCount = 0;
+                $tooLarge = false;
+
+                while (($line = fgets($handle)) !== false) {
+                    $line = rtrim($line, "\r\n");
+                    if ($line === '') {
+                        continue;
+                    }
+
+                    $parts = explode("\t", $line, 3);
+                    if (count($parts) !== 3) {
+                        continue;
+                    }
+
+                    [$offset, $length, $channelId] = $parts;
+                    $offset = (int) $offset;
+                    $length = (int) $length;
+
+                    $runs = $channels[$channelId] ?? [];
+                    $last = $runs === [] ? null : $runs[count($runs) - 1];
+
+                    if ($last !== null && $offset === $last[0] + $last[1]) {
+                        $runs[count($runs) - 1][1] = $last[1] + $length;
+                    } else {
+                        $runs[] = [$offset, $length];
+                        $entryCount++;
+                    }
+
+                    $channels[$channelId] = $runs;
+
+                    if ($entryCount > self::MAX_INDEX_ENTRIES) {
+                        $tooLarge = true;
+                        break;
+                    }
+                }
+
+                fclose($handle);
+
+                if ($tooLarge) {
+                    Log::warning("EPG programme index for {$date} exceeded ".self::MAX_INDEX_ENTRIES.' ranges; skipping (reads will scan)');
+                } else {
+                    $disk->put(
+                        $this->getCacheFilePath($epg, $jsonlName.self::PROGRAMME_INDEX_SUFFIX),
+                        json_encode(['v' => 1, 'channels' => $channels], JSON_UNESCAPED_UNICODE)
+                    );
+                }
+
+                unset($channels);
+            } catch (Exception $e) {
+                Log::warning("Failed to build EPG programme index for {$date}: {$e->getMessage()}");
+            } finally {
+                $disk->delete($rangesPath);
+            }
+        }
+    }
+
+    /**
+     * Load and memoize the decoded channel offset index for a date, or null
+     * when no usable index exists (legacy cache, skipped build, corrupt file).
+     *
+     * @return array<string, list<array{0: int, 1: int}>>|null
+     */
+    private function loadProgrammeIndex(Epg $epg, string $date): ?array
+    {
+        $memoKey = "{$epg->id}:{$date}";
+        if (array_key_exists($memoKey, $this->programmeIndexCache)) {
+            return $this->programmeIndexCache[$memoKey];
+        }
+
+        $indexPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl".self::PROGRAMME_INDEX_SUFFIX);
+        $index = null;
+
+        if (Storage::disk('local')->exists($indexPath)) {
+            try {
+                $decoded = json_decode(Storage::disk('local')->get($indexPath), true);
+                if (is_array($decoded) && isset($decoded['channels']) && is_array($decoded['channels'])) {
+                    $index = $decoded['channels'];
+                }
+            } catch (Exception $e) {
+                Log::warning("Failed to read EPG programme index for {$date}: {$e->getMessage()}");
+            }
+        }
+
+        return $this->programmeIndexCache[$memoKey] = $index;
+    }
+
+    /**
+     * Seek-read only the requested channels' programmes for a date using the
+     * offset index. Returns null (caller should fall back to a full scan) when
+     * there is no index, no channel filter, or the request covers most of the
+     * indexed channels (where a sequential scan beats thousands of seeks).
+     *
+     * @param  list<string>  $channelIds
+     * @return array<string, list<array<string, mixed>>>|null
+     */
+    private function readIndexedProgrammes(Epg $epg, string $date, array $channelIds): ?array
+    {
+        if ($channelIds === []) {
+            return null;
+        }
+
+        $index = $this->loadProgrammeIndex($epg, $date);
+        if ($index === null) {
+            return null;
+        }
+
+        $wanted = array_values(array_unique($channelIds));
+        // A near-full read pays more in seeks than one linear pass would cost.
+        if (count($index) > 0 && count($wanted) > (int) (count($index) * 0.5)) {
+            return null;
+        }
+
+        $programmesPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
+        if (! Storage::disk('local')->exists($programmesPath)) {
+            return [];
+        }
+
+        $result = [];
+        $handle = fopen(Storage::disk('local')->path($programmesPath), 'r');
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            foreach ($wanted as $channelId) {
+                $runs = $index[$channelId] ?? null;
+                if ($runs === null) {
+                    continue;
+                }
+
+                foreach ($runs as [$offset, $length]) {
+                    if (fseek($handle, $offset) !== 0) {
+                        continue;
+                    }
+                    $buffer = fread($handle, $length);
+                    if ($buffer === false || $buffer === '') {
+                        continue;
+                    }
+
+                    foreach (explode("\n", $buffer) as $rawLine) {
+                        $rawLine = trim($rawLine);
+                        if ($rawLine === '') {
+                            continue;
+                        }
+                        $record = json_decode($rawLine, true);
+                        if (! is_array($record) || ! isset($record['channel'], $record['programme'])) {
+                            continue;
+                        }
+                        if ($record['channel'] !== $channelId) {
+                            continue;
+                        }
+                        $result[$channelId][] = $record['programme'];
+                    }
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return $result;
     }
 
     /**
@@ -947,6 +1229,11 @@ class EpgCacheService
      */
     public function getCachedProgrammes(Epg $epg, string $date, array $channelIds = []): array
     {
+        $indexed = $this->readIndexedProgrammes($epg, $date, array_values($channelIds));
+        if ($indexed !== null) {
+            return $indexed;
+        }
+
         $programmesPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
 
         if (! Storage::disk('local')->exists($programmesPath)) {
@@ -1037,6 +1324,15 @@ class EpgCacheService
      */
     private function streamCachedProgrammesForDate(Epg $epg, string $date, array $channelIds = []): Generator
     {
+        $indexed = $this->readIndexedProgrammes($epg, $date, array_values($channelIds));
+        if ($indexed !== null) {
+            foreach ($indexed as $channelId => $programmes) {
+                yield $channelId => $programmes;
+            }
+
+            return;
+        }
+
         $programmesPath = $this->getActiveCacheFilePath($epg, "programmes-{$date}.jsonl");
         if (! Storage::disk('local')->exists($programmesPath)) {
             return;
