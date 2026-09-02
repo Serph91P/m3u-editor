@@ -46,8 +46,11 @@ it('persists tmdb vote_count when manually applying a movie match to a VOD', fun
     Livewire::test(ViewVod::class, ['record' => $vod->getKey()])
         ->call('applyTmdbSelection', 603, 'movie', $vod->id, 'vod');
 
+    // cast_list is persisted to a Postgres jsonb column, which does not preserve
+    // object key order - compare with toEqual (loose ==) so the assertion checks
+    // values, not the byte order jsonb chose to store the keys in.
     expect($vod->fresh()->info['vote_count'])->toBe(3)
-        ->and($vod->fresh()->info['cast_list'])->toBe([
+        ->and($vod->fresh()->info['cast_list'])->toEqual([
             ['id' => 6384, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'photo' => null],
         ]);
 });
@@ -81,8 +84,10 @@ it('persists tmdb vote_count when manually applying a series match', function ()
     Livewire::test(ViewSeries::class, ['record' => $series->getKey()])
         ->call('applyTmdbSelection', 1399, 'tv', $series->id, 'series');
 
+    // metadata is a Postgres jsonb column, which does not preserve object key
+    // order - compare cast_list with toEqual (loose ==) so key order is ignored.
     expect($series->fresh()->metadata['vote_count'])->toBe(2)
-        ->and($series->fresh()->metadata['cast_list'])->toBe([
+        ->and($series->fresh()->metadata['cast_list'])->toEqual([
             ['id' => 22970, 'name' => 'Peter Dinklage', 'character' => 'Tyrion Lannister', 'photo' => null],
         ]);
 });

@@ -103,7 +103,9 @@ it('fetches cast, director, and trailer for VOD movies', function () {
     expect($channel->info['cast'])->toBe('Keanu Reeves, Laurence Fishburne, Carrie-Anne Moss')
         ->and($channel->info['director'])->toBe('Lana Wachowski, Lilly Wachowski')
         ->and($channel->info['youtube_trailer'])->toBe('https://www.youtube.com/watch?v=vKQi3bBA1wc')
-        ->and($channel->info['cast_list'])->toBe([
+        // info is a Postgres jsonb column, which does not preserve object key
+        // order - toEqual (loose ==) checks values while ignoring key order.
+        ->and($channel->info['cast_list'])->toEqual([
             ['id' => 6384, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'photo' => 'https://image.tmdb.org/t/p/w185/keanu.jpg'],
             ['id' => 2975, 'name' => 'Laurence Fishburne', 'character' => 'Morpheus', 'photo' => null],
             ['id' => 530, 'name' => 'Carrie-Anne Moss', 'character' => 'Trinity', 'photo' => 'https://image.tmdb.org/t/p/w185/carrie.jpg'],
@@ -189,7 +191,9 @@ it('fetches cast, director, and trailer for TV series', function () {
     expect($series->cast)->toBe('Bryan Cranston, Aaron Paul, Anna Gunn')
         ->and($series->director)->toBe('Vince Gilligan, Michelle MacLaren')
         ->and($series->youtube_trailer)->toBe('https://www.youtube.com/watch?v=HhesaQXLuRY')
-        ->and($series->metadata['cast_list'])->toBe([
+        // metadata is a Postgres jsonb column, which does not preserve object key
+        // order - toEqual (loose ==) checks values while ignoring key order.
+        ->and($series->metadata['cast_list'])->toEqual([
             ['id' => 17419, 'name' => 'Bryan Cranston', 'character' => 'Walter White', 'photo' => 'https://image.tmdb.org/t/p/w185/bc.jpg'],
             ['id' => 84433, 'name' => 'Aaron Paul', 'character' => 'Jesse Pinkman', 'photo' => null],
             ['id' => 134531, 'name' => 'Anna Gunn', 'character' => 'Skyler White', 'photo' => 'https://image.tmdb.org/t/p/w185/ag.jpg'],
