@@ -650,6 +650,12 @@ class FetchTmdbIds implements ShouldQueue
                     $info['cast'] = is_array($details['cast']) ? implode(', ', $details['cast']) : $details['cast'];
                 }
 
+                // Populate rich cast list (id/name/character/photo) for structured
+                // client rendering (Xtream get_vod_info reads it straight from here).
+                if (! empty($details['cast_list'])) {
+                    $info['cast_list'] = $details['cast_list'];
+                }
+
                 // Populate director if available
                 if (! empty($details['director'])) {
                     $info['director'] = is_array($details['director']) ? implode(', ', $details['director']) : $details['director'];
@@ -981,6 +987,13 @@ class FetchTmdbIds implements ShouldQueue
                 // Populate cast if available
                 if (! empty($details['cast'])) {
                     $updateData['cast'] = is_array($details['cast']) ? implode(', ', $details['cast']) : $details['cast'];
+                }
+
+                // Populate rich cast list (id/name/character/photo) for structured
+                // client rendering (Xtream get_series_info reads it straight from here).
+                if (! empty($details['cast_list'])) {
+                    $metadata['cast_list'] = $details['cast_list'];
+                    $updateData['metadata'] = $metadata;
                 }
 
                 // Populate director if available

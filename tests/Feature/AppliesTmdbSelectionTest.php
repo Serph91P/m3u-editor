@@ -37,13 +37,19 @@ it('persists tmdb vote_count when manually applying a movie match to a VOD', fun
             'title' => 'The Matrix',
             'vote_average' => 6.5,
             'vote_count' => 3,
+            'cast_list' => [
+                ['id' => 6384, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'photo' => null],
+            ],
         ]);
     app()->instance(TmdbService::class, $tmdbService);
 
     Livewire::test(ViewVod::class, ['record' => $vod->getKey()])
         ->call('applyTmdbSelection', 603, 'movie', $vod->id, 'vod');
 
-    expect($vod->fresh()->info['vote_count'])->toBe(3);
+    expect($vod->fresh()->info['vote_count'])->toBe(3)
+        ->and($vod->fresh()->info['cast_list'])->toBe([
+            ['id' => 6384, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'photo' => null],
+        ]);
 });
 
 it('persists tmdb vote_count when manually applying a series match', function () {
@@ -66,11 +72,17 @@ it('persists tmdb vote_count when manually applying a series match', function ()
             'name' => 'Game of Thrones',
             'vote_average' => 6.0,
             'vote_count' => 2,
+            'cast_list' => [
+                ['id' => 22970, 'name' => 'Peter Dinklage', 'character' => 'Tyrion Lannister', 'photo' => null],
+            ],
         ]);
     app()->instance(TmdbService::class, $tmdbService);
 
     Livewire::test(ViewSeries::class, ['record' => $series->getKey()])
         ->call('applyTmdbSelection', 1399, 'tv', $series->id, 'series');
 
-    expect($series->fresh()->metadata['vote_count'])->toBe(2);
+    expect($series->fresh()->metadata['vote_count'])->toBe(2)
+        ->and($series->fresh()->metadata['cast_list'])->toBe([
+            ['id' => 22970, 'name' => 'Peter Dinklage', 'character' => 'Tyrion Lannister', 'photo' => null],
+        ]);
 });
