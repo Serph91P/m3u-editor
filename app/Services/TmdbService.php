@@ -832,6 +832,11 @@ class TmdbService
                     ->implode(', ');
             }
 
+            // Rich cast list (id/name/character/photo) for structured client
+            // rendering - persisted downstream so client detail endpoints
+            // never make a live TMDB call.
+            $castList = $this->reshapeRichCast($data['credits']['cast'] ?? []);
+
             // Extract director(s) from crew
             $director = null;
             if (! empty($data['credits']['crew'])) {
@@ -876,6 +881,7 @@ class TmdbService
                 'number_of_seasons' => $data['number_of_seasons'] ?? null,
                 'number_of_episodes' => $data['number_of_episodes'] ?? null,
                 'cast' => $cast,
+                'cast_list' => $castList,
                 'director' => $director,
                 'youtube_trailer' => $youtubeTrailer,
             ];
@@ -945,6 +951,11 @@ class TmdbService
                     ->toArray();
             }
 
+            // Rich cast list (id/name/character/photo) for structured client
+            // rendering - persisted downstream so client detail endpoints
+            // never make a live TMDB call.
+            $castList = $this->reshapeRichCast($data['credits']['cast'] ?? []);
+
             // Extract director(s)
             $directors = [];
             if (! empty($data['credits']['crew'])) {
@@ -982,6 +993,7 @@ class TmdbService
                 'runtime' => $data['runtime'] ?? null,
                 'status' => $data['status'] ?? null,
                 'cast' => $cast,
+                'cast_list' => $castList,
                 'director' => $directors,
                 'youtube_trailer' => $youtubeTrailer,
             ];
@@ -993,6 +1005,29 @@ class TmdbService
 
             return null;
         }
+    }
+
+    /**
+     * Reshape a raw TMDB `credits.cast` array into the m3u-tv wire contract.
+     * Top 15 billed members, one entry per person.
+     *
+     * @param  array<int, array<string, mixed>>  $rawCast
+     * @return array<int, array{id: int, name: string, character: string, photo: ?string}>
+     */
+    private function reshapeRichCast(array $rawCast): array
+    {
+        return collect($rawCast)
+            ->take(15)
+            ->map(fn ($p) => [
+                'id' => (int) ($p['id'] ?? 0),
+                'name' => $p['name'] ?? '',
+                'character' => $p['character'] ?? '',
+                'photo' => ! empty($p['profile_path'])
+                    ? 'https://image.tmdb.org/t/p/w185'.$p['profile_path']
+                    : null,
+            ])
+            ->values()
+            ->all();
     }
 
     /**
@@ -1043,7 +1078,7 @@ class TmdbService
      * Get cast for a TV series from TMDB.
      * Returns the same shape as TvMazeService cast so it can be used as a fallback.
      *
-     * @return array<int, array{actor: string, character: string, photo: ?string}>
+     * @return array<int, array{id: int, actor: string, character: string, photo: ?string}>
      */
     public function getTvCast(int $tmdbId): array
     {
@@ -1051,7 +1086,11 @@ class TmdbService
             return [];
         }
 
-        $cacheKey = "tmdb_tv_cast_v1_{$tmdbId}_{$this->language}";
+        // v2: the mapped row gained an `id` field. Bumping the key avoids
+        // serving pre-upgrade cache entries (shaped without `id`) for up to
+        // 60 minutes, which would emit `cast_list[].id = null` downstream.
+        // Mirrors the getMovieCast() v1 -> v2 bump in #1212.
+        $cacheKey = "tmdb_tv_cast_v2_{$tmdbId}_{$this->language}";
 
         return Cache::remember($cacheKey, now()->addMinutes(60), function () use ($tmdbId) {
             $this->waitForRateLimit();
@@ -1069,6 +1108,7 @@ class TmdbService
                 return collect($response->json()['cast'] ?? [])
                     ->take(15)
                     ->map(fn ($p) => [
+                        'id' => (int) ($p['id'] ?? 0),
                         'actor' => $p['name'] ?? '',
                         'character' => $p['character'] ?? '',
                         'photo' => ! empty($p['profile_path'])

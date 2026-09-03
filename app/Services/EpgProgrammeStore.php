@@ -119,7 +119,10 @@ class EpgProgrammeStore
     public function beginWrite(string $sqlitePath): void
     {
         $this->finalPath = $sqlitePath;
-        $this->buildingPath = $sqlitePath.'.building';
+        // Unique per-run suffix so an overlapping rebuild of the same EPG cannot
+        // write into the sidecar this run is mid-transaction on (journal_mode is
+        // OFF). Whichever run calls finish() last wins the atomic rename.
+        $this->buildingPath = $sqlitePath.'.building-'.getmypid().'-'.bin2hex(random_bytes(4));
 
         $directory = dirname($sqlitePath);
         if (! is_dir($directory)) {
@@ -161,7 +164,13 @@ class EpgProgrammeStore
      */
     public function insert(string $channelId, string $date, int $startTs, ?int $stopTs, array $programme): void
     {
-        $blob = json_encode(self::dehydrate($programme), JSON_UNESCAPED_UNICODE);
+        // Substitute invalid UTF-8 rather than letting json_encode() return
+        // false: a false blob would bind as '' and silently drop the whole
+        // payload (title, desc, ...) for that programme on read.
+        $blob = json_encode(self::dehydrate($programme), JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($blob === false) {
+            $blob = '{}';
+        }
         $this->insertStatement->execute([$channelId, $date, $startTs, $stopTs, $blob]);
 
         if (++$this->pendingRows >= self::COMMIT_EVERY) {
@@ -173,7 +182,9 @@ class EpgProgrammeStore
 
     /**
      * Commit, build the lookup index, close, and atomically swap the built DB
-     * into place.
+     * into place. Throws if the swap fails so the caller can flag the cache
+     * generation as failed rather than leaving a stale/missing store behind a
+     * "success" metadata write.
      */
     public function finish(): void
     {
@@ -188,7 +199,11 @@ class EpgProgrammeStore
         $this->insertStatement = null;
         $this->pdo = null;
 
-        rename($this->buildingPath, $this->finalPath);
+        if (! @rename($this->buildingPath, $this->finalPath)) {
+            @unlink($this->buildingPath);
+
+            throw new \RuntimeException("Failed to move EPG programme store into place at {$this->finalPath}");
+        }
     }
 
     /**

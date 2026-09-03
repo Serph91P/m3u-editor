@@ -1353,6 +1353,17 @@ class XtreamApiController extends Controller
                 'category_id' => (string) ($seriesItem->category?->effective_id ?? $seriesItem->category_id ?? 'all'),
             ];
 
+            // Rich cast list (separate wire key from the existing string `cast`
+            // so old clients reading `cast` via _asNullableString keep working -
+            // PHP associative arrays overwrite on duplicate key). Persisted on
+            // series->metadata['cast_list'] during TMDB enrichment (FetchTmdbIds
+            // / AppliesTmdbSelection) in the wire shape {id, name, character,
+            // photo}. Absent on unpatched / non-TMDB-enriched rows, so those
+            // responses stay byte-identical to today.
+            if (! empty($seriesItem->metadata['cast_list'])) {
+                $seriesInfo['cast_list'] = $seriesItem->metadata['cast_list'];
+            }
+
             $seasons = [];
             $episodesBySeason = [];
             if ($seriesItem->seasons && $seriesItem->seasons->isNotEmpty()) {
@@ -1851,6 +1862,18 @@ class XtreamApiController extends Controller
                     $defaultInfo['dvr_uuid'] = $dvrRecording->uuid;
                     $defaultInfo['edl_url'] = $dvrEdlUrl;
                 }
+            }
+
+            // Rich cast list (separate wire key from the existing string `cast`
+            // so old clients reading `cast` via _asNullableString keep working -
+            // PHP associative arrays overwrite on duplicate key). Persisted on
+            // channel->info['cast_list'] during TMDB enrichment (FetchTmdbIds /
+            // AppliesTmdbSelection) in the wire shape {id, name, character,
+            // photo}, and lifted to the response root below via the existing
+            // array_merge($defaultInfo, ...). Absent on unpatched /
+            // non-TMDB-enriched rows, so those responses stay byte-identical.
+            if (! empty($info['cast_list'])) {
+                $defaultInfo['cast_list'] = $info['cast_list'];
             }
 
             // Build movie_data section - use channel's movie_data field if available, otherwise build from channel data
