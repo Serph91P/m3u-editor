@@ -158,8 +158,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                             ->label(__('Emby library'))
                             ->options(fn (Get $get): array => [
                                 '__new__' => __('Create a new library'),
-                                ...$this->simpleLibraryOptionsForCollectionType($get('publication_type')),
-                            ])
+                            ] + $this->simpleLibraryOptionsForCollectionType($get('publication_type')))
                             ->required()
                             ->searchable()
                             ->live()
@@ -787,7 +786,10 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
      */
     private function resolveSimpleDestination(array $data, ?string $sourceCollectionType): array
     {
-        $destination = is_string($data['destination'] ?? null) ? $data['destination'] : '';
+        $destinationValue = $data['destination'] ?? null;
+        $destination = is_string($destinationValue) || is_int($destinationValue)
+            ? (string) $destinationValue
+            : '';
         if ($destination !== '__new__') {
             $library = $this->library($destination);
             $collectionType = $library['type'] ?? null;

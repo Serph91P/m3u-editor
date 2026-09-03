@@ -361,7 +361,7 @@ it('publishes multiple movie groups into distinct subpaths of one existing libra
         'emby_managed_setup_root' => '/srv/emby/managed',
         'emby_publisher_writable_paths' => ['/srv/emby/managed'],
         'available_libraries' => [[
-            'id' => 'movie-library',
+            'id' => '267078',
             'name' => 'Movies',
             'type' => 'movies',
             'paths' => ['/srv/emby/managed/movies'],
@@ -384,7 +384,7 @@ it('publishes multiple movie groups into distinct subpaths of one existing libra
     ])->mountAction(TestAction::make('create')->table())
         ->set('mountedActions.0.data.publication_type', 'movies')
         ->set('mountedActions.0.data.sources', ['vod:'.$action->id, 'vod:'.$comedy->id])
-        ->set('mountedActions.0.data.destination', 'movie-library')
+        ->set('mountedActions.0.data.destination', '267078')
         ->callMountedAction()
         ->assertHasNoActionErrors()
         ->assertNotified();
@@ -392,7 +392,7 @@ it('publishes multiple movie groups into distinct subpaths of one existing libra
     $mappings = EmbyLibraryMapping::query()->orderBy('source_label')->get();
     expect($mappings)->toHaveCount(2)
         ->and($mappings->pluck('source_label')->all())->toBe(['Action', 'Comedy'])
-        ->and($mappings->pluck('target_library_id')->unique()->all())->toBe(['movie-library'])
+        ->and($mappings->pluck('target_library_id')->unique()->all())->toBe(['267078'])
         ->and($mappings->pluck('output_path')->unique())->toHaveCount(2)
         ->and($mappings->pluck('output_path')->every(
             fn (string $path): bool => str_starts_with($path, '/srv/emby/managed/movies/'),
