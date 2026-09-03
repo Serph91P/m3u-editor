@@ -384,7 +384,7 @@ it('publishes multiple movie groups into distinct subpaths of one existing libra
     ])->mountAction(TestAction::make('create')->table())
         ->set('mountedActions.0.data.publication_type', 'movies')
         ->set('mountedActions.0.data.sources', ['vod:'.$action->id, 'vod:'.$comedy->id])
-        ->set('mountedActions.0.data.destination', '267078')
+        ->set('mountedActions.0.data.destination', 267078)
         ->callMountedAction()
         ->assertHasNoActionErrors()
         ->assertNotified();
