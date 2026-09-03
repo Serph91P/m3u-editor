@@ -227,8 +227,7 @@ class EmbyJellyfinService implements MediaServer
                 $containsPath = false;
                 foreach ($library['paths'] ?? [] as $libraryPath) {
                     if (is_string($libraryPath)
-                        && MediaServerIntegration::isPathWithinWritableRoot($path, $libraryPath)
-                        && MediaServerIntegration::isPathWithinWritableRoot($libraryPath, $path)) {
+                        && MediaServerIntegration::isPathWithinWritableRoot($path, $libraryPath)) {
                         $containsPath = true;
 
                         break;

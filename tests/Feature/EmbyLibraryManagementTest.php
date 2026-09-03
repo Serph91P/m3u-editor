@@ -438,6 +438,54 @@ it('does not drift an existing library when its selected path remains among seve
     Http::assertSentCount(1);
 });
 
+it('does not drift when a managed mapping path is below an existing library location', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::response([[
+            'ItemId' => 'library-1',
+            'Name' => 'Managed Movies',
+            'CollectionType' => 'movies',
+            'Locations' => ['/srv/emby/managed/movies'],
+        ]], 200),
+    ]);
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/managed/movies/action-a1b2c3'],
+        libraryId: 'library-1',
+    );
+
+    expect($result['success'])->toBeTrue()
+        ->and($result['created'])->toBeFalse()
+        ->and($result['drift'])->toBeFalse();
+    Http::assertSentCount(1);
+});
+
+it('keeps drift when the existing library location is below the requested mapping path', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::response([[
+            'ItemId' => 'library-1',
+            'Name' => 'Managed Movies',
+            'CollectionType' => 'movies',
+            'Locations' => ['/srv/emby/managed/movies/action-a1b2c3'],
+        ]], 200),
+    ]);
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/managed/movies'],
+        libraryId: 'library-1',
+    );
+
+    expect($result['success'])->toBeTrue()
+        ->and($result['created'])->toBeFalse()
+        ->and($result['drift'])->toBeTrue();
+    Http::assertSentCount(1);
+});
+
 it('matches an existing Windows library path without case or separator drift', function () {
     $this->integration->update(['emby_publisher_writable_paths' => ['C:\\Emby']]);
     Http::preventStrayRequests();
