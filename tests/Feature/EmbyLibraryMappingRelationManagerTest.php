@@ -129,12 +129,16 @@ it('renders only the simple managed publishing controls in the create modal', fu
         ->assertMountedActionModalDontSee('Refresh Emby after successful sync');
 });
 
-it('separates movie groups from series categories and marks published sources', function () {
+it('separates movie groups from series categories and hides published sources', function () {
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);
     $playlist = Playlist::factory()->for($user)->createQuietly(['name' => 'Provider']);
     $movieGroup = Group::factory()->for($user)->for($playlist)->create([
         'name' => 'Action',
+        'type' => 'vod',
+    ]);
+    $unpublishedMovieGroup = Group::factory()->for($user)->for($playlist)->create([
+        'name' => 'Comedy',
         'type' => 'vod',
     ]);
     $liveGroup = Group::factory()->for($user)->for($playlist)->create([
@@ -157,7 +161,8 @@ it('separates movie groups from series categories and marks published sources', 
     ]);
 
     expect(embyBulkSourceOptions($component, 'movies'))
-        ->toHaveKey('vod:'.$movieGroup->id, 'Action (Provider)')
+        ->not->toHaveKey('vod:'.$movieGroup->id)
+        ->toHaveKey('vod:'.$unpublishedMovieGroup->id, 'Comedy (Provider)')
         ->not->toHaveKey('series_category:'.$seriesCategory->id)
         ->not->toHaveKey('vod:'.$liveGroup->id)
         ->and(embyBulkSourceOptions($component, 'tvshows'))
@@ -238,7 +243,7 @@ it('bounds Custom Playlist queries while rendering bulk movie and series sources
         ->and($seriesQueryCount)->toBeLessThanOrEqual(7);
 });
 
-it('marks an existing all-items publication in the create modal', function () {
+it('keeps an existing all-items publication disabled in the create modal', function () {
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);
     $integration = MediaServerIntegration::factory()->for($user)->createQuietly(['type' => 'emby']);
@@ -249,11 +254,14 @@ it('marks an existing all-items publication in the create modal', function () {
         'collection_type' => 'movies',
     ]);
 
-    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
         'pageClass' => EditMediaServerIntegration::class,
     ])->mountAction(TestAction::make('create')->table())
         ->assertMountedActionModalSee('Already published');
+
+    expect(embyBulkSourceDescriptions($component, 'movies'))
+        ->toHaveKey('all:movies', 'Already published');
 });
 
 it('publishes a first-time movie source to a new Emby library with safe derived defaults', function () {
@@ -373,11 +381,12 @@ it('publishes multiple movie groups into distinct subpaths of one existing libra
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
         'pageClass' => EditMediaServerIntegration::class,
-    ])->callAction(TestAction::make('create')->table(), [
-        'publication_type' => 'movies',
-        'sources' => ['vod:'.$action->id, 'vod:'.$comedy->id],
-        'destination' => 'movie-library',
-    ])->assertHasNoActionErrors()
+    ])->mountAction(TestAction::make('create')->table())
+        ->set('mountedActions.0.data.publication_type', 'movies')
+        ->set('mountedActions.0.data.sources', ['vod:'.$action->id, 'vod:'.$comedy->id])
+        ->set('mountedActions.0.data.destination', 'movie-library')
+        ->callMountedAction()
+        ->assertHasNoActionErrors()
         ->assertNotified();
 
     $mappings = EmbyLibraryMapping::query()->orderBy('source_label')->get();
@@ -389,6 +398,11 @@ it('publishes multiple movie groups into distinct subpaths of one existing libra
             fn (string $path): bool => str_starts_with($path, '/srv/emby/managed/movies/'),
         ))->toBeTrue()
         ->and($mappings->pluck('status')->unique()->all())->toBe(['planned']);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->assertCanSeeTableRecords($mappings);
 });
 
 it('keeps distinct managed subpaths across sequential single-source publishes', function () {
@@ -595,27 +609,40 @@ it('shows one actionable version error and persists nothing when managed setup i
         ->emby_managed_setup_root->toBeNull();
 });
 
-it('includes Custom Playlist groups in the matching bulk source list', function () {
+it('includes unpublished and hides published Custom Playlist groups', function () {
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);
     $playlist = Playlist::factory()->for($user)->createQuietly();
     $customPlaylist = CustomPlaylist::factory()->for($user)->createQuietly(['name' => 'Favorites']);
+    $unpublishedCustomPlaylist = CustomPlaylist::factory()->for($user)->createQuietly(['name' => 'Watch Later']);
     $vodChannel = Channel::factory()->for($user)->for($playlist)->createQuietly([
         'group' => 'Action & Adventure',
         'is_vod' => true,
         'enabled' => true,
     ]);
     $customPlaylist->channels()->attach([$vodChannel->id]);
+    $unpublishedCustomPlaylist->channels()->attach([$vodChannel->id]);
     $integration = MediaServerIntegration::factory()->for($user)->createQuietly(['type' => 'emby']);
+    EmbyLibraryMapping::factory()->for($integration, 'integration')->for($user)->create([
+        'source_kind' => 'custom_playlist_group',
+        'source_identifier' => (string) $customPlaylist->id,
+        'source_label' => 'Action & Adventure',
+        'collection_type' => 'movies',
+    ]);
     $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
         'pageClass' => EditMediaServerIntegration::class,
     ]);
     $source = 'custom_playlist:'.$customPlaylist->id.':'.rawurlencode('Action & Adventure');
+    $unpublishedSource = 'custom_playlist:'.$unpublishedCustomPlaylist->id.':'.rawurlencode('Action & Adventure');
 
     expect(embyBulkSourceOptions($component, 'movies'))
-        ->toHaveKey($source, 'Favorites: Action & Adventure')
-        ->and(embyBulkSourceOptions($component, 'tvshows'))->not->toHaveKey($source);
+        ->not->toHaveKey($source)
+        ->toHaveKey($unpublishedSource, 'Watch Later: Action & Adventure')
+        ->and(embyBulkSourceOptions($component, 'tvshows'))
+        ->not->toHaveKey($source, $unpublishedSource)
+        ->and(embyBulkSourceDescriptions($component, 'movies'))
+        ->toHaveKey($source, 'Already published');
 });
 
 it('switches between movie and series sources and clears stale selections', function () {

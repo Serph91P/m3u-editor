@@ -1000,7 +1000,10 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             }
         }
 
-        return $options;
+        return array_diff_key(
+            $options,
+            $this->simpleBulkSourceDescriptions($collectionType),
+        );
     }
 
     /** @return array<string, string> */
