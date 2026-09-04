@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\MediaServerIntegration;
+use App\Support\PrivateNetworkGuard;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Throwable;
@@ -70,27 +71,7 @@ class EmbyManagedSetupService
                 && preg_match('/^(?:\d+|0x[0-9a-f]+)$/i', $host) !== 1;
         }
 
-        $packedAddress = inet_pton($host);
-        if ($packedAddress === false) {
-            return false;
-        }
-
-        if (strlen($packedAddress) === 4) {
-            $bytes = array_values(unpack('C4', $packedAddress));
-
-            return $bytes[0] === 127
-                || $bytes[0] === 10
-                || ($bytes[0] === 172 && $bytes[1] >= 16 && $bytes[1] <= 31)
-                || ($bytes[0] === 192 && $bytes[1] === 168)
-                || ($bytes[0] === 169 && $bytes[1] === 254);
-        }
-
-        $bytes = array_values(unpack('C16', $packedAddress));
-        $isLoopback = $packedAddress === inet_pton('::1');
-        $isUniqueLocal = ($bytes[0] & 0xFE) === 0xFC;
-        $isLinkLocal = $bytes[0] === 0xFE && ($bytes[1] & 0xC0) === 0x80;
-
-        return $isLoopback || $isUniqueLocal || $isLinkLocal;
+        return PrivateNetworkGuard::ipIsPrivate($host);
     }
 
     private function hostIsValid(string $host): bool
@@ -118,7 +99,8 @@ class EmbyManagedSetupService
             && ($effectiveUrl === null || $this->originsMatch($integration->base_url, $effectiveUrl))
             && is_array($data)
             && ($data['Ready'] ?? null) === true
-            && ($data['CapabilityVersion'] ?? null) === self::CONTRACT_VERSION
+            && is_numeric($data['CapabilityVersion'] ?? null)
+            && (int) $data['CapabilityVersion'] === self::CONTRACT_VERSION
             && ($data['IntegrationId'] ?? null) === $integration->id
             && is_string($root)
             && MediaServerIntegration::isSafeWritablePath($root);
@@ -146,7 +128,7 @@ class EmbyManagedSetupService
     {
         return [
             'success' => false,
-            'message' => 'Install an Emby companion that supports managed setup version 1, then retry.',
+            'message' => 'Install an Emby companion that supports managed setup version '.self::CONTRACT_VERSION.', then retry.',
         ];
     }
 }

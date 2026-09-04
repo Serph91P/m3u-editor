@@ -567,11 +567,10 @@ class MediaServerIntegration extends Model
     {
         $managedMappings = $this->embyLibraryMappings()
             ->where('collection_type', $type)
+            ->where('enabled', true)
             ->where(fn (Builder $query): Builder => $query
                 ->whereNotNull('target_library_id')
-                ->orWhere(fn (Builder $unresolvedQuery): Builder => $unresolvedQuery
-                    ->where('is_managed', true)
-                    ->where('enabled', true)))
+                ->orWhere('is_managed', true))
             ->select(['id', 'target_library_id'])
             ->cursor();
 

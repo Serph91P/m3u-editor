@@ -49,16 +49,6 @@ function embySourceSearchOptions($component, ?string $sourceKind, string $search
     return $method->invoke($instance, $sourceKind, $search, $onlyIdentifier);
 }
 
-/** Invokes the relation manager's unified source search directly. */
-function embySimpleSourceSearchOptions($component, string $search, ?string $onlySource = null): array
-{
-    $instance = $component->instance();
-    $method = new ReflectionMethod($instance, 'simpleSourceSearchOptions');
-    $method->setAccessible(true);
-
-    return $method->invoke($instance, $search, $onlySource);
-}
-
 /** Invokes the relation manager's private compatibleLibraryPathOptions() directly. */
 function embyCompatibleLibraryPathOptions($component, ?string $libraryId): array
 {
@@ -873,10 +863,10 @@ it('publishes to a companion-confirmed existing library on first setup', functio
         'ownerRecord' => $integration,
         'pageClass' => EditMediaServerIntegration::class,
     ]);
-    $method = new ReflectionMethod($component->instance(), 'simpleLibraryOptions');
+    $method = new ReflectionMethod($component->instance(), 'simpleLibraryOptionsForCollectionType');
     $method->setAccessible(true);
 
-    expect($method->invoke($component->instance(), 'vod:'.$group->id))->toHaveKey(
+    expect($method->invoke($component->instance(), 'movies'))->toHaveKey(
         'existing-library',
         'Managed Movies',
     );
@@ -1754,11 +1744,6 @@ it('disambiguates same-named VOD groups across playlists in the Source search, w
     // The already-selected-value lookup (getOptionLabelUsing) resolves the same way.
     expect(embySourceSearchOptions($component, 'vod_group', '', (string) $groupB->id))
         ->toBe([(string) $groupB->id => 'Action (Provider B)']);
-
-    expect(embySimpleSourceSearchOptions($component, 'action'))->toBe([
-        'vod:'.$groupA->id => 'Movies: Action (Provider A)',
-        'vod:'.$groupB->id => 'Movies: Action (Provider B)',
-    ]);
 
     // Mapped group's auto-populated value must stay the raw group name — it's
     // matched verbatim against channels.group by EmbyPublicationCatalogService,
