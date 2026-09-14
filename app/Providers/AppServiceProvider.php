@@ -1036,6 +1036,7 @@ class AppServiceProvider extends ServiceProvider
             ->routes(function (Route $route) {
                 return ! Str::startsWith($route->uri, 'playlist/v/') && Str::startsWith($route->uri, [
                     'playlist/',
+                    'custom-playlist/',
                     'epg/',
                     'user/',
                     'channel/',
