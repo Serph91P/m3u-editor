@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Playlist;
 use App\Models\PlaylistProfile;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
@@ -111,8 +112,14 @@ class ProfileService
      * Iterates through enabled profiles in priority order and returns
      * the first one with available capacity. When a client identifier
      * is provided, prefers the profile the client was previously assigned to.
+     *
+     * @param  ?array<string, int>  $proxyCounts  Pre-fetched proxy stream counts keyed by
+     *                                            profile ID (string). Pass this in when the
+     *                                            caller already has fresh counts (e.g. fetched
+     *                                            outside a lock) to avoid a redundant proxy call.
+     *                                            When omitted, counts are fetched here.
      */
-    public static function selectProfile(Playlist $playlist, ?int $excludeProfileId = null, bool $forceSelect = false, ?string $clientIdentifier = null): ?PlaylistProfile
+    public static function selectProfile(Playlist $playlist, ?int $excludeProfileId = null, bool $forceSelect = false, ?string $clientIdentifier = null, ?array $proxyCounts = null): ?PlaylistProfile
     {
         if (! $playlist->profiles_enabled) {
             return null;
@@ -136,11 +143,14 @@ class ProfileService
 
         // Pre-fetch proxy counts for all profiles in one request, then add
         // per-profile pending reservations from Redis. This replaces N individual
-        // proxy calls with a single batch call.
-        $profileIds = $profiles->pluck('id')->map(fn ($id) => (string) $id)->all();
-        $proxyCounts = M3uProxyService::getActiveStreamsCountsBatch('provider_profile_id', $profileIds);
+        // proxy calls with a single batch call. Skipped when the caller already
+        // supplied fresh counts.
+        if ($proxyCounts === null) {
+            $profileIds = $profiles->pluck('id')->map(fn ($id) => (string) $id)->all();
+            $proxyCounts = M3uProxyService::getActiveStreamsCountsBatch('provider_profile_id', $profileIds);
+        }
 
-        // Check client affinity — prefer the profile the client used before.
+        // Check client affinity - prefer the profile the client used before.
         // Only active when enable_provider_affinity is set on the playlist.
         if ($clientIdentifier !== null && $playlist->enable_provider_affinity) {
             $affinityProfileId = static::getClientAffinity($clientIdentifier, $playlist->id);
@@ -262,23 +272,41 @@ class ProfileService
             return [null, null];
         }
 
+        // Fetch proxy stream counts BEFORE acquiring the lock. This is a network call
+        // to m3u-proxy, and previously ran inside the lock - serializing every channel
+        // switch on this playlist behind a live HTTP round trip. The lock only needs to
+        // guard the local Redis reservation bookkeeping below, which is fast; a proxy
+        // count that's a few milliseconds stale is fine because the reservation set
+        // (checked inside the lock via countPendingReservations()) is what actually
+        // prevents concurrent requests from over-allocating a slot.
+        $profileIds = $playlist->enabledProfiles()
+            ->when($excludeProfileId, fn ($query) => $query->where('id', '!=', $excludeProfileId))
+            ->pluck('id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+        $proxyCounts = M3uProxyService::getActiveStreamsCountsBatch('provider_profile_id', $profileIds);
+
         $lockKey = "profile_select_lock:playlist:{$playlist->id}";
         $reservationId = 'reservation:'.bin2hex(random_bytes(8));
 
         // Acquire a short-lived atomic lock scoped to this playlist.
-        // block() waits up to PROFILE_LOCK_TIMEOUT seconds for the lock.
+        // block() waits up to PROFILE_LOCK_TIMEOUT seconds for the lock, then throws
+        // LockTimeoutException - it never returns false.
         $lock = Cache::lock($lockKey, static::PROFILE_LOCK_TIMEOUT);
 
         try {
-            // Wait for the lock with a timeout
-            if (! $lock->block(static::PROFILE_LOCK_TIMEOUT)) {
-                Log::warning('Failed to acquire profile selection lock', [
-                    'playlist_id' => $playlist->id,
-                ]);
+            $lock->block(static::PROFILE_LOCK_TIMEOUT);
+        } catch (LockTimeoutException) {
+            // Lock contention, not "no capacity" - log distinctly so it isn't
+            // conflated with genuine capacity exhaustion or unexpected errors.
+            Log::warning('Timed out waiting for profile selection lock', [
+                'playlist_id' => $playlist->id,
+            ]);
 
-                return [null, null];
-            }
+            return [null, null];
+        }
 
+        try {
             // Inside the lock: detect if this channel is already being served.
             // Prevents two simultaneous requests for the same channel from both
             // allocating a slot during the window before the first stream is visible
@@ -287,7 +315,7 @@ class ProfileService
                 $channelStreamKey = static::getChannelStreamKey($channelId, $channelPlaylistUuid, $streamType);
 
                 if (Redis::exists($channelStreamKey)) {
-                    Log::debug('Channel reuse detected inside lock — skipping profile allocation', [
+                    Log::debug('Channel reuse detected inside lock - skipping profile allocation', [
                         'channel_id' => $channelId,
                         'playlist_uuid' => $channelPlaylistUuid,
                         'playlist_id' => $playlist->id,
@@ -301,7 +329,7 @@ class ProfileService
             }
 
             // Inside the lock: select + increment atomically
-            $profile = static::selectProfile($playlist, $excludeProfileId, $forceSelect, $clientIdentifier);
+            $profile = static::selectProfile($playlist, $excludeProfileId, $forceSelect, $clientIdentifier, $proxyCounts);
 
             if ($profile) {
                 // Reserve the slot immediately so the next concurrent request
@@ -436,7 +464,7 @@ class ProfileService
     /**
      * Count in-flight reservations for a profile.
      *
-     * Reservations are stream set entries prefixed with "reservation:" — they
+     * Reservations are stream set entries prefixed with "reservation:" - they
      * represent slots claimed inside the lock but not yet visible to the proxy.
      */
     public static function countPendingReservations(PlaylistProfile $profile): int
@@ -693,7 +721,7 @@ class ProfileService
 
                 // Only auto-update max_streams if not explicitly set by the user.
                 // A positive value means the user (or initial auto-detection) has
-                // already configured it — respect that choice even if provider upgrades.
+                // already configured it - respect that choice even if provider upgrades.
                 // Auto-update only when max_streams is null/0 (never configured).
                 $shouldUpdateMaxStreams = ! $profile->max_streams
                     || $profile->max_streams <= 0;
