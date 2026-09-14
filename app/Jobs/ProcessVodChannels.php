@@ -8,11 +8,11 @@ use App\Models\Playlist;
 use App\Services\XtreamService;
 use App\Traits\ProviderRequestDelay;
 use Filament\Notifications\Notification;
+use Illuminate\Bus\Batch;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
-use Throwable;
 
 class ProcessVodChannels implements ShouldQueue
 {
@@ -105,7 +105,7 @@ class ProcessVodChannels implements ShouldQueue
     }
 
     /**
-     * Process VOD channels in chunks using a job chain.
+     * Process VOD channels in chunks using a job batch.
      */
     protected function processVodChannelsInChunks(Playlist $playlist): void
     {
@@ -164,8 +164,8 @@ class ProcessVodChannels implements ShouldQueue
 
         Log::info("Starting chunked VOD processing for playlist ID {$playlist->id}: {$total} channels in {$totalChunks} chunks");
 
-        // Build the job chain using lazy collection to avoid memory issues
-        // Use cursor/generator approach - only load CHUNK_SIZE IDs at a time
+        // Build the chunk jobs to batch. Use chunk() on the query builder - only
+        // CHUNK_SIZE IDs are ever loaded into memory at a time.
         $jobs = [];
         $chunkIndex = 0;
 
@@ -182,39 +182,38 @@ class ProcessVodChannels implements ShouldQueue
             $chunkIndex++;
         });
 
-        // Add the completion job at the end
-        $jobs[] = new ProcessVodChannelsComplete(
-            playlist: $playlist,
-            completionJob: $this->completionJob,
-            syncRunId: $this->syncRunId,
-        );
+        $completionJob = $this->completionJob;
+        $syncRunId = $this->syncRunId;
 
-        // Dispatch the job chain
-        Bus::chain($jobs)
+        // Dispatch the chunks as a batch rather than a chain: chunks are independent
+        // and idempotent (whereNull('last_metadata_fetch')), so one chunk failing
+        // (e.g. a transient SQLite lock) must not discard every other chunk still
+        // in flight. allowFailures() lets the rest keep running; ->finally() always
+        // dispatches the completion job once every chunk has settled, regardless of
+        // how many failed - matching the pattern used by FetchTmdbIds' own batches.
+        Bus::batch($jobs)
+            ->name("VOD Metadata: {$playlist->name}")
             ->onConnection('redis')
             ->onQueue('import')
-            ->catch(function (Throwable $e) use ($playlist) {
-                $error = "Error processing VOD sync on \"{$playlist->name}\": {$e->getMessage()}";
-                Log::error($error);
-                Notification::make()
-                    ->danger()
-                    ->title("Error processing VOD sync on \"{$playlist->name}\"")
-                    ->body('Please view your notifications for details.')
-                    ->broadcast($playlist->user);
-                Notification::make()
-                    ->danger()
-                    ->title("Error processing VOD sync on \"{$playlist->name}\"")
-                    ->body($error)
-                    ->sendToDatabase($playlist->user);
-                $playlist->update([
-                    'status' => Status::Failed,
-                    'errors' => $error,
-                    'vod_progress' => 100,
-                    'processing' => [
-                        ...$playlist->processing ?? [],
-                        'vod_processing' => false,
-                    ],
-                ]);
-            })->dispatch();
+            ->allowFailures()
+            ->finally(function (Batch $batch) use ($playlist, $completionJob, $syncRunId): void {
+                if ($batch->failedJobs > 0) {
+                    $error = "{$batch->failedJobs} of {$batch->totalJobs} VOD chunk(s) failed while processing \"{$playlist->name}\". Successfully processed channels were kept; failed ones will be retried on the next sync.";
+                    Log::warning($error);
+                    Notification::make()
+                        ->warning()
+                        ->title("VOD sync completed with errors on \"{$playlist->name}\"")
+                        ->body($error)
+                        ->broadcast($playlist->user)
+                        ->sendToDatabase($playlist->user);
+                }
+
+                dispatch(new ProcessVodChannelsComplete(
+                    playlist: $playlist,
+                    completionJob: $completionJob,
+                    syncRunId: $syncRunId,
+                ));
+            })
+            ->dispatch();
     }
 }

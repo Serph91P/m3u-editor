@@ -828,7 +828,7 @@ it('does not create a concurrent run for the same playlist when called simultane
     $this->assertDatabaseCount('sync_runs', 1);
 });
 
-it('fails a stale Running run (import complete, pipeline dead) and creates a fresh run', function () {
+it('fails a stale Running run (import complete, no heartbeat) and creates a fresh run', function () {
     $playlist = Playlist::factory()->for($this->user)->create();
 
     $stale = SyncRun::create([
@@ -843,6 +843,13 @@ it('fails a stale Running run (import complete, pipeline dead) and creates a fre
         'started_at' => now()->subMinutes(30),
     ]);
 
+    // Neither the run nor the playlist has been touched in 30 minutes — no phase
+    // transition, no progress heartbeat. Genuinely dead pipeline.
+    $stale->timestamps = false;
+    $stale->update(['updated_at' => now()->subMinutes(30)]);
+    $playlist->timestamps = false;
+    $playlist->update(['updated_at' => now()->subMinutes(30)]);
+
     $fresh = $this->service->startImport($playlist, 'scheduled_refresh');
 
     // Stale run must be failed, a new run created
@@ -851,6 +858,39 @@ it('fails a stale Running run (import complete, pipeline dead) and creates a fre
         ->and($fresh->status)->toBe(SyncRunStatus::Running->value);
 
     $this->assertDatabaseCount('sync_runs', 2);
+});
+
+it('does not fail an actively running post-Import run when the playlist is still receiving progress heartbeats', function () {
+    // Regression for the force-reimport loop: a long VOD/series sync can sit past
+    // Import for a long time without the SyncRun row itself changing (no phase
+    // transition), but chunked jobs keep touching playlist->updated_at as they go.
+    // That must count as "alive", not stale.
+    $playlist = Playlist::factory()->for($this->user)->create();
+
+    $active = SyncRun::create([
+        'playlist_id' => $playlist->id,
+        'user_id' => $this->user->id,
+        'trigger' => 'scheduled_refresh',
+        'status' => SyncRunStatus::Running->value,
+        'current_phase' => 'vod_metadata',
+        'phases' => [SyncRunPhase::Import->value, 'vod_metadata', SyncRunPhase::SyncCompleted->value],
+        'phase_statuses' => ['import' => ['status' => 'completed']], // Import marked complete
+        'context' => ['playlist_id' => $playlist->id],
+        'started_at' => now()->subMinutes(30),
+    ]);
+    $active->timestamps = false;
+    $active->update(['updated_at' => now()->subMinutes(30)]);
+
+    // Playlist row was just touched (e.g. a vod_progress write from a chunk job).
+    $playlist->timestamps = false;
+    $playlist->update(['updated_at' => now()]);
+
+    $returned = $this->service->startImport($playlist, 'scheduled_refresh');
+
+    expect($returned->id)->toBe($active->id)
+        ->and($returned->status)->toBe(SyncRunStatus::Running->value);
+
+    $this->assertDatabaseCount('sync_runs', 1);
 });
 
 // ── ProcessM3uImport: duplicate-import guard ─────────────────────────────────
