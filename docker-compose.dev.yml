@@ -9,18 +9,6 @@
 #   docker compose -f docker-compose.dev.yml down -v  (clean teardown)
 ##
 services:
-  redis-test:
-    image: redis:alpine3.22@sha256:4eec4565e45aa0b3966554c866bc73211e281b0b3d89fe9a33c982e6faca809d
-    container_name: m3u-redis-dev-test
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redisdata_dev_test:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   m3u-editor-dev:
     build:
       context: .
@@ -104,37 +92,33 @@ services:
       - BROADCAST_CONNECTION=log
       - DB_CONNECTION=sqlite_testing
       - DB_DATABASE=":memory:"
-      - CACHE_STORE=redis
-      - CACHE_DRIVER=redis
+      - CACHE_STORE=array
+      - CACHE_DRIVER=array
       - MAIL_MAILER=array
       - PULSE_ENABLED=false
       - QUEUE_CONNECTION=sync
       - PLUGIN_SCAN_DRIVER=fake
       - REDIS_ENABLED=false
-      - REDIS_HOST=redis-test
+      - REDIS_HOST=127.0.0.1
       - REDIS_PASSWORD=
-      - REDIS_SERVER_PORT=6379
+      - REDIS_SERVER_PORT=36790
       - REVERB_APP_ID=test
       - REVERB_APP_KEY=test
       - REVERB_APP_SECRET=test
       - SESSION_DRIVER=array
       - SESSION_CONNECTION=
       - TELESCOPE_ENABLED=false
-    # The test image already contains the complete application tree, including
-    # tests, Pest.php, phpunit.xml, and stubs. Do not bind-mount these paths:
-    # remote Docker daemons cannot resolve the local workspace path and create
-    # empty host paths, hiding the files copied during the image build.
+    volumes:
+      - ./tests:/var/www/html/tests:ro
+      - ./stubs:/var/www/html/stubs:ro
+      - ./Pest.php:/var/www/html/Pest.php:ro
+      - ./phpunit.xml:/var/www/html/phpunit.xml:ro
     profiles:
       - test
-    depends_on:
-      redis-test:
-        condition: service_healthy
 volumes:
   pgdata_dev:
     driver: local
   configdata_dev:
     driver: local
   clamavdata_dev:
-    driver: local
-  redisdata_dev_test:
     driver: local

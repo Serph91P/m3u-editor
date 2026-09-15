@@ -29,8 +29,12 @@ local/
 db-dumps/
 database/*.sqlite*
 
-# Testing fixtures are required by the development test image.
+# Testing
+tests/
 stubs/blueprint/
+.phpunit*
+phpunit.xml
+Pest.php
 
 # Scripts (keep artisan, exclude build scripts)
 *.sh
