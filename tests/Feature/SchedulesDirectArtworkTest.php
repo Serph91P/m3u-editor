@@ -122,6 +122,8 @@ it('fetches station artwork and includes in XMLTV', function () {
 
     // Check for program content (program artwork is disabled for now due to API format issues)
     expect($xmlContent)->toContain('<programme channel="12345"');
+    expect($xmlContent)->toEndWith("</tv>\n");
+    expect(simplexml_load_string($xmlContent))->not->toBeFalse();
 });
 
 it('handles missing artwork gracefully', function () {
