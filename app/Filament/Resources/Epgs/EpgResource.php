@@ -903,19 +903,23 @@ class EpgResource extends Resource implements CopilotResource
                     try {
                         foreach ($service->getHeadends($record->sd_token, $record->sd_country, $record->sd_postal_code) as $headend) {
                             foreach ($headend['lineups'] ?? [] as $lineup) {
-                                $available[$lineup['lineup']] = "{$lineup['name']} — {$lineup['lineup']} ({$headend['transport']})";
+                                if (! isset($lineups[$lineup['lineup']])) {
+                                    $available[$lineup['lineup']] = "{$lineup['name']} — {$lineup['lineup']} ({$headend['transport']})";
+                                }
                             }
                         }
                     } catch (Exception) {
-                        $available = $lineups;
+                        $available = [];
                     }
 
                     return [
                         Select::make('lineup_to_add')
                             ->label(__('Lineup to Add'))
                             ->options($available)
-                            ->disabled($count >= $max)
-                            ->helperText(__("{$count} of {$max} slots used")),
+                            ->disabled($count >= $max || empty($available))
+                            ->helperText(empty($available)
+                                ? __('Could not fetch available lineups. Adding a lineup is disabled.')
+                                : __("{$count} of {$max} slots used")),
                         Select::make('lineup_to_remove')
                             ->label(__('Lineup to Remove'))
                             ->options($lineups)
@@ -956,7 +960,7 @@ class EpgResource extends Resource implements CopilotResource
                 } catch (Exception $e) {
                     Notification::make()
                         ->danger()
-                        ->title(__('Failed to remove lineup'))
+                        ->title($isAdd ? __('Failed to add lineup') : __('Failed to remove lineup'))
                         ->body($e->getMessage())
                         ->send();
                 }

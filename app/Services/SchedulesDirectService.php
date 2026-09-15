@@ -701,6 +701,10 @@ class SchedulesDirectService
         $lineups = $this->getAccountLineups($token)['lineups'] ?? [];
         $alreadySubscribed = collect($lineups)->contains(fn (array $lineup): bool => ($lineup['lineup'] ?? null) === $lineupId);
 
+        if ($alreadySubscribed) {
+            throw new Exception("Lineup {$lineupId} is already subscribed to this SchedulesDirect account.");
+        }
+
         if (! $alreadySubscribed && count($lineups) >= $maxLineups) {
             throw new Exception('SchedulesDirect account lineup limit reached.', self::MAX_LINEUPS_CODE);
         }
