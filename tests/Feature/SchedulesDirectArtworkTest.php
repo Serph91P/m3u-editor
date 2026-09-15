@@ -4,10 +4,16 @@ use App\Models\Epg;
 use App\Models\User;
 use App\Services\SchedulesDirectService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
+
+beforeEach(function () {
+    Bus::fake();
+    Http::preventStrayRequests();
+});
 
 it('fetches station artwork and includes in XMLTV', function () {
     $user = User::factory()->create();

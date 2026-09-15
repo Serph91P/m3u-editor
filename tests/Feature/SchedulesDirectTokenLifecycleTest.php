@@ -17,6 +17,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Bus::fake();
+    Http::preventStrayRequests();
 });
 
 function sdEpg(array $overrides = []): Epg
