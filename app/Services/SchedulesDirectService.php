@@ -604,7 +604,7 @@ class SchedulesDirectService
     public function addLineup(string $token, string $lineupId): array
     {
         try {
-            $response = $this->makeRequest('PUT', "/lineups/{$lineupId}", [], $token);
+            $response = $this->makeRequest('PUT', '/lineups/'.rawurlencode($lineupId), [], $token);
 
             return $response->json();
         } catch (Exception $e) {
