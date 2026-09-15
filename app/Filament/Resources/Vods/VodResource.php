@@ -168,9 +168,9 @@ class VodResource extends Resource implements CopilotResource
             ->modifyQueryUsing(function (Builder $query) {
                 $query->with([
                     'epgChannel' => fn ($q) => $q->select('id', 'name', 'icon', 'icon_custom'),
-                    'playlist' => fn ($q) => $q->select('id', 'name', 'uuid', 'auto_sort', 'enable_proxy', 'user_id')
+                    'playlist' => fn ($q) => $q->select('id', 'name', 'uuid', 'auto_sort', 'enable_proxy', 'enable_logo_proxy', 'user_id')
                         ->with(['user' => fn ($uq) => $uq->select('id', 'is_admin', 'permissions')]),
-                    'customPlaylist' => fn ($q) => $q->select('id', 'name', 'uuid', 'enable_proxy', 'user_id')
+                    'customPlaylist' => fn ($q) => $q->select('id', 'name', 'uuid', 'enable_proxy', 'enable_logo_proxy', 'user_id')
                         ->with(['user' => fn ($uq) => $uq->select('id', 'is_admin', 'permissions')]),
                     'streamProfile' => fn ($q) => $q->select('id', 'name'),
                 ])
