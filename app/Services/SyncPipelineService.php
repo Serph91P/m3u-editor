@@ -57,24 +57,34 @@ class SyncPipelineService
                 ->first();
 
             if ($existing) {
-                // If the import phase is already complete the pipeline has moved past
-                // Import. This run is stale — the pipeline died mid-way (queue clear,
-                // worker crash, etc.). Fail it so we can start a fresh run below.
-                if ($existing->isPhaseComplete(SyncRunPhase::Import)) {
+                // The import phase being complete only means the pipeline has moved
+                // past Import — it does not mean the pipeline is dead. A large VOD/series
+                // sync can legitimately sit past Import for hours. Only treat the run as
+                // stale (pipeline died mid-way: queue clear, worker crash, etc.) when it
+                // has also gone quiet: no phase transition on the run itself, and no
+                // progress write on the playlist (chunked jobs touch playlist->updated_at
+                // periodically, e.g. vod_progress every 10 channels) within the heartbeat
+                // window. Otherwise this is a true concurrent dispatch of an actively
+                // running pipeline, so return the existing run.
+                $heartbeatMinutes = (int) config('dev.sync_run_stale_minutes', 20);
+                $lastHeartbeat = $existing->updated_at?->max($playlist->updated_at) ?? $playlist->updated_at;
+                $isStale = $existing->isPhaseComplete(SyncRunPhase::Import)
+                    && (! $lastHeartbeat || $lastHeartbeat->lt(now()->subMinutes($heartbeatMinutes)));
+
+                if ($isStale) {
                     $existing->update([
                         'status' => SyncRunStatus::Failed->value,
                         'finished_at' => now(),
                     ]);
 
-                    Log::info("SyncPipeline: startImport — stale run {$existing->id} detected (import complete, pipeline dead). Failing and creating fresh run.", [
+                    Log::info("SyncPipeline: startImport — stale run {$existing->id} detected (import complete, no heartbeat for {$heartbeatMinutes}+ minutes). Failing and creating fresh run.", [
                         'playlist_id' => $playlist->id,
                         'trigger' => $trigger,
                         'stale_run_id' => $existing->id,
                         'stale_current_phase' => $existing->current_phase,
+                        'last_heartbeat' => $lastHeartbeat?->toIso8601String(),
                     ]);
                 } else {
-                    // Import is not yet complete — a true concurrent dispatch. Return the
-                    // existing run to prevent a duplicate import.
                     Log::info("SyncPipeline: startImport skipped — run {$existing->id} already active for playlist {$playlist->id}.", [
                         'existing_run_id' => $existing->id,
                         'trigger' => $trigger,

@@ -17,6 +17,13 @@ class EmbyLibraryMapping extends Model
 
     public const COLLECTION_TYPES = ['movies', 'tvshows'];
 
+    /**
+     * Emby library types that may be picked as a mapping destination. Includes 'mixed'
+     * (Emby's "Mixed Content" collection type) in addition to COLLECTION_TYPES, since a
+     * mixed library can hold movies and series simultaneously and isn't itself typed.
+     */
+    public const LIBRARY_TYPES = ['movies', 'tvshows', 'mixed'];
+
     public const SOURCE_KINDS = ['vod_group', 'series_category', 'custom_playlist_group', 'all'];
 
     public const DEFAULT_OPTIONS = [

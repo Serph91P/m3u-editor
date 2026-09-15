@@ -112,7 +112,8 @@ class EmbyJellyfinService implements MediaServer
 
     /**
      * Fetch available libraries from the media server.
-     * Returns only movies and TV shows libraries.
+     * Returns movies, TV shows, and Mixed Content libraries. Emby reports a Mixed
+     * Content library with an empty/missing CollectionType, so it's normalized to 'mixed'.
      *
      * @return Collection<int, array{id: string, name: string, type: string, item_count: int}>
      */
@@ -125,13 +126,8 @@ class EmbyJellyfinService implements MediaServer
                 $data = $response->json();
 
                 return collect($data ?? [])
-                    ->filter(function ($library) {
-                        // Only include movies and tvshows libraries
-                        $collectionType = $library['CollectionType'] ?? '';
-
-                        return in_array($collectionType, ['movies', 'tvshows']);
-                    })
                     ->map(function ($library) {
+                        $collectionType = $library['CollectionType'] ?? null;
                         $locations = is_array($library['Locations'] ?? null)
                             ? array_values($library['Locations'])
                             : array_values(array_filter([$library['Path'] ?? null]));
@@ -139,7 +135,9 @@ class EmbyJellyfinService implements MediaServer
                         return [
                             'id' => $library['ItemId'] ?? $library['Id'] ?? '',
                             'name' => $library['Name'] ?? 'Unknown Library',
-                            'type' => $library['CollectionType'] ?? 'unknown',
+                            'type' => in_array($collectionType, ['movies', 'tvshows'], true)
+                                ? $collectionType
+                                : 'mixed',
                             'item_count' => $library['ChildCount'] ?? 0,
                             'paths' => $locations,
                             'path' => implode(', ', $locations),

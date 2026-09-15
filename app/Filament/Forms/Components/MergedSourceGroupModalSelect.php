@@ -83,20 +83,26 @@ class MergedSourceGroupModalSelect
                     ? SourceCategory::displayLabelsForIds($playlistIds, $ids, includePlaylistName: count($playlistIds) > 1)
                     : SourceGroup::displayLabelsForIds($playlistIds, $type, $ids, includePlaylistName: count($playlistIds) > 1);
             })
-            ->afterStateHydrated(function ($component, $state, $record, Get $get) use ($scopedQuery, $playlistIdsFor): void {
+            ->afterStateHydrated(function ($component, $state, $record, Get $get) use ($scopedQuery, $selectionKey, $playlistIdsFor): void {
                 // Hidden twin components are still hydrated; bail unless this is a
-                // merged-target record whose stored pairs need resolving to ids.
-                if (! $record?->merged_playlist_id || ! is_array($state) || empty($state)) {
+                // merged-target record whose stored pairs need resolving to ids. A
+                // non-empty $state means they already were (a re-fill) - leave it.
+                if (! $record?->merged_playlist_id || ! empty($state)) {
                     return;
                 }
-                if (! is_array($state[0] ?? null)) {
+                // The pairs are read from the record rather than $state: Filament's
+                // option state cast normalises multi-select state to scalars before
+                // this hook runs, which drops every {playlist_id, name} pair and
+                // would leave the picker empty (and the selections lost on save).
+                $pairs = PlaylistAlias::selectionPairs($record->group_selections[$selectionKey] ?? []);
+                if (empty($pairs)) {
                     return;
                 }
                 $playlistIds = $playlistIdsFor($get, $record);
                 if (empty($playlistIds)) {
                     return;
                 }
-                $component->state(self::pairsToSourceIds($scopedQuery($playlistIds), $state));
+                $component->state(self::pairsToSourceIds($scopedQuery($playlistIds), $pairs));
             })
             ->dehydrateStateUsing(function ($state, $record, Get $get) use ($scopedQuery, $selectionKey, $playlistIdsFor): array {
                 $playlistIds = $playlistIdsFor($get, $record);
@@ -138,11 +144,6 @@ class MergedSourceGroupModalSelect
      */
     private static function pairsToSourceIds(Builder $query, array $pairs): array
     {
-        $pairs = PlaylistAlias::selectionPairs($pairs);
-        if (empty($pairs)) {
-            return [];
-        }
-
         return $query->where(function (Builder $query) use ($pairs): void {
             foreach ($pairs as $pair) {
                 $query->orWhere(fn (Builder $query) => $query

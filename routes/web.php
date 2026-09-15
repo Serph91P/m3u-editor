@@ -7,6 +7,7 @@ use App\Http\Controllers\AssetPreviewController;
 use App\Http\Controllers\Auth\OidcController;
 use App\Http\Controllers\BackupDownloadController;
 use App\Http\Controllers\ChannelController;
+use App\Http\Controllers\CustomPlaylistController;
 use App\Http\Controllers\DvrRecordingDownloadController;
 use App\Http\Controllers\DvrStreamController;
 use App\Http\Controllers\EpgController;
@@ -335,6 +336,26 @@ Route::group(['middleware' => ['auth:sanctum']], function () {
         ->name('api.playlist.update');
     Route::post('playlist/{uuid}/merge-channels', [PlaylistController::class, 'mergeChannels'])
         ->name('api.playlist.merge-channels');
+
+    // Custom Playlist API routes
+    Route::group(['prefix' => 'custom-playlist/{uuid}'], function () {
+        Route::get('channels', [CustomPlaylistController::class, 'channels'])
+            ->name('api.custom-playlists.channels.index');
+        Route::post('channels', [CustomPlaylistController::class, 'attachChannels'])
+            ->name('api.custom-playlists.channels.attach');
+        Route::delete('channels', [CustomPlaylistController::class, 'detachChannels'])
+            ->name('api.custom-playlists.channels.detach');
+        Route::patch('channels/{id}', [CustomPlaylistController::class, 'updateChannelPivot'])
+            ->where('id', '[0-9]+')
+            ->name('api.custom-playlists.channels.update');
+        Route::get('groups', [CustomPlaylistController::class, 'groups'])
+            ->name('api.custom-playlists.groups.index');
+        Route::post('groups', [CustomPlaylistController::class, 'createGroup'])
+            ->name('api.custom-playlists.groups.store');
+        Route::patch('groups/{id}', [CustomPlaylistController::class, 'updateGroup'])
+            ->where('id', '[0-9]+')
+            ->name('api.custom-playlists.groups.update');
+    });
 
     // Proxy API routes
     if (config('proxy.proxy_integration_enabled')) {

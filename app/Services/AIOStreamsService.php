@@ -229,11 +229,102 @@ class AIOStreamsService implements MediaServer
     {
         $data = $this->fetchMetaRaw($type, $id);
 
-        if ($data === null) {
+        if ($data !== null) {
+            return $this->enrichMetaWithTmdb($data, $type, $id);
+        }
+
+        // A `tmdb:{id}` id (the form "related" cards navigate with, see
+        // shapeTmdbRecommendations()) often can't be resolved by the addon
+        // proxy above - most real-world manifests are IMDB-only
+        // (Cinemeta-backed), and the public Stremio-addon fallback's tmdb slot
+        // is blank unless STREMIO_TMDB_ADDON_URL is configured. Since these
+        // ids only ever originate from our own TMDB enrichment in the first
+        // place, fall back to resolving straight from TMDB - still gated by
+        // the same enrichment opt-out as everywhere else in this class.
+        if (str_starts_with($id, 'tmdb:') && ($this->integration->aiostreams_tmdb_enrich ?? true)) {
+            return $this->fetchMetaFromTmdbDirect($type, $id);
+        }
+
+        return null;
+    }
+
+    /**
+     * Build a Stremio-shaped meta object directly from TMDB for a `tmdb:{id}`
+     * item, bypassing the AIOStreams addon-proxy entirely. Reuses the same
+     * cached `getMovieDetails`/`getTvSeriesDetails` payload enrichMetaWithTmdb()
+     * pulls from, so this stays a cache hit for anything the user already
+     * opened via the normal flow.
+     *
+     * @return array{meta: array<string, mixed>}|null
+     */
+    protected function fetchMetaFromTmdbDirect(string $type, string $id): ?array
+    {
+        if (! preg_match('/^tmdb:(\d+)/', $id, $matches)) {
             return null;
         }
 
-        return $this->enrichMetaWithTmdb($data, $type, $id);
+        $tmdb = app(TmdbService::class);
+        if (! $tmdb->isConfigured()) {
+            return null;
+        }
+
+        $tmdbId = (int) $matches[1];
+        $isSeries = $type === 'series';
+
+        $details = Cache::remember(
+            "aiostreams.tmdb.details.{$type}.{$tmdbId}",
+            now()->addWeek(),
+            fn () => $isSeries ? $tmdb->getTvSeriesDetails($tmdbId) : $tmdb->getMovieDetails($tmdbId)
+        );
+
+        if (! is_array($details)) {
+            return null;
+        }
+
+        $releaseDate = $details['first_air_date'] ?? $details['release_date'] ?? null;
+        $genres = is_string($details['genres'] ?? null)
+            ? array_values(array_filter(array_map('trim', explode(',', $details['genres']))))
+            : [];
+
+        $meta = array_filter([
+            'id' => $id,
+            'type' => $type,
+            'name' => $details['name'] ?? $details['title'] ?? '',
+            'poster' => $details['poster_url'] ?? null,
+            'background' => $details['backdrop_url'] ?? null,
+            'description' => $details['overview'] ?? null,
+            'year' => $releaseDate ? substr($releaseDate, 0, 4) : null,
+            'imdbRating' => isset($details['vote_average']) ? (string) round((float) $details['vote_average'], 1) : null,
+            'genres' => $genres,
+            'clearlogo' => $details['logo_url'] ?? null,
+            'director' => $details['director'] ?? null,
+            'runtime' => $details['runtime'] ?? null,
+            'cast_list' => $details['cast_list'] ?? null,
+            // Debrid stream addons only resolve IMDb ids, not TMDB ids - this
+            // is what AIOStreamsProxyController::stream() reads to map a
+            // `tmdb:` id to an IMDb one before requesting streams, so "Get
+            // Streams" on a related item can actually find sources.
+            'imdb_id' => $details['imdb_id'] ?? null,
+        ], fn ($value) => $value !== null && $value !== [] && $value !== '');
+
+        if ($isSeries) {
+            $seasons = Cache::remember(
+                "aiostreams.tmdb.seasons.{$tmdbId}",
+                now()->addWeek(),
+                fn () => $tmdb->getAllSeasons($tmdbId)
+            );
+
+            $shaped = $this->shapeTmdbSeasons(is_array($seasons) ? $seasons : []);
+            if (! empty($shaped)) {
+                $meta['seasons'] = $shaped;
+            }
+        }
+
+        if (! empty($details['recommendations'])) {
+            $meta['related'] = $this->shapeTmdbRecommendations($details['recommendations']);
+        }
+
+        return ['meta' => $meta];
     }
 
     /**
@@ -480,6 +571,10 @@ class AIOStreamsService implements MediaServer
             }
         }
 
+        if (! empty($details['recommendations']) && empty($meta['related'])) {
+            $meta['related'] = $this->shapeTmdbRecommendations($details['recommendations']);
+        }
+
         $data['meta'] = $meta;
 
         return $data;
@@ -517,6 +612,30 @@ class AIOStreamsService implements MediaServer
         }
 
         return $out;
+    }
+
+    /**
+     * Reshape TmdbService::getMovieDetails()/getTvSeriesDetails() `recommendations`
+     * into Stremio-style related items. Uses the `tmdb:{id}` id form the
+     * catalog browse already understands (see extractMovieDbIds()) so tapping
+     * a related card re-enters this same getMeta()/enrichMetaWithTmdb() path -
+     * no extra TMDB lookup needed to resolve an imdb id first.
+     *
+     * @param  array<int, array{tmdb_id: int, title: string, poster_url: ?string, media_type: string}>  $recommendations
+     * @return array<int, array{id: string, type: string, name: string, poster: ?string}>
+     */
+    protected function shapeTmdbRecommendations(array $recommendations): array
+    {
+        return collect($recommendations)
+            ->filter(fn ($rec) => ! empty($rec['tmdb_id']))
+            ->map(fn ($rec) => array_filter([
+                'id' => 'tmdb:'.$rec['tmdb_id'],
+                'type' => ($rec['media_type'] ?? null) === 'tv' ? 'series' : 'movie',
+                'name' => $rec['title'] ?? '',
+                'poster' => $rec['poster_url'] ?? null,
+            ], fn ($value) => $value !== null && $value !== ''))
+            ->values()
+            ->all();
     }
 
     /**

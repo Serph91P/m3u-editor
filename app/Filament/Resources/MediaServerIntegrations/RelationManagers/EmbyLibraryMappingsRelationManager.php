@@ -235,8 +235,11 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                     $library = $this->library($state);
                                     $set('output_path', null);
                                     if ($library) {
+                                        $libraryType = $library['type'] ?? null;
                                         $set('target_library_name', $library['name'] ?? null);
-                                        $set('collection_type', $library['type'] ?? null);
+                                        // A Mixed Content library isn't itself typed, so the user must
+                                        // choose which content type this mapping publishes there.
+                                        $set('collection_type', $libraryType === 'mixed' ? null : $libraryType);
 
                                         if ($get('source_kind') === 'custom_playlist_group') {
                                             $set('source_label', null);
@@ -248,7 +251,9 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                         }
                                     }
                                 })
-                                ->helperText(__('Choose the Emby library that will receive the published files. Its name and type are set automatically.')),
+                                ->helperText(fn (Get $get): string => $this->isMixedLibrary($get('target_library_id'))
+                                    ? __('This is a Mixed Content library. Choose which content type this mapping should publish below.')
+                                    : __('Choose the Emby library that will receive the published files. Its name and type are set automatically.')),
                             TextInput::make('target_library_name')
                                 ->label(__('Library name'))
                                 ->visible(fn (Get $get): bool => $get('destination_mode') === 'new')
@@ -257,13 +262,20 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                 ->helperText(__('This is the name m3u-editor will use when it creates the Emby library.'))
                                 ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Choose a clear, unique name that does not conflict with another Emby library.')),
                             Select::make('collection_type')
-                                ->label(__('Library type'))
+                                ->label(fn (Get $get): string => $get('destination_mode') === 'existing'
+                                    ? __('Content type')
+                                    : __('Library type'))
                                 ->options([
                                     'movies' => __('Movies'),
                                     'tvshows' => __('TV shows'),
                                 ])
-                                ->visible(fn (Get $get): bool => $get('destination_mode') === 'new')
-                                ->required(fn (Get $get): bool => $get('destination_mode') === 'new')
+                                ->visible(fn (Get $get): bool => $get('destination_mode') === 'new'
+                                    || $this->isMixedLibrary($get('target_library_id')))
+                                ->required(fn (Get $get): bool => $get('destination_mode') === 'new'
+                                    || $this->isMixedLibrary($get('target_library_id')))
+                                ->helperText(fn (Get $get): string => $get('destination_mode') === 'existing'
+                                    ? __('This Mixed Content library holds both. Choose what this mapping publishes.')
+                                    : '')
                                 ->live()
                                 ->afterStateUpdated(function (Set $set, Get $get): void {
                                     if ($get('source_kind') === 'custom_playlist_group') {
@@ -815,12 +827,21 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             : '';
         if ($destination !== '__new__') {
             $library = $this->library($destination);
-            $collectionType = $library['type'] ?? null;
+            $libraryType = $library['type'] ?? null;
             $paths = array_keys($this->compatibleLibraryPathOptions($destination));
             if ($library === null || ! is_string($library['name'] ?? null)
-                || ! in_array($collectionType, EmbyLibraryMapping::COLLECTION_TYPES, true)
-                || ($sourceCollectionType !== null && $sourceCollectionType !== $collectionType)
+                || ! in_array($libraryType, EmbyLibraryMapping::LIBRARY_TYPES, true)
+                || ($sourceCollectionType !== null && $libraryType !== 'mixed' && $sourceCollectionType !== $libraryType)
                 || $paths === []) {
+                throw ValidationException::withMessages([
+                    'destination' => __('Choose a compatible Emby library.'),
+                ]);
+            }
+
+            // A Mixed Content library isn't itself typed, so the mapping's collection_type
+            // (movies vs tvshows) comes from what the source is publishing, not the library.
+            $collectionType = $libraryType === 'mixed' ? $sourceCollectionType : $libraryType;
+            if (! in_array($collectionType, EmbyLibraryMapping::COLLECTION_TYPES, true)) {
                 throw ValidationException::withMessages([
                     'destination' => __('Choose a compatible Emby library.'),
                 ]);
@@ -1019,8 +1040,8 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                     ->contains(fn (mixed $path): bool => is_string($path)
                         && MediaServerIntegration::isSafeWritablePath($path));
 
-                return in_array($type, EmbyLibraryMapping::COLLECTION_TYPES, true)
-                    && ($collectionType === null || $type === $collectionType)
+                return in_array($type, EmbyLibraryMapping::LIBRARY_TYPES, true)
+                    && ($collectionType === null || $type === $collectionType || $type === 'mixed')
                     && ($hasConfirmedWritableRoots
                         ? $this->compatibleLibraryPathOptions((string) ($library['id'] ?? '')) !== []
                         : $hasSafePath);
@@ -1177,7 +1198,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
     private function libraryOptions(): array
     {
         return collect($this->ownerRecord->available_libraries ?? [])
-            ->filter(fn (array $library): bool => in_array($library['type'] ?? null, ['movies', 'tvshows'], true))
+            ->filter(fn (array $library): bool => in_array($library['type'] ?? null, EmbyLibraryMapping::LIBRARY_TYPES, true))
             ->mapWithKeys(fn (array $library): array => [
                 (string) $library['id'] => ($library['name'] ?? __('Unnamed library')).' ('.($library['type'] ?? '').')',
             ])
@@ -1193,6 +1214,11 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
 
         return collect($this->ownerRecord->available_libraries ?? [])
             ->first(fn (array $library): bool => (string) ($library['id'] ?? '') === $libraryId);
+    }
+
+    private function isMixedLibrary(?string $libraryId): bool
+    {
+        return ($this->library($libraryId)['type'] ?? null) === 'mixed';
     }
 
     /** @return array<string, string> */
@@ -1283,12 +1309,23 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             $libraryId = is_string($data['target_library_id'] ?? null) ? $data['target_library_id'] : null;
             $library = $this->library($libraryId);
             $libraryName = $library['name'] ?? null;
-            $collectionType = $library['type'] ?? null;
+            $libraryType = $library['type'] ?? null;
             if ($library === null || ! is_string($libraryName) || trim($libraryName) === ''
                 || mb_strlen($libraryName) > 255
-                || ! in_array($collectionType, EmbyLibraryMapping::COLLECTION_TYPES, true)) {
+                || ! in_array($libraryType, EmbyLibraryMapping::LIBRARY_TYPES, true)) {
                 throw ValidationException::withMessages([
                     'target_library_id' => __('Choose an available Emby library.'),
+                ]);
+            }
+
+            // A Mixed Content library isn't itself typed, so the form asks the user which
+            // content type this mapping publishes there instead of inferring it from the library.
+            $collectionType = $libraryType === 'mixed'
+                ? (is_string($data['collection_type'] ?? null) ? $data['collection_type'] : null)
+                : $libraryType;
+            if (! in_array($collectionType, EmbyLibraryMapping::COLLECTION_TYPES, true)) {
+                throw ValidationException::withMessages([
+                    'collection_type' => __('Choose which content type this mapping publishes.'),
                 ]);
             }
 

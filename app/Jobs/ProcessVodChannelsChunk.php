@@ -7,12 +7,14 @@ use App\Models\Playlist;
 use App\Services\XtreamService;
 use App\Traits\ProviderRequestDelay;
 use Filament\Notifications\Notification;
+use Illuminate\Bus\Batchable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
 
 class ProcessVodChannelsChunk implements ShouldQueue
 {
+    use Batchable;
     use ProviderRequestDelay;
     use Queueable;
 
@@ -40,6 +42,10 @@ class ProcessVodChannelsChunk implements ShouldQueue
      */
     public function handle(XtreamService $xtream): void
     {
+        if ($this->batch()?->cancelled()) {
+            return;
+        }
+
         $playlist = $this->playlist;
 
         // Refresh the playlist to get the latest state
@@ -55,28 +61,35 @@ class ProcessVodChannelsChunk implements ShouldQueue
             return;
         }
 
-        // Get the channels for this chunk
+        // Get the channels for this chunk. Loaded eagerly (a chunk is only ever
+        // CHUNK_SIZE rows) rather than via ->cursor(): a cursor keeps a read
+        // statement open for the whole loop, and in SQLite WAL mode a connection
+        // holding an open read is refused a write as soon as any other connection
+        // commits in between - busy_timeout never kicks in, so the very next
+        // progress write below throws "database is locked" instantly.
         $channels = $playlist->channels()
-            ->whereIn('id', $this->channelIds);
+            ->whereIn('id', $this->channelIds)
+            ->get();
 
         $totalChannels = count($this->channelIds);
 
-        foreach ($channels->cursor() as $index => $channel) {
+        foreach ($channels as $index => $channel) {
             try {
                 // Use provider throttling to limit concurrent requests and apply delay
                 // skipTmdb=true: TMDB IDs are fetched in bulk from ProcessVodChannelsComplete
                 $this->withProviderThrottling(fn () => $channel->fetchMetadata($xtream, skipTmdb: true));
             } catch (XtreamRateLimitedException $e) {
-                // Account-wide cooldown: every remaining channel in this chunk
-                // (and every later chunk in the Bus::chain) would fail the same
-                // way. Rethrow so the chain's own ->catch() in ProcessVodChannels
-                // stops the chain and marks the playlist Failed, rather than
-                // silently rolling through the rest and reporting 100% complete.
+                // Account-wide cooldown: every remaining channel in this chunk (and
+                // every later chunk in the batch) would fail the same way. Cancel the
+                // batch so pending chunks aren't dispatched only to fail immediately,
+                // then rethrow so this chunk is recorded as failed.
                 Log::warning('ProcessVodChannelsChunk: aborting chunk, Xtream account is rate limited', [
                     'playlist_id' => $playlist->id,
                     'chunk_index' => $this->chunkIndex,
                     'retry_at' => $e->retryAt->toIso8601String(),
                 ]);
+
+                $this->batch()?->cancel();
 
                 throw $e;
             } catch (\Exception $e) {
@@ -100,9 +113,8 @@ class ProcessVodChannelsChunk implements ShouldQueue
                 // Calculate overall progress: chunks already done + progress in current chunk
                 $chunkProgress = ($index / max(1, $totalChannels));
                 $overallProgress = (($this->chunkIndex + $chunkProgress) / $this->totalChunks) * 100;
-                $overallProgress = min(99, $overallProgress); // Never exceed 99% until complete
 
-                $playlist->update(['vod_progress' => $overallProgress]);
+                $this->updateVodProgress($playlist, $overallProgress);
             }
 
             // Note: Provider throttling is now handled by withProviderThrottling() above
@@ -110,10 +122,26 @@ class ProcessVodChannelsChunk implements ShouldQueue
 
         // Update progress after this chunk is complete
         $chunkCompleteProgress = (($this->chunkIndex + 1) / $this->totalChunks) * 100;
-        $chunkCompleteProgress = min(99, $chunkCompleteProgress); // Never exceed 99% until ProcessVodChannelsComplete
-
-        $playlist->update(['vod_progress' => $chunkCompleteProgress]);
+        $this->updateVodProgress($playlist, $chunkCompleteProgress);
 
         Log::info('Completed VOD chunk '.($this->chunkIndex + 1).' of '.$this->totalChunks.' for playlist ID '.$playlist->id);
+    }
+
+    /**
+     * Update the playlist's vod_progress. Best-effort - a transient write failure
+     * here must not fail the whole chunk (and the channel metadata already fetched
+     * with it), so failures are logged and swallowed rather than rethrown.
+     */
+    protected function updateVodProgress(Playlist $playlist, float $progress): void
+    {
+        try {
+            $playlist->update(['vod_progress' => min(99, $progress)]); // Never exceed 99% until ProcessVodChannelsComplete
+        } catch (\Exception $e) {
+            Log::warning('ProcessVodChannelsChunk: failed to update vod_progress', [
+                'playlist_id' => $playlist->id,
+                'chunk_index' => $this->chunkIndex,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

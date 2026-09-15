@@ -724,6 +724,58 @@ it('publishes to an existing compatible library using only source and destinatio
         ->toBe([]);
 });
 
+it('publishes to an existing Mixed Content library, taking collection_type from the source', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create([
+        'name' => 'Action',
+        'type' => 'vod',
+    ]);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_managed_setup_root' => '/srv/emby/managed',
+        'emby_publisher_writable_paths' => ['/srv/emby/managed'],
+        'available_libraries' => [[
+            'id' => 'mixed-library',
+            'name' => 'Everything',
+            'type' => 'mixed',
+            'paths' => ['/srv/emby/managed/everything'],
+        ]],
+    ]);
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+    ]);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => 'mixed-library',
+    ])->assertHasNoActionErrors();
+
+    $mapping = EmbyLibraryMapping::query()->sole();
+
+    expect($mapping)
+        ->target_library_id->toBe('mixed-library')
+        ->target_library_name->toBe('Everything')
+        ->collection_type->toBe('movies')
+        ->output_path->toStartWith('/srv/emby/managed/everything/');
+});
+
 it('keeps confirmed setup while rolling back mapping state when Emby rejects library creation', function () {
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);

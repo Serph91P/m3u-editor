@@ -268,6 +268,32 @@ it('creates an Emby library through the official virtual folders endpoint', func
     Http::assertNotSent(fn (Request $request): bool => $request->method() === 'DELETE');
 });
 
+it('includes Mixed Content libraries when fetching Emby libraries', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::response([
+            [
+                'ItemId' => 'library-movies',
+                'Name' => 'Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/movies'],
+            ],
+            [
+                'ItemId' => 'library-mixed',
+                'Name' => 'Everything',
+                // Emby reports no CollectionType for a "Mixed Content" library.
+                'Locations' => ['/srv/emby/mixed'],
+            ],
+        ], 200),
+    ]);
+
+    $libraries = MediaServerService::make($this->integration)->fetchLibraries();
+
+    expect($libraries)->toHaveCount(2)
+        ->and($libraries->firstWhere('id', 'library-mixed')['type'])->toBe('mixed')
+        ->and($libraries->firstWhere('id', 'library-movies')['type'])->toBe('movies');
+});
+
 it('rejects a managed library path already owned by a different Emby library', function () {
     Http::preventStrayRequests();
     Http::fake([

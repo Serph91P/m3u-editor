@@ -315,6 +315,19 @@ class GeneralSettings extends Settings
     // features depend on the enhanced Xtream API output.
     public ?bool $device_pairing_enabled = true;
 
+    // Admin-managed navigation menu (Settings > Navigation) - global, applies to all users.
+    // 'default' | 'simplified' | 'custom'. Informational only: records which preset the
+    // live admin_nav_layout last came from.
+    public ?string $admin_nav_active_preset = 'default';
+
+    /**
+     * Live order/visibility override applied to the admin sidebar for all users.
+     * Null means "use the canonical Default order with nothing hidden".
+     *
+     * Shape: ['groups' => ['order' => [...], 'hidden' => [...]], 'items' => ['<group_key>' => ['order' => [...], 'hidden' => [...]]]].
+     */
+    public ?array $admin_nav_layout = null;
+
     public static function group(): string
     {
         return 'general';

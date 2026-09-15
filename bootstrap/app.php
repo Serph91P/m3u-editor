@@ -36,6 +36,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 'group',
                 'group/*',
                 'playlist/*',
+                'custom-playlist/*',
                 'player_api.php',
                 'get.php',
             ])
