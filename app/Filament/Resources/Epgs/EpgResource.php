@@ -904,7 +904,7 @@ class EpgResource extends Resource implements CopilotResource
                         foreach ($service->getHeadends($record->sd_token, $record->sd_country, $record->sd_postal_code) as $headend) {
                             foreach ($headend['lineups'] ?? [] as $lineup) {
                                 if (! isset($lineups[$lineup['lineup']])) {
-                                    $available[$lineup['lineup']] = "{$lineup['name']} — {$lineup['lineup']} ({$headend['transport']})";
+                                    $available[$lineup['lineup']] = "{$lineup['name']} - {$lineup['lineup']} ({$headend['transport']})";
                                 }
                             }
                         }

@@ -604,7 +604,7 @@ class SchedulesDirectService
     public function addLineup(string $token, string $lineupId): array
     {
         try {
-            $response = $this->makeRequest('PUT', '/lineups', ['lineup' => $lineupId], $token);
+            $response = $this->makeRequest('PUT', "/lineups/{$lineupId}", [], $token);
 
             return $response->json();
         } catch (Exception $e) {
@@ -1274,21 +1274,19 @@ class SchedulesDirectService
         // Prepare file path
         $filePath = Storage::disk('local')->path($epg->file_path);
 
-        // Remove old file if exists
-        if (Storage::disk('local')->exists($epg->file_path)) {
-            Storage::disk('local')->delete($epg->file_path);
-        }
-
         // Ensure directory exists
         if (! Storage::disk('local')->exists($epg->folder_path)) {
             Storage::disk('local')->makeDirectory($epg->folder_path);
         }
 
-        // Open file for writing
-        $file = fopen($filePath, 'w');
+        // Build the replacement beside the current file. The existing document
+        // remains available until the complete replacement is closed successfully.
+        $temporaryPath = tempnam(dirname($filePath), basename($filePath).'.');
+        $file = $temporaryPath === false ? false : fopen($temporaryPath, 'w');
         if (! $file) {
             throw new Exception("Cannot open file for writing: {$filePath}");
         }
+        $completed = false;
         try {
             // Extract station artwork from lineup data (logos are included in lineup response)
             Log::debug('Extracting station artwork from lineup data');
@@ -1302,6 +1300,10 @@ class SchedulesDirectService
 
             // Write XML footer
             fwrite($file, "</tv>\n");
+            if (! fflush($file)) {
+                throw new Exception("Cannot flush XMLTV file: {$temporaryPath}");
+            }
+            $completed = true;
         } catch (Exception $e) {
             Log::error('Failed to stream process to XMLTV', [
                 'epg_id' => $epg->id,
@@ -1313,6 +1315,14 @@ class SchedulesDirectService
         } finally {
             fclose($file);
             $epg->update(['sd_progress' => 100]);
+            if ($completed) {
+                if (! rename($temporaryPath, $filePath)) {
+                    @unlink($temporaryPath);
+                    throw new Exception("Cannot replace XMLTV file: {$filePath}");
+                }
+            } elseif (file_exists($temporaryPath)) {
+                @unlink($temporaryPath);
+            }
         }
 
         return $filePath;
@@ -1454,11 +1464,11 @@ class SchedulesDirectService
                             'step' => $progressStep,
                             'error' => $e->getMessage(),
                         ]);
-                        $programBatchFailures[] = [
-                            'step' => $progressStep,
-                            'code' => $e->getCode(),
-                            'message' => $e->getMessage(),
-                        ];
+                        if (in_array($e->getCode(), [self::PROGRAMS_PERMANENT_FAILURE_CODE, self::PROGRAMS_RETRYABLE_FAILURE_CODE], true)) {
+                            throw $e;
+                        }
+
+                        continue;
                     } finally {
                         // Clean up temporary file
                         if (isset($tempProgramIdFile) && file_exists($tempProgramIdFile)) {
@@ -1804,7 +1814,9 @@ class SchedulesDirectService
             } elseif ($method === 'POST') {
                 $response = $request->post($url, $data);
             } elseif ($method === 'PUT') {
-                $response = $request->put($url, $data);
+                $response = $data === []
+                    ? $request->send('PUT', $url, ['body' => ''])
+                    : $request->put($url, $data);
             } else {
                 $response = $request->send($method, $url, ['json' => $data]);
             }
@@ -1856,7 +1868,9 @@ class SchedulesDirectService
             } elseif ($method === 'POST') {
                 $response = $request->post($url, $data);
             } elseif ($method === 'PUT') {
-                $response = $request->put($url, $data);
+                $response = $data === []
+                    ? $request->send('PUT', $url, ['body' => ''])
+                    : $request->put($url, $data);
             } else {
                 $response = $request->send($method, $url, ['json' => $data]);
             }
