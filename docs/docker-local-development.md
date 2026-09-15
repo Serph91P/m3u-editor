@@ -42,11 +42,18 @@ docker compose -f docker-compose.dev.yml --profile test build m3u-editor-dev-tes
 docker compose -f docker-compose.dev.yml --profile test run --rm m3u-editor-dev-test
 ```
 
-Für einen gezielten Test oder Filter können Argumente an Artisan weitergereicht werden:
+Für einen gezielten Test wird der Compose-Entrypoint überschrieben, weil Laravel 13 die PHPUnit-Selektionsoptionen nicht als Artisan-Optionen exponiert:
 
 ```sh
-docker compose -f docker-compose.dev.yml --profile test run --rm m3u-editor-dev-test \
+docker compose -f docker-compose.dev.yml --profile test run --rm \
+  --entrypoint php m3u-editor-dev-test vendor/bin/phpunit \
   --filter='SchedulesDirect'
+```
+
+Für einen CI-nahen Lauf ohne Filter wird der vorhandene Entrypoint verwendet:
+
+```sh
+docker compose -f docker-compose.dev.yml --profile test run --rm m3u-editor-dev-test
 ```
 
 Der Entrypoint `docker/run-tests` legt bei jedem Lauf `database/jobs.sqlite` neu an und startet anschließend `php artisan test`. Die Testumgebung ist absichtlich ohne externe Redis-/PostgreSQL-Dienste konfiguriert: SQLite (`:memory:`), Array-Cache, synchrone Queue, deaktiviertes Redis und deaktivierte Pulse-/Telescope-Funktionen. Reverb erhält sichere Dummy-Werte (`test`); es werden keine Secrets benötigt.
