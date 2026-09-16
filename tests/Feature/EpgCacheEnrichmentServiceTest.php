@@ -371,3 +371,38 @@ it('does not publish a generation for a no-op patch', function (): void {
     ]])['status'])->toBe('noop')
         ->and(app(EpgCacheGenerationResolver::class)->resolve($epg))->toEndWith($snapshot['generation']);
 });
+
+it('accepts canonical HTTPS URLs and every supported image role in an enrichment patch', function (): void {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    completeEnrichmentGeneration($epg, [[
+        ...EpgProgrammeStore::EMPTY_PROGRAMME,
+        'channel' => 'channel.one',
+        'start' => '2026-09-16T01:00:00.000000Z',
+        'title' => 'Original',
+    ]]);
+    $service = app(EpgCacheEnrichmentService::class);
+    $context = enrichmentContext($user);
+    $snapshot = $service->snapshot($context, $epg, []);
+    $images = collect(['poster', 'banner', 'fanart', 'logo'])
+        ->map(fn (string $type): array => [
+            'url' => "https://images.example.test/{$type}.jpg",
+            'type' => $type,
+            'width' => 100,
+            'height' => 200,
+            'orient' => 'P',
+            'size' => 1000,
+        ])
+        ->all();
+
+    $result = $service->apply($context, $epg, $snapshot['token'], [[
+        'locator' => $snapshot['programmes'][0]['locator'],
+        'row_revision' => $snapshot['programmes'][0]['row_revision'],
+        'changes' => [
+            'urls' => [['system' => 'TMDB', 'value' => 'https://www.themoviedb.org/tv/1']],
+            'images' => $images,
+        ],
+    ]]);
+
+    expect($result['status'])->toBe('applied');
+});
