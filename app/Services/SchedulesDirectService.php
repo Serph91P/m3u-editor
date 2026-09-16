@@ -1452,7 +1452,7 @@ class SchedulesDirectService
                     try {
                         // Stream process programs directly without creating lookup arrays
                         $chunkProgramsWritten = 0;
-                        $this->streamProcessProgramsDirectly($tempProgramIdFile, $epg->sd_token, $progressStep, $scheduleSubChunk, $file, $chunkProgramsWritten, $artworkCache, $epg);
+                        $this->streamProcessProgramsDirectly($tempProgramIdFile, $epg->sd_token, $progressStep, $scheduleSubChunk, $file, $chunkProgramsWritten, $artworkCache, $epg, $programBatchFailures);
                         $totalProgramsWritten += $chunkProgramsWritten;
                         Log::debug('Sub-chunk completed', [
                             'step' => $progressStep,
@@ -1508,7 +1508,7 @@ class SchedulesDirectService
     /**
      * Stream process programs directly without creating lookup arrays - pure streaming approach
      */
-    private function streamProcessProgramsDirectly(string $programIdFile, string $token, int $chunkIndex, array $scheduleChunk, $file, int &$programsWritten, array $artworkCache = [], ?Epg $epg = null): void
+    private function streamProcessProgramsDirectly(string $programIdFile, string $token, int $chunkIndex, array $scheduleChunk, $file, int &$programsWritten, array $artworkCache = [], ?Epg $epg = null, array &$programBatchFailures = []): void
     {
         $handle = fopen($programIdFile, 'r');
         if (! $handle) {
@@ -1526,7 +1526,12 @@ class SchedulesDirectService
 
                     // When we reach batch size, process the programs immediately
                     if (count($batch) >= self::PROGRAMS_BATCH_SIZE) {
-                        $this->processProgramBatchDirectly($batch, $batchIndex, $token, $chunkIndex, $scheduleChunk, $file, $programsWritten, $artworkCache, $epg);
+                        try {
+                            $this->processProgramBatchDirectly($batch, $batchIndex, $token, $chunkIndex, $scheduleChunk, $file, $programsWritten, $artworkCache, $epg);
+                        } catch (Exception $e) {
+                            Log::error('Error processing program batch', ['chunk' => $chunkIndex, 'batch' => $batchIndex, 'error' => $e->getMessage()]);
+                            $programBatchFailures[] = ['step' => $chunkIndex, 'batch' => $batchIndex, 'code' => $e->getCode(), 'message' => $e->getMessage()];
+                        }
                         $batch = []; // Clear the batch
                         $batchIndex++;
 
@@ -1538,7 +1543,12 @@ class SchedulesDirectService
 
             // Process remaining programs in the last batch
             if (! empty($batch)) {
-                $this->processProgramBatchDirectly($batch, $batchIndex, $token, $chunkIndex, $scheduleChunk, $file, $programsWritten, $artworkCache, $epg);
+                try {
+                    $this->processProgramBatchDirectly($batch, $batchIndex, $token, $chunkIndex, $scheduleChunk, $file, $programsWritten, $artworkCache, $epg);
+                } catch (Exception $e) {
+                    Log::error('Error processing program batch', ['chunk' => $chunkIndex, 'batch' => $batchIndex, 'error' => $e->getMessage()]);
+                    $programBatchFailures[] = ['step' => $chunkIndex, 'batch' => $batchIndex, 'code' => $e->getCode(), 'message' => $e->getMessage()];
+                }
             }
             Log::debug('Completed streaming direct program processing', [
                 'chunk' => $chunkIndex,

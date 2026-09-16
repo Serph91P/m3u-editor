@@ -198,7 +198,8 @@ it('handles missing artwork gracefully', function () {
 
 it('attempts remaining program batches and preserves XMLTV on partial failure', function () {
     $user = User::factory()->create();
-    $stationIds = array_map(fn (int $id): string => (string) $id, range(1, 11));
+    $stationIds = ['1'];
+    $programIds = array_map(fn (int $id): string => "EP{$id}", range(1, 10000));
     $epg = Epg::factory()->create([
         'user_id' => $user->id,
         'sd_token' => 'valid-token',
@@ -208,10 +209,10 @@ it('attempts remaining program batches and preserves XMLTV on partial failure', 
     ]);
 
     $programRequests = 0;
-    Http::fake(function ($request) use (&$programRequests, $stationIds) {
+    Http::fake(function ($request) use (&$programRequests, $stationIds, $programIds) {
         if (str_ends_with($request->url(), '/programs')) {
             $programRequests++;
-            if ($programRequests <= 2) {
+            if ($programRequests === 1) {
                 return Http::response(['message' => 'temporary'], 503);
             }
 
@@ -234,7 +235,11 @@ it('attempts remaining program batches and preserves XMLTV on partial failure', 
         if (str_ends_with($request->url(), '/schedules')) {
             return Http::response(array_map(fn (string $id): array => [
                 'stationID' => $id,
-                'programs' => [['programID' => "EP{$id}", 'airDateTime' => '2025-09-18T20:00:00Z', 'duration' => 3600]],
+                'programs' => array_map(fn (string $programId): array => [
+                    'programID' => $programId,
+                    'airDateTime' => '2025-09-18T20:00:00Z',
+                    'duration' => 3600,
+                ], $programIds),
             ], $stationIds));
         }
 
@@ -246,12 +251,12 @@ it('attempts remaining program batches and preserves XMLTV on partial failure', 
     $before = Storage::disk('local')->get($epg->file_path);
 
     expect(fn () => (new SchedulesDirectService)->syncEpgData($epg))
-        ->toThrow(Exception::class, 'SchedulesDirect program import completed only partially; 2 program batch(es) failed.');
+        ->toThrow(Exception::class, 'SchedulesDirect program import completed only partially; 1 program batch(es) failed.');
 
     $xmlContent = Storage::disk('local')->get($epg->file_path);
-    expect($programRequests)->toBe(6)
+    expect($programRequests)->toBe(2)
         ->and($xmlContent)->toBe($before)
-        ->and($epg->fresh()->sd_errors)->toHaveCount(3);
+        ->and($epg->fresh()->sd_errors)->toHaveCount(2);
     expect(Storage::disk('local')->allFiles(dirname($epg->file_path)))->toHaveCount(1);
 });
 
