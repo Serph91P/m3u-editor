@@ -66,6 +66,16 @@ class EpgCacheService
     private array $programmeStores = [];
 
     /**
+     * Per-instance memo of resolved active cache directories, keyed by EPG id.
+     *
+     * A reader must retain the generation selected when it begins, even when a
+     * concurrent cache rebuild atomically publishes a newer generation.
+     *
+     * @var array<int, string>
+     */
+    private array $activeCacheDirectories = [];
+
+    /**
      * Get the cache directory path for an EPG
      */
     private function getCacheDir(Epg $epg): string
@@ -83,7 +93,11 @@ class EpgCacheService
      */
     private function getActiveCacheDir(Epg $epg): string
     {
-        return $this->cacheGenerations()->resolve($epg);
+        if (array_key_exists($epg->id, $this->activeCacheDirectories)) {
+            return $this->activeCacheDirectories[$epg->id];
+        }
+
+        return $this->activeCacheDirectories[$epg->id] = $this->cacheGenerations()->resolve($epg);
     }
 
     private function cacheGenerations(): EpgCacheGenerationResolver
@@ -196,6 +210,7 @@ class EpgCacheService
             // Drop any read handle memoized before this rebuild so subsequent
             // local reads resolve the newly published immutable generation.
             $this->forgetProgrammeStore($epg);
+            $this->forgetActiveCacheDirectory($epg);
 
             // Flag EPG as cached
             $epg->update([
@@ -569,6 +584,16 @@ class EpgCacheService
             $this->programmeStores[$epg->id]?->close();
             unset($this->programmeStores[$epg->id]);
         }
+    }
+
+    /**
+     * Forget the generation selected by this service after it publishes a new
+     * one itself. Existing reader instances intentionally keep their memoized
+     * path until their operation finishes.
+     */
+    private function forgetActiveCacheDirectory(Epg $epg): void
+    {
+        unset($this->activeCacheDirectories[$epg->id]);
     }
 
     /**

@@ -38,6 +38,13 @@ function writeCompleteEpgGeneration(Epg $epg, string $title): string
     ]);
     $store->finish();
 
+    Storage::disk('local')->put("{$directory}/channels.json", json_encode([
+        'channel.one' => [
+            'id' => 'channel.one',
+            'display_name' => $title,
+        ],
+    ], JSON_THROW_ON_ERROR));
+
     return $directory;
 }
 
@@ -56,8 +63,10 @@ it('keeps an in-progress reader on its resolved generation while new readers use
     $oldGeneration = writeCompleteEpgGeneration($epg, 'Old programme');
     $resolver->publish($epg, $oldGeneration);
 
-    $oldReader = app(EpgCacheService::class);
+    $oldReader = new EpgCacheService;
     expect($oldReader->getCachedProgrammes($epg, now()->format('Y-m-d'), ['channel.one'])['channel.one'][0]['title'])
+        ->toBe('Old programme');
+    expect($oldReader->getCachedChannels($epg)['channels']['channel.one']['display_name'])
         ->toBe('Old programme');
 
     $newGeneration = writeCompleteEpgGeneration($epg, 'New programme');
@@ -65,10 +74,36 @@ it('keeps an in-progress reader on its resolved generation while new readers use
 
     expect($oldReader->getCachedProgrammes($epg, now()->format('Y-m-d'), ['channel.one'])['channel.one'][0]['title'])
         ->toBe('Old programme')
-        ->and(app(EpgCacheService::class)->getCachedProgrammes($epg, now()->format('Y-m-d'), ['channel.one'])['channel.one'][0]['title'])
+        ->and((new EpgCacheService)->getCachedProgrammes($epg, now()->format('Y-m-d'), ['channel.one'])['channel.one'][0]['title'])
+        ->toBe('New programme')
+        ->and($oldReader->getCachedChannels($epg)['channels']['channel.one']['display_name'])
+        ->toBe('Old programme')
+        ->and((new EpgCacheService)->getCachedChannels($epg)['channels']['channel.one']['display_name'])
         ->toBe('New programme')
         ->and(Storage::disk('local')->exists("{$oldGeneration}/metadata.json"))->toBeTrue()
         ->and(Storage::disk('local')->exists("{$oldGeneration}/programmes.sqlite"))->toBeTrue();
+});
+
+it('keeps non-SQLite readers on their resolved generation while new readers use the published generation', function () {
+    $epg = Epg::factory()->for(User::factory())->create();
+    $resolver = app(EpgCacheGenerationResolver::class);
+    $oldGeneration = writeCompleteEpgGeneration($epg, 'Old programme');
+    Storage::disk('local')->put("{$oldGeneration}/channels.json", json_encode([
+        'channel.old' => ['display_name' => 'Old channel'],
+    ], JSON_THROW_ON_ERROR));
+    $resolver->publish($epg, $oldGeneration);
+
+    $oldReader = app(EpgCacheService::class);
+    expect($oldReader->getCachedChannels($epg)['channels'])->toHaveKey('channel.old');
+
+    $newGeneration = writeCompleteEpgGeneration($epg, 'New programme');
+    Storage::disk('local')->put("{$newGeneration}/channels.json", json_encode([
+        'channel.new' => ['display_name' => 'New channel'],
+    ], JSON_THROW_ON_ERROR));
+    $resolver->publish($epg, $newGeneration);
+
+    expect($oldReader->getCachedChannels($epg)['channels'])->toHaveKey('channel.old')
+        ->and(app(EpgCacheService::class)->getCachedChannels($epg)['channels'])->toHaveKey('channel.new');
 });
 
 it('publishes a complete cache generation after parsing the EPG', function () {
