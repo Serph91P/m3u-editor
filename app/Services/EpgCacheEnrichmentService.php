@@ -96,17 +96,17 @@ class EpgCacheEnrichmentService
             return ['status' => 'stale_snapshot'];
         }
 
-        $changes = $this->validatedChanges($directory, $snapshot, $patches);
-        if ($changes === null) {
+        $prevalidatedChanges = $this->prevalidatedChanges($directory, $snapshot, $patches);
+        if ($prevalidatedChanges === null) {
             return ['status' => 'conflict'];
         }
-        if ($changes === []) {
+        if ($prevalidatedChanges === []) {
             return ['status' => 'noop'];
         }
 
         try {
             $replacement = $this->copyGeneration($epg, $directory);
-            $this->writeChanges($replacement, $changes);
+            $this->writeChanges($replacement, $prevalidatedChanges);
         } catch (Throwable) {
             $this->discardGeneration($replacement ?? null);
 
@@ -114,7 +114,7 @@ class EpgCacheEnrichmentService
         }
 
         try {
-            $result = $this->generations->mutate($epg, function () use ($context, $epg, $snapshot, $patches, $replacement): array {
+            $result = $this->generations->mutate($epg, function () use ($context, $epg, $snapshot, $prevalidatedChanges, $replacement): array {
                 if ($denial = $this->authorizationDenial($context, $epg)) {
                     return ['status' => $denial];
                 }
@@ -125,7 +125,7 @@ class EpgCacheEnrichmentService
                 if (basename($source) !== ($snapshot['generation'] ?? null)) {
                     return ['status' => 'stale_snapshot'];
                 }
-                if ($this->validatedChanges($source, $snapshot, $patches) === null) {
+                if (! $this->hasExpectedRevisions($source, $prevalidatedChanges)) {
                     return ['status' => 'conflict'];
                 }
 
@@ -240,8 +240,8 @@ class EpgCacheEnrichmentService
         }
     }
 
-    /** @param array<string, mixed> $snapshot @param list<array<string, mixed>> $patches @return array<int, array{programme: array<string,mixed>, changes: array<string,mixed>}>|null */
-    private function validatedChanges(string $directory, array $snapshot, array $patches): ?array
+    /** @param array<string, mixed> $snapshot @param list<array<string, mixed>> $patches @return array<int, array{programme: array<string,mixed>, expected_revision: string}>|null */
+    private function prevalidatedChanges(string $directory, array $snapshot, array $patches): ?array
     {
         $expected = $snapshot['rows'] ?? [];
         if (! is_array($expected)) {
@@ -265,11 +265,24 @@ class EpgCacheEnrichmentService
             }
             $programme = array_replace($rows[0]['programme'], $patchChanges);
             if ($programme !== $rows[0]['programme']) {
-                $changes[$rowid] = ['programme' => $programme, 'changes' => $patchChanges];
+                $changes[$rowid] = ['programme' => $programme, 'expected_revision' => $expected[(string) $rowid]];
             }
         }
 
         return $changes;
+    }
+
+    /** @param array<int, array{programme: array<string,mixed>, expected_revision: string}> $prevalidatedChanges */
+    private function hasExpectedRevisions(string $directory, array $prevalidatedChanges): bool
+    {
+        foreach ($prevalidatedChanges as $rowid => $change) {
+            $rows = $this->readExactRow($directory, $rowid);
+            if (count($rows) !== 1 || $rows[0]['revision'] !== $change['expected_revision']) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
@@ -279,7 +292,7 @@ class EpgCacheEnrichmentService
     }
 
     /** @param array<string, mixed> $changes @return array<string, mixed>|null */
-    private function validatePatch(array $changes): ?array
+    protected function validatePatch(array $changes): ?array
     {
         if ($changes === [] || array_diff(array_keys($changes), self::MUTABLE_FIELDS) !== []) {
             return null;
@@ -340,7 +353,7 @@ class EpgCacheEnrichmentService
         return is_array($images);
     }
 
-    /** @param array<int, array{programme: array<string, mixed>, changes: array<string, mixed>}> $changes */
+    /** @param array<int, array{programme: array<string, mixed>, expected_revision: string}> $changes */
     private function writeChanges(string $directory, array $changes): void
     {
         $pdo = new PDO('sqlite:'.Storage::disk('local')->path($directory.'/programmes.sqlite'));
