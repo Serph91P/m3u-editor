@@ -369,10 +369,19 @@ class EpgCacheEnrichmentService
     private function snapshotLegacy(PluginExecutionContext $context, Epg $epg, string $directory, array $selection): array
     {
         $limit = $selection['limit'] ?? self::MAX_PAGE_SIZE;
-        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_PAGE_SIZE || ! Storage::disk('local')->exists($directory.'/programmes.sqlite')) {
+        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_PAGE_SIZE) {
             return ['status' => 'invalid_selection'];
         }
-        $rows = $this->readRows($directory, 0, $limit);
+        $cursor = $selection['cursor'] ?? null;
+        $after = $this->decodeCursor($cursor);
+        if ($cursor !== null && $after === null) {
+            return ['status' => 'invalid_cursor'];
+        }
+        $rows = Storage::disk('local')->exists($directory.'/programmes.sqlite')
+            ? $this->readRows($directory, $after, $limit + 1)
+            : $this->readLegacyJsonlRows($directory, $after, $limit + 1);
+        $hasMore = count($rows) > $limit;
+        $rows = array_slice($rows, 0, $limit);
 
         return [
             'status' => 'ok',
@@ -380,7 +389,46 @@ class EpgCacheEnrichmentService
             'cache_revision' => 'legacy',
             'token' => Crypt::encryptString(json_encode(['epg_id' => $epg->id, 'plugin_id' => $context->plugin->id, 'generation' => 'legacy', 'rows' => []], JSON_THROW_ON_ERROR)),
             'programmes' => array_map(fn (array $row): array => $this->publicRow($row), $rows),
-            'next_cursor' => null,
+            'next_cursor' => $hasMore ? $this->encodeCursor((int) $rows[array_key_last($rows)]['rowid']) : null,
         ];
+    }
+
+    /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
+    private function readLegacyJsonlRows(string $directory, int $after, int $limit): array
+    {
+        $disk = Storage::disk('local');
+        $paths = array_values(array_filter($disk->files($directory), fn (string $path): bool => (bool) preg_match('/\/programmes-\d{4}-\d{2}-\d{2}\.jsonl$/', $path)));
+        sort($paths, SORT_STRING);
+
+        $rowid = 0;
+        $rows = [];
+        foreach ($paths as $path) {
+            $handle = fopen($disk->path($path), 'r');
+            if ($handle === false) {
+                continue;
+            }
+            try {
+                while (($line = fgets($handle)) !== false) {
+                    $record = json_decode(trim($line), true);
+                    if (! is_array($record) || ! is_string($record['channel'] ?? null) || ! is_array($record['programme'] ?? null)) {
+                        continue;
+                    }
+                    $rowid++;
+                    if ($rowid <= $after) {
+                        continue;
+                    }
+                    $programme = $record['programme'];
+                    $programme['channel'] ??= $record['channel'];
+                    $rows[] = ['rowid' => $rowid, 'programme' => $programme, 'revision' => $this->revision($programme)];
+                    if (count($rows) >= $limit) {
+                        return $rows;
+                    }
+                }
+            } finally {
+                fclose($handle);
+            }
+        }
+
+        return $rows;
     }
 }
