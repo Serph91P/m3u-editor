@@ -633,7 +633,7 @@ class SchedulesDirectService
     public function removeLineup(string $token, string $lineupId): array
     {
         try {
-            $response = $this->makeRequest('DELETE', "/lineups/{$lineupId}", [], $token);
+            $response = $this->makeRequest('DELETE', '/lineups/'.rawurlencode($lineupId), [], $token);
 
             return $response->json();
         } catch (Exception $e) {
@@ -1464,11 +1464,11 @@ class SchedulesDirectService
                             'step' => $progressStep,
                             'error' => $e->getMessage(),
                         ]);
-                        if (in_array($e->getCode(), [self::PROGRAMS_PERMANENT_FAILURE_CODE, self::PROGRAMS_RETRYABLE_FAILURE_CODE], true)) {
-                            throw $e;
-                        }
-
-                        continue;
+                        $programBatchFailures[] = [
+                            'step' => $progressStep,
+                            'code' => $e->getCode(),
+                            'message' => $e->getMessage(),
+                        ];
                     } finally {
                         // Clean up temporary file
                         if (isset($tempProgramIdFile) && file_exists($tempProgramIdFile)) {
@@ -1650,6 +1650,10 @@ class SchedulesDirectService
         for ($attempt = 1; $attempt <= 2; $attempt++) {
             $response = Http::withHeaders($this->buildHeaders($token))->timeout(300)->sink($responseFile)
                 ->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
+
+            if ($response->successful()) {
+                return $response;
+            }
 
             $data = json_decode((string) file_get_contents($responseFile), true);
             if (($data['code'] ?? null) !== self::PROGRAMS_RETRYABLE_FAILURE_CODE || $attempt === 2) {

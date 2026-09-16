@@ -923,7 +923,7 @@ class EpgResource extends Resource implements CopilotResource
                         Select::make('lineup_to_remove')
                             ->label(__('Lineup to Remove'))
                             ->options($lineups)
-                            ->required()
+                            ->required(fn (Get $get): bool => blank($get('lineup_to_add')))
                             ->hint(__("{$count} of {$max} slots used"))
                             ->helperText(__('Select the lineup you want to remove from your SchedulesDirect account.')),
                     ];
