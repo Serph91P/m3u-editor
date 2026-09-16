@@ -951,11 +951,14 @@ class EpgResource extends Resource implements CopilotResource
                         app(SchedulesDirectService::class)->removeLineupFromEpg($record, $lineupId);
                     }
 
-                    $verb = $isAdd ? 'added to' : 'removed from';
+                    $messageKey = $isAdd
+                        ? 'Lineup :lineupId has been added to your SchedulesDirect account.'
+                        : 'Lineup :lineupId has been removed from your SchedulesDirect account.';
+
                     Notification::make()
                         ->success()
                         ->title($isAdd ? __('Lineup added') : __('Lineup removed'))
-                        ->body(__("Lineup {$lineupId} has been {$verb} your SchedulesDirect account."))
+                        ->body(__($messageKey, ['lineupId' => $lineupId]))
                         ->send();
                 } catch (Exception $e) {
                     Notification::make()
