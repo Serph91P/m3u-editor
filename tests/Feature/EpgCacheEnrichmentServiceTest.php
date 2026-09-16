@@ -351,6 +351,74 @@ it('serializes an apply with the same per-EPG mutation lock used by generation p
     ]])['status'])->toBe('applied');
 });
 
+it('stages the complete patched generation before acquiring the shared mutation lock', function (): void {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    $source = completeEnrichmentGeneration($epg, [[
+        ...EpgProgrammeStore::EMPTY_PROGRAMME,
+        'channel' => 'channel.one',
+        'start' => '2026-09-16T01:00:00.000000Z',
+        'title' => 'Original',
+    ]]);
+    $resolver = app(EpgCacheGenerationResolver::class);
+    $service = app(EpgCacheEnrichmentService::class);
+    $context = enrichmentContext($user);
+    $snapshot = $service->snapshot($context, $epg, []);
+    $lock = Mockery::mock();
+
+    Cache::shouldReceive('lock')->once()->with($resolver->mutationLockName($epg), 30)->andReturn($lock);
+    $lock->shouldReceive('block')->once()->with(10, Mockery::type(Closure::class))->andReturnUsing(function (int $seconds, Closure $callback) use ($epg, $source): array {
+        expect(Storage::disk('local')->directories("epg-cache/{$epg->uuid}/v2/generations"))->toHaveCount(2)
+            ->and(app(EpgCacheGenerationResolver::class)->resolve($epg))->toBe($source);
+
+        return $callback();
+    });
+
+    expect($service->apply($context, $epg, $snapshot['token'], [[
+        'locator' => $snapshot['programmes'][0]['locator'],
+        'row_revision' => $snapshot['programmes'][0]['row_revision'],
+        'changes' => ['title' => 'Updated'],
+    ]])['status'])->toBe('applied');
+});
+
+it('discards a staged generation when the active generation changes under the mutation lock', function (): void {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    $source = completeEnrichmentGeneration($epg, [[
+        ...EpgProgrammeStore::EMPTY_PROGRAMME,
+        'channel' => 'channel.one',
+        'start' => '2026-09-16T01:00:00.000000Z',
+        'title' => 'Original',
+    ]]);
+    $replacement = completeEnrichmentGeneration($epg, [[
+        ...EpgProgrammeStore::EMPTY_PROGRAMME,
+        'channel' => 'channel.one',
+        'start' => '2026-09-16T01:00:00.000000Z',
+        'title' => 'Concurrent update',
+    ]]);
+    $resolver = app(EpgCacheGenerationResolver::class);
+    $resolver->publish($epg, $source);
+    $service = app(EpgCacheEnrichmentService::class);
+    $context = enrichmentContext($user);
+    $snapshot = $service->snapshot($context, $epg, []);
+    $lock = Mockery::mock();
+
+    Cache::shouldReceive('lock')->once()->with($resolver->mutationLockName($epg), 30)->andReturn($lock);
+    $lock->shouldReceive('block')->once()->with(10, Mockery::type(Closure::class))->andReturnUsing(function (int $seconds, Closure $callback) use ($epg, $replacement, $resolver): array {
+        $resolver->publishWithinMutationLock($epg, $replacement);
+
+        return $callback();
+    });
+
+    expect($service->apply($context, $epg, $snapshot['token'], [[
+        'locator' => $snapshot['programmes'][0]['locator'],
+        'row_revision' => $snapshot['programmes'][0]['row_revision'],
+        'changes' => ['title' => 'Plugin update'],
+    ]])['status'])->toBe('stale_snapshot')
+        ->and($resolver->resolve($epg))->toBe($replacement)
+        ->and(Storage::disk('local')->directories("epg-cache/{$epg->uuid}/v2/generations"))->toHaveCount(2);
+});
+
 it('does not publish a generation for a no-op patch', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();

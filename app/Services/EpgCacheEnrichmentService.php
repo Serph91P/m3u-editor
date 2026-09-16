@@ -96,8 +96,25 @@ class EpgCacheEnrichmentService
             return ['status' => 'stale_snapshot'];
         }
 
+        $changes = $this->validatedChanges($directory, $snapshot, $patches);
+        if ($changes === null) {
+            return ['status' => 'conflict'];
+        }
+        if ($changes === []) {
+            return ['status' => 'noop'];
+        }
+
         try {
-            return $this->generations->mutate($epg, function () use ($context, $epg, $snapshot, $patches): array {
+            $replacement = $this->copyGeneration($epg, $directory);
+            $this->writeChanges($replacement, $changes);
+        } catch (Throwable) {
+            $this->discardGeneration($replacement ?? null);
+
+            return ['status' => 'invalid_patch'];
+        }
+
+        try {
+            $result = $this->generations->mutate($epg, function () use ($context, $epg, $snapshot, $patches, $replacement): array {
                 if ($denial = $this->authorizationDenial($context, $epg)) {
                     return ['status' => $denial];
                 }
@@ -108,25 +125,28 @@ class EpgCacheEnrichmentService
                 if (basename($source) !== ($snapshot['generation'] ?? null)) {
                     return ['status' => 'stale_snapshot'];
                 }
-
-                $changes = $this->validatedChanges($source, $snapshot, $patches);
-                if ($changes === null) {
+                if ($this->validatedChanges($source, $snapshot, $patches) === null) {
                     return ['status' => 'conflict'];
                 }
-                if ($changes === []) {
-                    return ['status' => 'noop'];
-                }
 
-                $replacement = $this->copyGeneration($epg, $source);
-                $this->writeChanges($replacement, $changes);
                 $this->generations->publishWithinMutationLock($epg, $replacement);
-                $epg->getAllPlaylists()->each(fn ($playlist): bool => EpgCacheService::clearPlaylistEpgCacheFile($playlist));
 
                 return ['status' => 'applied'];
             });
         } catch (Throwable) {
+            $this->discardGeneration($replacement);
+
             return ['status' => 'invalid_patch'];
         }
+        if ($result['status'] !== 'applied') {
+            $this->discardGeneration($replacement);
+
+            return $result;
+        }
+
+        $epg->getAllPlaylists()->each(fn ($playlist): bool => EpgCacheService::clearPlaylistEpgCacheFile($playlist));
+
+        return $result;
     }
 
     private function authorizationDenial(PluginExecutionContext $context, Epg $epg): ?string
@@ -211,6 +231,13 @@ class EpgCacheEnrichmentService
         }
 
         return $target;
+    }
+
+    private function discardGeneration(?string $directory): void
+    {
+        if ($directory !== null) {
+            Storage::disk('local')->deleteDirectory($directory);
+        }
     }
 
     /** @param array<string, mixed> $snapshot @param list<array<string, mixed>> $patches @return array<int, array{programme: array<string,mixed>, changes: array<string,mixed>}>|null */
