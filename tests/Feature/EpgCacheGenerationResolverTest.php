@@ -151,6 +151,31 @@ it('refuses to publish a generation until its metadata and SQLite store are comp
         ->toThrow(RuntimeException::class);
 });
 
+it('prunes generations superseded long enough ago, but keeps recently-superseded ones', function () {
+    $epg = Epg::factory()->for(User::factory())->create();
+    $resolver = app(EpgCacheGenerationResolver::class);
+    $generationsRoot = "epg-cache/{$epg->uuid}/v2/generations";
+
+    $oldGeneration = writeCompleteEpgGeneration($epg, 'Old programme');
+    $resolver->publish($epg, $oldGeneration);
+
+    $recentGeneration = writeCompleteEpgGeneration($epg, 'Recent programme');
+    $resolver->publish($epg, $recentGeneration);
+
+    // Both survive immediately after being superseded: a reader that resolved
+    // the old generation just before the swap must still be able to read it.
+    expect(Storage::disk('local')->directories($generationsRoot))->toEqualCanonicalizing([$oldGeneration, $recentGeneration]);
+
+    // Backdate only the old generation past the retention window.
+    touch(Storage::disk('local')->path($oldGeneration), time() - 7200);
+
+    $newGeneration = writeCompleteEpgGeneration($epg, 'New programme');
+    $resolver->publish($epg, $newGeneration);
+
+    expect(Storage::disk('local')->directories($generationsRoot))->toEqualCanonicalizing([$recentGeneration, $newGeneration])
+        ->and(Storage::disk('local')->exists($oldGeneration))->toBeFalse();
+});
+
 it('serializes pointer replacement with a short per-EPG mutation lock', function () {
     $epg = Epg::factory()->for(User::factory())->create();
     $resolver = app(EpgCacheGenerationResolver::class);

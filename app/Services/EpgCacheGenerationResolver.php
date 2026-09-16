@@ -31,6 +31,14 @@ class EpgCacheGenerationResolver
     private const PREVIOUS_CACHE_VERSIONS = ['v1'];
 
     /**
+     * How long a superseded generation is kept before pruning. Must comfortably
+     * exceed the longest a reader can hold an already-resolved generation open,
+     * since {@see resolve()} hands out a directory path that a caller may not
+     * finish reading from until well after a newer generation is published.
+     */
+    private const GENERATION_RETENTION_SECONDS = 3600;
+
+    /**
      * Resolve the active complete generation, or the legacy v2 flat directory
      * when no usable pointer exists.
      */
@@ -88,6 +96,7 @@ class EpgCacheGenerationResolver
         $this->mutate($epg, function () use ($epg, $generation): void {
             $this->publishGeneration($epg, $generation);
         });
+        $this->pruneStaleGenerations($epg, $generationDirectory);
     }
 
     /**
@@ -110,6 +119,60 @@ class EpgCacheGenerationResolver
         }
 
         $this->publishGeneration($epg, $generation);
+        $this->pruneStaleGenerations($epg, $generationDirectory);
+    }
+
+    /**
+     * Delete generation directories other than the active one, once they are
+     * old enough that no reader could plausibly still be using them. Best
+     * effort: any deletion failure (already gone, concurrent pruning by
+     * another process) is ignored rather than surfaced.
+     */
+    private function pruneStaleGenerations(Epg $epg, string $activeDirectory): void
+    {
+        try {
+            $disk = Storage::disk('local');
+            $generationsRoot = $this->cacheDirectory($epg).'/'.self::GENERATIONS_DIRECTORY;
+            if (! $disk->exists($generationsRoot)) {
+                return;
+            }
+
+            $cutoff = now()->subSeconds(self::GENERATION_RETENTION_SECONDS)->getTimestamp();
+            foreach ($disk->directories($generationsRoot) as $directory) {
+                if ($directory === $activeDirectory) {
+                    continue;
+                }
+                try {
+                    $modifiedAt = $disk->lastModified($directory);
+                } catch (\Throwable) {
+                    continue;
+                }
+                if ($modifiedAt < $cutoff) {
+                    $disk->deleteDirectory($directory);
+                }
+            }
+        } catch (\Throwable) {
+            // Best effort: pruning must never fail the publish it runs after.
+        }
+    }
+
+    /**
+     * Whether `$directory` is an immutable generation directory belonging to
+     * `$epg`, i.e. something {@see resolve()} could hand back as the active
+     * generation. Callers must use this rather than re-deriving the shape
+     * themselves, so it keeps tracking {@see CACHE_VERSION} automatically.
+     */
+    public function isGenerationDirectory(Epg $epg, string $directory): bool
+    {
+        $prefix = $this->cacheDirectory($epg).'/'.self::GENERATIONS_DIRECTORY.'/';
+
+        return str_starts_with($directory, $prefix) && preg_match('/^[a-f0-9]{32}$/', substr($directory, strlen($prefix))) === 1;
+    }
+
+    /** @return list<string> Filenames that make up one generation directory. */
+    public function generationFiles(): array
+    {
+        return [self::METADATA_FILE, self::CHANNELS_FILE, self::PROGRAMMES_DB_FILE];
     }
 
     private function publishGeneration(Epg $epg, string $generation): void
@@ -184,7 +247,9 @@ class EpgCacheGenerationResolver
 
             $store = EpgProgrammeStore::openRead($disk->path($generationDirectory.'/'.self::PROGRAMMES_DB_FILE));
             try {
-                $store->read('0000-00-00', []);
+                if (! $store->quickCheck()) {
+                    return false;
+                }
             } finally {
                 $store->close();
             }

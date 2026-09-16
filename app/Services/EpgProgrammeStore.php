@@ -294,6 +294,95 @@ class EpgProgrammeStore
     }
 
     /**
+     * Page through raw rows by rowid, independent of the date/channel index.
+     * Used by the plugin enrichment API, which addresses programmes by opaque
+     * rowid locator rather than by date/channel.
+     *
+     * @return list<array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}>
+     */
+    public function readPage(int $afterRowid, int $limit): array
+    {
+        $statement = $this->pdo->prepare('SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid > ? ORDER BY rowid LIMIT ?');
+        $statement->execute([$afterRowid, $limit]);
+
+        $rows = [];
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $rows[] = self::rawRow($row);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Fetch specific rows by rowid in a single query, so a caller re-verifying
+     * a batch of patch locators does not open one connection/query per row.
+     *
+     * @param  list<int>  $rowids
+     * @return array<int, array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}> keyed by rowid
+     */
+    public function readRowsByIds(array $rowids): array
+    {
+        if ($rowids === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($rowids), '?'));
+        $statement = $this->pdo->prepare("SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid IN ({$placeholders})");
+        $statement->execute(array_values($rowids));
+
+        $rows = [];
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $raw = self::rawRow($row);
+            $rows[$raw['rowid']] = $raw;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Overwrite the `data` blob for a batch of rowids in one transaction.
+     *
+     * @param  array<int, string>  $dataByRowid  JSON blob keyed by rowid
+     */
+    public function updateRows(array $dataByRowid): void
+    {
+        if ($dataByRowid === []) {
+            return;
+        }
+
+        $this->pdo->beginTransaction();
+        $statement = $this->pdo->prepare('UPDATE programmes SET data = ? WHERE rowid = ?');
+        foreach ($dataByRowid as $rowid => $data) {
+            $statement->execute([$data, $rowid]);
+        }
+        $this->pdo->commit();
+    }
+
+    /**
+     * Run SQLite's fast structural check. Cheaper than `PRAGMA integrity_check`
+     * and enough to catch a truncated or partially-copied database file.
+     */
+    public function quickCheck(): bool
+    {
+        return $this->pdo->query('PRAGMA quick_check')->fetchColumn() === 'ok';
+    }
+
+    /**
+     * @param  array{rowid: int|string, channel_id: string, start_ts: int|string, stop_ts: int|string|null, data: string}  $row
+     * @return array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}
+     */
+    private static function rawRow(array $row): array
+    {
+        return [
+            'rowid' => (int) $row['rowid'],
+            'channel_id' => $row['channel_id'],
+            'start_ts' => (int) $row['start_ts'],
+            'stop_ts' => $row['stop_ts'] !== null ? (int) $row['stop_ts'] : null,
+            'data' => $row['data'],
+        ];
+    }
+
+    /**
      * @param  array{channel_id: string, start_ts: int|string|null, stop_ts: int|string|null, data: string}  $row
      * @return array<string, mixed>
      */

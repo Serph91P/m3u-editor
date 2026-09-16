@@ -474,3 +474,28 @@ it('accepts canonical HTTPS URLs and every supported image role in an enrichment
 
     expect($result['status'])->toBe('applied');
 });
+
+it('rejects icon, url, and image values outside the configured allowed domains', function (): void {
+    config(['dev.allowed_playlist_domains' => 'https://images.example.test/*']);
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    completeEnrichmentGeneration($epg, [[
+        ...EpgProgrammeStore::EMPTY_PROGRAMME,
+        'channel' => 'channel.one',
+        'start' => '2026-09-16T01:00:00.000000Z',
+        'title' => 'Original',
+    ]]);
+    $service = app(EpgCacheEnrichmentService::class);
+    $context = enrichmentContext($user);
+    $snapshot = $service->snapshot($context, $epg, []);
+    $patch = fn (array $changes): array => [
+        'locator' => $snapshot['programmes'][0]['locator'],
+        'row_revision' => $snapshot['programmes'][0]['row_revision'],
+        'changes' => $changes,
+    ];
+
+    expect($service->apply($context, $epg, $snapshot['token'], [$patch(['icon' => 'https://cdn.untrusted.test/icon.png'])])['status'])->toBe('conflict')
+        ->and($service->apply($context, $epg, $snapshot['token'], [$patch(['urls' => [['system' => 'TMDB', 'value' => 'https://cdn.untrusted.test/tv/1']]])])['status'])->toBe('conflict')
+        ->and($service->apply($context, $epg, $snapshot['token'], [$patch(['images' => [['url' => 'https://cdn.untrusted.test/poster.jpg', 'type' => 'poster', 'width' => 1, 'height' => 1, 'orient' => 'P', 'size' => 1]]])])['status'])->toBe('conflict')
+        ->and($service->apply($context, $epg, $snapshot['token'], [$patch(['icon' => 'https://images.example.test/icon.png'])])['status'])->toBe('applied');
+});

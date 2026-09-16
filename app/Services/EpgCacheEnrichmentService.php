@@ -4,9 +4,9 @@ namespace App\Services;
 
 use App\Models\Epg;
 use App\Plugins\Support\PluginExecutionContext;
+use App\Rules\UrlIsAllowed;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Storage;
-use PDO;
 use Throwable;
 
 /**
@@ -144,7 +144,14 @@ class EpgCacheEnrichmentService
             return $result;
         }
 
-        $epg->getAllPlaylists()->each(fn ($playlist): bool => EpgCacheService::clearPlaylistEpgCacheFile($playlist));
+        foreach ($epg->getAllPlaylists() as $playlist) {
+            try {
+                EpgCacheService::clearPlaylistEpgCacheFile($playlist);
+            } catch (Throwable) {
+                // Best-effort: the enrichment write already published successfully,
+                // so a stale playlist cache file must not be reported as a failure.
+            }
+        }
 
         return $result;
     }
@@ -171,21 +178,52 @@ class EpgCacheEnrichmentService
     /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
     private function readRows(string $directory, ?int $after, int $limit): array
     {
-        $pdo = new PDO('sqlite:'.Storage::disk('local')->path($directory.'/programmes.sqlite'));
-        $statement = $pdo->prepare('SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid > ? ORDER BY rowid LIMIT ?');
-        $statement->execute([$after ?? 0, $limit]);
+        $store = EpgProgrammeStore::openRead(Storage::disk('local')->path($directory.'/programmes.sqlite'));
+        try {
+            $raw = $store->readPage($after ?? 0, $limit);
+        } finally {
+            $store->close();
+        }
+
+        return array_map(fn (array $row): array => $this->hydrateRawRow($row), $raw);
+    }
+
+    /**
+     * Fetch specific rows by rowid in one connection/query, keyed by rowid.
+     *
+     * @param  list<int>  $rowids
+     * @return array<int, array{rowid: int, programme: array<string, mixed>, revision: string}>
+     */
+    private function readRowsByIds(string $directory, array $rowids): array
+    {
+        if ($rowids === []) {
+            return [];
+        }
+
+        $store = EpgProgrammeStore::openRead(Storage::disk('local')->path($directory.'/programmes.sqlite'));
+        try {
+            $raw = $store->readRowsByIds($rowids);
+        } finally {
+            $store->close();
+        }
+
         $rows = [];
-        while ($row = $statement->fetch(PDO::FETCH_ASSOC)) {
-            $programme = EpgProgrammeStore::hydrate(
-                json_decode($row['data'], true) ?: [],
-                $row['channel_id'],
-                (int) $row['start_ts'],
-                $row['stop_ts'] === null ? null : (int) $row['stop_ts'],
-            );
-            $rows[] = ['rowid' => (int) $row['rowid'], 'programme' => $programme, 'revision' => $this->revision($programme)];
+        foreach ($raw as $rowid => $row) {
+            $rows[$rowid] = $this->hydrateRawRow($row);
         }
 
         return $rows;
+    }
+
+    /**
+     * @param  array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}  $row
+     * @return array{rowid: int, programme: array<string, mixed>, revision: string}
+     */
+    private function hydrateRawRow(array $row): array
+    {
+        $programme = EpgProgrammeStore::hydrate(json_decode($row['data'], true) ?: [], $row['channel_id'], $row['start_ts'], $row['stop_ts']);
+
+        return ['rowid' => $row['rowid'], 'programme' => $programme, 'revision' => $this->revision($programme)];
     }
 
     /** @param array{rowid: int, programme: array<string, mixed>, revision: string} $row */
@@ -224,7 +262,7 @@ class EpgCacheEnrichmentService
     {
         $target = $this->generations->createGenerationDirectory($epg);
         $disk = Storage::disk('local');
-        foreach (['metadata.json', 'channels.json', 'programmes.sqlite'] as $file) {
+        foreach ($this->generations->generationFiles() as $file) {
             if (! $disk->copy("{$source}/{$file}", "{$target}/{$file}")) {
                 throw new \RuntimeException('Failed to copy EPG cache generation.');
             }
@@ -247,24 +285,30 @@ class EpgCacheEnrichmentService
         if (! is_array($expected)) {
             return null;
         }
-        $changes = [];
+
+        $patchChangesByRowid = [];
         $seen = [];
         foreach ($patches as $patch) {
             $rowid = $this->decodeLocator($patch['locator'] ?? null);
             if ($rowid === null || isset($seen[$rowid]) || ! isset($expected[(string) $rowid]) || ($patch['row_revision'] ?? null) !== $expected[(string) $rowid] || ! is_array($patch['changes'] ?? null)) {
                 return null;
             }
-            $seen[$rowid] = true;
-            $rows = $this->readExactRow($directory, $rowid);
-            if (count($rows) !== 1 || $rows[0]['revision'] !== $expected[(string) $rowid]) {
-                return null;
-            }
             $patchChanges = $this->validatePatch($patch['changes']);
             if ($patchChanges === null) {
                 return null;
             }
-            $programme = array_replace($rows[0]['programme'], $patchChanges);
-            if ($programme !== $rows[0]['programme']) {
+            $seen[$rowid] = true;
+            $patchChangesByRowid[$rowid] = $patchChanges;
+        }
+
+        $current = $this->readRowsByIds($directory, array_keys($patchChangesByRowid));
+        $changes = [];
+        foreach ($patchChangesByRowid as $rowid => $patchChanges) {
+            if (! isset($current[$rowid]) || $current[$rowid]['revision'] !== $expected[(string) $rowid]) {
+                return null;
+            }
+            $programme = array_replace($current[$rowid]['programme'], $patchChanges);
+            if ($programme !== $current[$rowid]['programme']) {
                 $changes[$rowid] = ['programme' => $programme, 'expected_revision' => $expected[(string) $rowid]];
             }
         }
@@ -275,20 +319,14 @@ class EpgCacheEnrichmentService
     /** @param array<int, array{programme: array<string,mixed>, expected_revision: string}> $prevalidatedChanges */
     private function hasExpectedRevisions(string $directory, array $prevalidatedChanges): bool
     {
+        $current = $this->readRowsByIds($directory, array_keys($prevalidatedChanges));
         foreach ($prevalidatedChanges as $rowid => $change) {
-            $rows = $this->readExactRow($directory, $rowid);
-            if (count($rows) !== 1 || $rows[0]['revision'] !== $change['expected_revision']) {
+            if (! isset($current[$rowid]) || $current[$rowid]['revision'] !== $change['expected_revision']) {
                 return false;
             }
         }
 
         return true;
-    }
-
-    /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
-    private function readExactRow(string $directory, int $rowid): array
-    {
-        return array_values(array_filter($this->readRows($directory, $rowid - 1, 1), fn (array $row): bool => $row['rowid'] === $rowid));
     }
 
     /** @param array<string, mixed> $changes @return array<string, mixed>|null */
@@ -307,7 +345,7 @@ class EpgCacheEnrichmentService
             if (in_array($field, ['title', 'subtitle', 'desc', 'category', 'episode_num', 'rating', 'icon'], true) && ! is_string($value)) {
                 return null;
             }
-            if ($field === 'icon' && $value !== '' && ! filter_var($value, FILTER_VALIDATE_URL)) {
+            if ($field === 'icon' && $value !== '' && (! filter_var($value, FILTER_VALIDATE_URL) || ! $this->urlAllowed($value))) {
                 return null;
             }
             if ($field === 'urls' && ! $this->validUrls($value)) {
@@ -330,12 +368,12 @@ class EpgCacheEnrichmentService
             return false;
         }
         foreach ($urls as $url) {
-            if (! is_array($url) || array_diff(array_keys($url), ['system', 'value']) !== [] || ! is_string($url['system'] ?? null) || ! is_string($url['value'] ?? null) || ! filter_var($url['value'], FILTER_VALIDATE_URL)) {
+            if (! is_array($url) || array_diff(array_keys($url), ['system', 'value']) !== [] || ! is_string($url['system'] ?? null) || ! is_string($url['value'] ?? null) || ! filter_var($url['value'], FILTER_VALIDATE_URL) || ! $this->urlAllowed($url['value'])) {
                 return false;
             }
         }
 
-        return is_array($urls);
+        return true;
     }
 
     private function validImages(mixed $images): bool
@@ -345,30 +383,44 @@ class EpgCacheEnrichmentService
         }
         $roles = ['poster', 'banner', 'fanart', 'logo'];
         foreach ($images as $image) {
-            if (! is_array($image) || array_diff(array_keys($image), ['url', 'type', 'width', 'height', 'orient', 'size']) !== [] || ! is_string($image['url'] ?? null) || ! filter_var($image['url'], FILTER_VALIDATE_URL) || ! in_array($image['type'] ?? null, $roles, true) || ! is_int($image['width'] ?? null) || ! is_int($image['height'] ?? null) || ! in_array($image['orient'] ?? null, ['P', 'L'], true) || ! is_int($image['size'] ?? null)) {
+            if (! is_array($image) || array_diff(array_keys($image), ['url', 'type', 'width', 'height', 'orient', 'size']) !== [] || ! is_string($image['url'] ?? null) || ! filter_var($image['url'], FILTER_VALIDATE_URL) || ! $this->urlAllowed($image['url']) || ! in_array($image['type'] ?? null, $roles, true) || ! is_int($image['width'] ?? null) || ! is_int($image['height'] ?? null) || ! in_array($image['orient'] ?? null, ['P', 'L'], true) || ! is_int($image['size'] ?? null)) {
                 return false;
             }
         }
 
-        return is_array($images);
+        return true;
+    }
+
+    /** Reuse the same allowed-domain policy every other URL-accepting surface in the app enforces. */
+    private function urlAllowed(string $url): bool
+    {
+        $denied = false;
+        app(UrlIsAllowed::class)->validate('url', $url, function () use (&$denied): void {
+            $denied = true;
+        });
+
+        return ! $denied;
     }
 
     /** @param array<int, array{programme: array<string, mixed>, expected_revision: string}> $changes */
     private function writeChanges(string $directory, array $changes): void
     {
-        $pdo = new PDO('sqlite:'.Storage::disk('local')->path($directory.'/programmes.sqlite'));
-        $pdo->beginTransaction();
-        $statement = $pdo->prepare('UPDATE programmes SET data = ? WHERE rowid = ?');
+        $dataByRowid = [];
         foreach ($changes as $rowid => $change) {
-            $data = json_encode(EpgProgrammeStore::dehydrate($change['programme']), JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
-            $statement->execute([$data, $rowid]);
+            $dataByRowid[$rowid] = json_encode(EpgProgrammeStore::dehydrate($change['programme']), JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
         }
-        $pdo->commit();
+
+        $store = EpgProgrammeStore::openRead(Storage::disk('local')->path($directory.'/programmes.sqlite'));
+        try {
+            $store->updateRows($dataByRowid);
+        } finally {
+            $store->close();
+        }
     }
 
     private function isImmutableGeneration(Epg $epg, string $directory): bool
     {
-        return (bool) preg_match('#^epg-cache/'.preg_quote($epg->uuid, '#').'/v2/generations/[a-f0-9]{32}$#', $directory);
+        return $this->generations->isGenerationDirectory($epg, $directory);
     }
 
     private function revision(array $programme): string
