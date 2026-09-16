@@ -11,11 +11,13 @@ use App\Services\EpgCacheGenerationResolver;
 use App\Services\EpgCacheService;
 use App\Services\EpgProgrammeStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    Event::fake();
     Storage::fake('local');
 });
 
@@ -33,8 +35,8 @@ beforeEach(function () {
 function cacheXmltvForIndex(array $channelIds, array $programmes): array
 {
     $user = User::factory()->create();
-    $playlist = Playlist::factory()->for($user)->create(['dummy_epg' => false]);
-    $epg = Epg::factory()->for($user)->create(['url' => 'https://example.com/index.xml']);
+    $playlist = Playlist::withoutEvents(fn () => Playlist::factory()->for($user)->create(['dummy_epg' => false]));
+    $epg = Epg::withoutEvents(fn () => Epg::factory()->for($user)->create(['url' => 'https://example.com/index.xml']));
 
     foreach ($channelIds as $channelId) {
         $epgChannel = EpgChannel::factory()->for($user)->for($epg)->create([
