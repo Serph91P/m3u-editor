@@ -4,6 +4,8 @@ namespace App\Services;
 
 use Generator;
 use PDO;
+use PDOStatement;
+use RuntimeException;
 
 /**
  * Single-file SQLite store for an EPG's cached programmes.
@@ -57,7 +59,7 @@ class EpgProgrammeStore
 
     private ?PDO $pdo = null;
 
-    private ?\PDOStatement $insertStatement = null;
+    private ?PDOStatement $insertStatement = null;
 
     private int $pendingRows = 0;
 
@@ -196,13 +198,12 @@ class EpgProgrammeStore
             $this->pdo->commit();
         }
         $this->pdo->exec('CREATE INDEX programmes_date_channel ON programmes (date, channel_id, start_ts)');
-        $this->insertStatement = null;
-        $this->pdo = null;
+        $this->close();
 
         if (! @rename($this->buildingPath, $this->finalPath)) {
             @unlink($this->buildingPath);
 
-            throw new \RuntimeException("Failed to move EPG programme store into place at {$this->finalPath}");
+            throw new RuntimeException("Failed to move EPG programme store into place at {$this->finalPath}");
         }
     }
 
@@ -212,8 +213,8 @@ class EpgProgrammeStore
      */
     public function discard(): void
     {
-        $this->insertStatement = null;
-        $this->pdo = null;
+        $this->close();
+
         if ($this->buildingPath !== '' && is_file($this->buildingPath)) {
             @unlink($this->buildingPath);
         }
@@ -305,12 +306,7 @@ class EpgProgrammeStore
         $statement = $this->pdo->prepare('SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid > ? ORDER BY rowid LIMIT ?');
         $statement->execute([$afterRowid, $limit]);
 
-        $rows = [];
-        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $rows[] = self::rawRow($row);
-        }
-
-        return $rows;
+        return array_values($this->fetchRawRows($statement));
     }
 
     /**
@@ -330,6 +326,17 @@ class EpgProgrammeStore
         $statement = $this->pdo->prepare("SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid IN ({$placeholders})");
         $statement->execute(array_values($rowids));
 
+        return $this->fetchRawRows($statement);
+    }
+
+    /**
+     * Drain a `rowid, channel_id, start_ts, stop_ts, data` result set into
+     * normalised raw rows keyed by rowid.
+     *
+     * @return array<int, array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}>
+     */
+    private function fetchRawRows(PDOStatement $statement): array
+    {
         $rows = [];
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
             $raw = self::rawRow($row);

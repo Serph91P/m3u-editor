@@ -7,6 +7,7 @@ use App\Plugins\Support\PluginExecutionContext;
 use App\Rules\UrlIsAllowed;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -22,12 +23,29 @@ class EpgCacheEnrichmentService
 
     private const MAX_PATCHES = 100;
 
+    private const LEGACY_GENERATION = 'legacy';
+
     /** @var list<string> */
     private const MUTABLE_FIELDS = [
         'title', 'subtitle', 'desc', 'category', 'episode_num', 'episode_nums',
         'rating', 'icon', 'images', 'new', 'previously_shown', 'premiere',
         'urls', 'production_year',
     ];
+
+    /** @var list<string> */
+    private const BOOLEAN_FIELDS = ['new', 'previously_shown', 'premiere'];
+
+    /** @var list<string> */
+    private const STRING_FIELDS = ['title', 'subtitle', 'desc', 'category', 'episode_num', 'rating'];
+
+    /** @var list<string> */
+    private const IMAGE_FIELDS = ['url', 'type', 'width', 'height', 'orient', 'size'];
+
+    /** @var list<string> */
+    private const IMAGE_TYPES = ['poster', 'banner', 'fanart', 'logo'];
+
+    /** @var list<string> */
+    private const IMAGE_ORIENTATIONS = ['P', 'L'];
 
     public function __construct(private readonly EpgCacheGenerationResolver $generations) {}
 
@@ -41,33 +59,28 @@ class EpgCacheEnrichmentService
             return ['status' => $denial];
         }
 
+        $window = $this->resolvePageWindow($selection);
+        if (is_string($window)) {
+            return ['status' => $window];
+        }
+
         $directory = $this->generations->resolve($epg);
         if (! $this->isImmutableGeneration($epg, $directory)) {
-            return $this->snapshotLegacy($context, $epg, $directory, $selection);
+            return $this->snapshotLegacy($context, $epg, $directory, $window);
         }
 
-        $limit = $selection['limit'] ?? self::MAX_PAGE_SIZE;
-        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_PAGE_SIZE) {
-            return ['status' => 'invalid_selection'];
-        }
-        $cursor = $selection['cursor'] ?? null;
-        $after = $this->decodeCursor($cursor);
-        if ($cursor !== null && $after === null) {
-            return ['status' => 'invalid_cursor'];
-        }
-
-        $rows = $this->readRows($directory, $after, $limit + 1);
-        $hasMore = count($rows) > $limit;
-        $rows = array_slice($rows, 0, $limit);
-        $programmes = array_map(fn (array $row): array => $this->publicRow($row), $rows);
+        $generation = basename($directory);
+        $rows = $this->readRows($directory, $window['after'], $window['limit'] + 1);
+        $hasMore = count($rows) > $window['limit'];
+        $rows = array_slice($rows, 0, $window['limit']);
 
         return [
             'status' => 'ok',
-            'generation' => basename($directory),
-            'cache_revision' => hash('sha256', basename($directory)),
-            'token' => $this->encryptToken($context, $epg, basename($directory), $rows),
-            'programmes' => $programmes,
-            'next_cursor' => $hasMore ? $this->encodeCursor((int) $rows[array_key_last($rows)]['rowid']) : null,
+            'generation' => $generation,
+            'cache_revision' => hash('sha256', $generation),
+            'token' => $this->encryptToken($context, $epg, $generation, $rows),
+            'programmes' => array_map($this->publicRow(...), $rows),
+            'next_cursor' => $this->nextCursor($rows, $hasMore),
         ];
     }
 
@@ -88,6 +101,7 @@ class EpgCacheEnrichmentService
         if (! is_array($snapshot) || ($snapshot['epg_id'] ?? null) !== $epg->id || ($snapshot['plugin_id'] ?? null) !== $context->plugin->id) {
             return ['status' => 'invalid_snapshot'];
         }
+
         $directory = $this->generations->resolve($epg);
         if (! $this->isImmutableGeneration($epg, $directory)) {
             return ['status' => 'legacy_cache_read_only'];
@@ -104,56 +118,75 @@ class EpgCacheEnrichmentService
             return ['status' => 'noop'];
         }
 
+        $replacement = null;
         try {
             $replacement = $this->copyGeneration($epg, $directory);
             $this->writeChanges($replacement, $prevalidatedChanges);
-        } catch (Throwable) {
-            $this->discardGeneration($replacement ?? null);
-
-            return ['status' => 'invalid_patch'];
-        }
-
-        try {
-            $result = $this->generations->mutate($epg, function () use ($context, $epg, $snapshot, $prevalidatedChanges, $replacement): array {
-                if ($denial = $this->authorizationDenial($context, $epg)) {
-                    return ['status' => $denial];
-                }
-                $source = $this->generations->resolve($epg);
-                if (! $this->isImmutableGeneration($epg, $source)) {
-                    return ['status' => 'legacy_cache_read_only'];
-                }
-                if (basename($source) !== ($snapshot['generation'] ?? null)) {
-                    return ['status' => 'stale_snapshot'];
-                }
-                if (! $this->hasExpectedRevisions($source, $prevalidatedChanges)) {
-                    return ['status' => 'conflict'];
-                }
-
-                $this->generations->publishWithinMutationLock($epg, $replacement);
-
-                return ['status' => 'applied'];
-            });
         } catch (Throwable) {
             $this->discardGeneration($replacement);
 
             return ['status' => 'invalid_patch'];
         }
+
+        try {
+            $result = $this->generations->mutate($epg, fn (): array => $this->publishReplacement($context, $epg, $snapshot, $prevalidatedChanges, $replacement));
+        } catch (Throwable) {
+            $result = ['status' => 'invalid_patch'];
+        }
+
         if ($result['status'] !== 'applied') {
             $this->discardGeneration($replacement);
 
             return $result;
         }
 
+        $this->clearPlaylistCaches($epg);
+
+        return $result;
+    }
+
+    /**
+     * Re-check every precondition inside the mutation lock, then publish.
+     *
+     * @param  array<string, mixed>  $snapshot
+     * @param  array<int, array{programme: array<string, mixed>, expected_revision: string}>  $prevalidatedChanges
+     * @return array{status: string}
+     */
+    private function publishReplacement(PluginExecutionContext $context, Epg $epg, array $snapshot, array $prevalidatedChanges, string $replacement): array
+    {
+        if ($denial = $this->authorizationDenial($context, $epg)) {
+            return ['status' => $denial];
+        }
+
+        $source = $this->generations->resolve($epg);
+        if (! $this->isImmutableGeneration($epg, $source)) {
+            return ['status' => 'legacy_cache_read_only'];
+        }
+        if (basename($source) !== ($snapshot['generation'] ?? null)) {
+            return ['status' => 'stale_snapshot'];
+        }
+        if (! $this->hasExpectedRevisions($source, $prevalidatedChanges)) {
+            return ['status' => 'conflict'];
+        }
+
+        $this->generations->publishWithinMutationLock($epg, $replacement);
+
+        return ['status' => 'applied'];
+    }
+
+    /**
+     * Best effort: the enrichment write already published successfully, so a
+     * stale playlist cache file must not be reported as a failure.
+     */
+    private function clearPlaylistCaches(Epg $epg): void
+    {
         foreach ($epg->getAllPlaylists() as $playlist) {
             try {
                 EpgCacheService::clearPlaylistEpgCacheFile($playlist);
             } catch (Throwable) {
-                // Best-effort: the enrichment write already published successfully,
-                // so a stale playlist cache file must not be reported as a failure.
+                continue;
             }
         }
-
-        return $result;
     }
 
     private function authorizationDenial(PluginExecutionContext $context, Epg $epg): ?string
@@ -175,6 +208,38 @@ class EpgCacheEnrichmentService
         return null;
     }
 
+    /**
+     * Validate the requested page, returning the resolved window or the error
+     * status to report to the caller.
+     *
+     * @param  array{limit?: int, cursor?: string}  $selection
+     * @return array{limit: int, after: int}|string
+     */
+    private function resolvePageWindow(array $selection): array|string
+    {
+        $limit = $selection['limit'] ?? self::MAX_PAGE_SIZE;
+        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_PAGE_SIZE) {
+            return 'invalid_selection';
+        }
+
+        $after = $this->decodeCursor($selection['cursor'] ?? null);
+        if ($after === null) {
+            return 'invalid_cursor';
+        }
+
+        return ['limit' => $limit, 'after' => $after];
+    }
+
+    /** @param list<array{rowid: int, programme: array<string, mixed>, revision: string}> $rows */
+    private function nextCursor(array $rows, bool $hasMore): ?string
+    {
+        if (! $hasMore || $rows === []) {
+            return null;
+        }
+
+        return $this->encodeCursor((int) $rows[array_key_last($rows)]['rowid']);
+    }
+
     /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
     private function readRows(string $directory, ?int $after, int $limit): array
     {
@@ -185,7 +250,7 @@ class EpgCacheEnrichmentService
             $store->close();
         }
 
-        return array_map(fn (array $row): array => $this->hydrateRawRow($row), $raw);
+        return array_map($this->hydrateRawRow(...), $raw);
     }
 
     /**
@@ -207,12 +272,7 @@ class EpgCacheEnrichmentService
             $store->close();
         }
 
-        $rows = [];
-        foreach ($raw as $rowid => $row) {
-            $rows[$rowid] = $this->hydrateRawRow($row);
-        }
-
-        return $rows;
+        return array_map($this->hydrateRawRow(...), $raw);
     }
 
     /**
@@ -226,7 +286,10 @@ class EpgCacheEnrichmentService
         return ['rowid' => $row['rowid'], 'programme' => $programme, 'revision' => $this->revision($programme)];
     }
 
-    /** @param array{rowid: int, programme: array<string, mixed>, revision: string} $row */
+    /**
+     * @param  array{rowid: int, programme: array<string, mixed>, revision: string}  $row
+     * @return array<string, mixed>
+     */
     private function publicRow(array $row): array
     {
         return [
@@ -239,14 +302,20 @@ class EpgCacheEnrichmentService
     /** @param list<array{rowid: int, programme: array<string, mixed>, revision: string}> $rows */
     private function encryptToken(PluginExecutionContext $context, Epg $epg, string $generation, array $rows): string
     {
+        $revisionsByRowid = [];
+        foreach ($rows as $row) {
+            $revisionsByRowid[(string) $row['rowid']] = $row['revision'];
+        }
+
         return Crypt::encryptString(json_encode([
             'epg_id' => $epg->id,
             'plugin_id' => $context->plugin->id,
             'generation' => $generation,
-            'rows' => collect($rows)->mapWithKeys(fn (array $row): array => [(string) $row['rowid'] => $row['revision']])->all(),
+            'rows' => $revisionsByRowid,
         ], JSON_THROW_ON_ERROR));
     }
 
+    /** @return array<string, mixed>|null */
     private function decryptToken(string $token): ?array
     {
         try {
@@ -264,7 +333,7 @@ class EpgCacheEnrichmentService
         $disk = Storage::disk('local');
         foreach ($this->generations->generationFiles() as $file) {
             if (! $disk->copy("{$source}/{$file}", "{$target}/{$file}")) {
-                throw new \RuntimeException('Failed to copy EPG cache generation.');
+                throw new RuntimeException('Failed to copy EPG cache generation.');
             }
         }
 
@@ -278,7 +347,15 @@ class EpgCacheEnrichmentService
         }
     }
 
-    /** @param array<string, mixed> $snapshot @param list<array<string, mixed>> $patches @return array<int, array{programme: array<string,mixed>, expected_revision: string}>|null */
+    /**
+     * Validate every patch against the snapshot revisions and the generation on
+     * disk, returning only the rows whose programme actually changes. Null means
+     * the patch set must be rejected as a conflict.
+     *
+     * @param  array<string, mixed>  $snapshot
+     * @param  list<array<string, mixed>>  $patches
+     * @return array<int, array{programme: array<string, mixed>, expected_revision: string}>|null
+     */
     private function prevalidatedChanges(string $directory, array $snapshot, array $patches): ?array
     {
         $expected = $snapshot['rows'] ?? [];
@@ -286,37 +363,47 @@ class EpgCacheEnrichmentService
             return null;
         }
 
-        $patchChangesByRowid = [];
-        $seen = [];
+        $pending = [];
         foreach ($patches as $patch) {
             $rowid = $this->decodeLocator($patch['locator'] ?? null);
-            if ($rowid === null || isset($seen[$rowid]) || ! isset($expected[(string) $rowid]) || ($patch['row_revision'] ?? null) !== $expected[(string) $rowid] || ! is_array($patch['changes'] ?? null)) {
+            if ($rowid === null || isset($pending[$rowid])) {
+                return null;
+            }
+
+            $expectedRevision = $expected[(string) $rowid] ?? null;
+            if ($expectedRevision === null || ($patch['row_revision'] ?? null) !== $expectedRevision) {
+                return null;
+            }
+
+            if (! is_array($patch['changes'] ?? null)) {
                 return null;
             }
             $patchChanges = $this->validatePatch($patch['changes']);
             if ($patchChanges === null) {
                 return null;
             }
-            $seen[$rowid] = true;
-            $patchChangesByRowid[$rowid] = $patchChanges;
+
+            $pending[$rowid] = ['changes' => $patchChanges, 'expected_revision' => $expectedRevision];
         }
 
-        $current = $this->readRowsByIds($directory, array_keys($patchChangesByRowid));
+        $current = $this->readRowsByIds($directory, array_keys($pending));
         $changes = [];
-        foreach ($patchChangesByRowid as $rowid => $patchChanges) {
-            if (! isset($current[$rowid]) || $current[$rowid]['revision'] !== $expected[(string) $rowid]) {
+        foreach ($pending as $rowid => $patch) {
+            $row = $current[$rowid] ?? null;
+            if ($row === null || $row['revision'] !== $patch['expected_revision']) {
                 return null;
             }
-            $programme = array_replace($current[$rowid]['programme'], $patchChanges);
-            if ($programme !== $current[$rowid]['programme']) {
-                $changes[$rowid] = ['programme' => $programme, 'expected_revision' => $expected[(string) $rowid]];
+
+            $programme = array_replace($row['programme'], $patch['changes']);
+            if ($programme !== $row['programme']) {
+                $changes[$rowid] = ['programme' => $programme, 'expected_revision' => $patch['expected_revision']];
             }
         }
 
         return $changes;
     }
 
-    /** @param array<int, array{programme: array<string,mixed>, expected_revision: string}> $prevalidatedChanges */
+    /** @param array<int, array{programme: array<string, mixed>, expected_revision: string}> $prevalidatedChanges */
     private function hasExpectedRevisions(string $directory, array $prevalidatedChanges): bool
     {
         $current = $this->readRowsByIds($directory, array_keys($prevalidatedChanges));
@@ -329,32 +416,29 @@ class EpgCacheEnrichmentService
         return true;
     }
 
-    /** @param array<string, mixed> $changes @return array<string, mixed>|null */
+    /**
+     * @param  array<string, mixed>  $changes
+     * @return array<string, mixed>|null
+     */
     protected function validatePatch(array $changes): ?array
     {
         if ($changes === [] || array_diff(array_keys($changes), self::MUTABLE_FIELDS) !== []) {
             return null;
         }
+
         foreach ($changes as $field => $value) {
-            if (in_array($field, ['new', 'previously_shown', 'premiere'], true) && ! is_bool($value)) {
-                return null;
-            }
-            if (in_array($field, ['production_year'], true) && ! (is_int($value) || $value === null)) {
-                return null;
-            }
-            if (in_array($field, ['title', 'subtitle', 'desc', 'category', 'episode_num', 'rating', 'icon'], true) && ! is_string($value)) {
-                return null;
-            }
-            if ($field === 'icon' && $value !== '' && (! filter_var($value, FILTER_VALIDATE_URL) || ! $this->urlAllowed($value))) {
-                return null;
-            }
-            if ($field === 'urls' && ! $this->validUrls($value)) {
-                return null;
-            }
-            if ($field === 'images' && ! $this->validImages($value)) {
-                return null;
-            }
-            if ($field === 'episode_nums' && ! is_array($value)) {
+            $valid = match (true) {
+                in_array($field, self::BOOLEAN_FIELDS, true) => is_bool($value),
+                in_array($field, self::STRING_FIELDS, true) => is_string($value),
+                $field === 'production_year' => is_int($value) || $value === null,
+                $field === 'icon' => is_string($value) && ($value === '' || $this->validUrl($value)),
+                $field === 'urls' => $this->validUrls($value),
+                $field === 'images' => $this->validImages($value),
+                $field === 'episode_nums' => is_array($value),
+                default => true,
+            };
+
+            if (! $valid) {
                 return null;
             }
         }
@@ -367,8 +451,12 @@ class EpgCacheEnrichmentService
         if (! is_array($urls)) {
             return false;
         }
+
         foreach ($urls as $url) {
-            if (! is_array($url) || array_diff(array_keys($url), ['system', 'value']) !== [] || ! is_string($url['system'] ?? null) || ! is_string($url['value'] ?? null) || ! filter_var($url['value'], FILTER_VALIDATE_URL) || ! $this->urlAllowed($url['value'])) {
+            if (! is_array($url) || array_diff(array_keys($url), ['system', 'value']) !== []) {
+                return false;
+            }
+            if (! is_string($url['system'] ?? null) || ! $this->validUrl($url['value'] ?? null)) {
                 return false;
             }
         }
@@ -381,14 +469,28 @@ class EpgCacheEnrichmentService
         if (! is_array($images)) {
             return false;
         }
-        $roles = ['poster', 'banner', 'fanart', 'logo'];
+
         foreach ($images as $image) {
-            if (! is_array($image) || array_diff(array_keys($image), ['url', 'type', 'width', 'height', 'orient', 'size']) !== [] || ! is_string($image['url'] ?? null) || ! filter_var($image['url'], FILTER_VALIDATE_URL) || ! $this->urlAllowed($image['url']) || ! in_array($image['type'] ?? null, $roles, true) || ! is_int($image['width'] ?? null) || ! is_int($image['height'] ?? null) || ! in_array($image['orient'] ?? null, ['P', 'L'], true) || ! is_int($image['size'] ?? null)) {
+            if (! is_array($image) || array_diff(array_keys($image), self::IMAGE_FIELDS) !== []) {
+                return false;
+            }
+            if (! $this->validUrl($image['url'] ?? null)) {
+                return false;
+            }
+            if (! in_array($image['type'] ?? null, self::IMAGE_TYPES, true) || ! in_array($image['orient'] ?? null, self::IMAGE_ORIENTATIONS, true)) {
+                return false;
+            }
+            if (! is_int($image['width'] ?? null) || ! is_int($image['height'] ?? null) || ! is_int($image['size'] ?? null)) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private function validUrl(mixed $url): bool
+    {
+        return is_string($url) && filter_var($url, FILTER_VALIDATE_URL) !== false && $this->urlAllowed($url);
     }
 
     /** Reuse the same allowed-domain policy every other URL-accepting surface in the app enforces. */
@@ -423,6 +525,7 @@ class EpgCacheEnrichmentService
         return $this->generations->isGenerationDirectory($epg, $directory);
     }
 
+    /** @param array<string, mixed> $programme */
     private function revision(array $programme): string
     {
         return hash('sha256', json_encode($programme, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
@@ -438,6 +541,7 @@ class EpgCacheEnrichmentService
         if ($cursor === null) {
             return 0;
         }
+
         try {
             $value = Crypt::decryptString($cursor);
 
@@ -452,36 +556,33 @@ class EpgCacheEnrichmentService
         if (! is_string($locator) || ! str_starts_with($locator, 'programme:')) {
             return null;
         }
+
         $value = base64_decode(substr($locator, 10), true);
 
         return $value !== false && ctype_digit($value) && (int) $value > 0 ? (int) $value : null;
     }
 
-    /** @return array<string, mixed> */
-    private function snapshotLegacy(PluginExecutionContext $context, Epg $epg, string $directory, array $selection): array
+    /**
+     * Read-only snapshot of a pre-generation (flat v2 or v1 JSONL) cache.
+     *
+     * @param  array{limit: int, after: int}  $window
+     * @return array<string, mixed>
+     */
+    private function snapshotLegacy(PluginExecutionContext $context, Epg $epg, string $directory, array $window): array
     {
-        $limit = $selection['limit'] ?? self::MAX_PAGE_SIZE;
-        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_PAGE_SIZE) {
-            return ['status' => 'invalid_selection'];
-        }
-        $cursor = $selection['cursor'] ?? null;
-        $after = $this->decodeCursor($cursor);
-        if ($cursor !== null && $after === null) {
-            return ['status' => 'invalid_cursor'];
-        }
         $rows = Storage::disk('local')->exists($directory.'/programmes.sqlite')
-            ? $this->readRows($directory, $after, $limit + 1)
-            : $this->readLegacyJsonlRows($directory, $after, $limit + 1);
-        $hasMore = count($rows) > $limit;
-        $rows = array_slice($rows, 0, $limit);
+            ? $this->readRows($directory, $window['after'], $window['limit'] + 1)
+            : $this->readLegacyJsonlRows($directory, $window['after'], $window['limit'] + 1);
+        $hasMore = count($rows) > $window['limit'];
+        $rows = array_slice($rows, 0, $window['limit']);
 
         return [
             'status' => 'ok',
-            'generation' => 'legacy',
-            'cache_revision' => 'legacy',
-            'token' => Crypt::encryptString(json_encode(['epg_id' => $epg->id, 'plugin_id' => $context->plugin->id, 'generation' => 'legacy', 'rows' => []], JSON_THROW_ON_ERROR)),
-            'programmes' => array_map(fn (array $row): array => $this->publicRow($row), $rows),
-            'next_cursor' => $hasMore ? $this->encodeCursor((int) $rows[array_key_last($rows)]['rowid']) : null,
+            'generation' => self::LEGACY_GENERATION,
+            'cache_revision' => self::LEGACY_GENERATION,
+            'token' => $this->encryptToken($context, $epg, self::LEGACY_GENERATION, []),
+            'programmes' => array_map($this->publicRow(...), $rows),
+            'next_cursor' => $this->nextCursor($rows, $hasMore),
         ];
     }
 
@@ -499,16 +600,19 @@ class EpgCacheEnrichmentService
             if ($handle === false) {
                 continue;
             }
+
             try {
                 while (($line = fgets($handle)) !== false) {
                     $record = json_decode(trim($line), true);
                     if (! is_array($record) || ! is_string($record['channel'] ?? null) || ! is_array($record['programme'] ?? null)) {
                         continue;
                     }
+
                     $rowid++;
                     if ($rowid <= $after) {
                         continue;
                     }
+
                     $programme = $record['programme'];
                     $programme['channel'] ??= $record['channel'];
                     $rows[] = ['rowid' => $rowid, 'programme' => $programme, 'revision' => $this->revision($programme)];
