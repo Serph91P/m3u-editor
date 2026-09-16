@@ -74,14 +74,6 @@ class EpgCacheService
     }
 
     /**
-     * Get cache file path for write operations (always current version).
-     */
-    private function getCacheFilePath(Epg $epg, string $filename): string
-    {
-        return $this->getCacheDir($epg).'/'.$filename;
-    }
-
-    /**
      * Returns the directory of the best available cache: current version first,
      * then each legacy version in order. Falls back to the current version path
      * (which may not yet exist) when no cache has been written yet.
@@ -91,19 +83,12 @@ class EpgCacheService
      */
     private function getActiveCacheDir(Epg $epg): string
     {
-        $currentDir = $this->getCacheDir($epg);
-        if (Storage::disk('local')->exists($currentDir.'/'.self::METADATA_FILE)) {
-            return $currentDir;
-        }
+        return $this->cacheGenerations()->resolve($epg);
+    }
 
-        foreach (self::PREVIOUS_CACHE_VERSIONS as $version) {
-            $legacyDir = "epg-cache/{$epg->uuid}/{$version}";
-            if (Storage::disk('local')->exists($legacyDir.'/'.self::METADATA_FILE)) {
-                return $legacyDir;
-            }
-        }
-
-        return $currentDir;
+    private function cacheGenerations(): EpgCacheGenerationResolver
+    {
+        return app(EpgCacheGenerationResolver::class);
     }
 
     /**
@@ -181,21 +166,15 @@ class EpgCacheService
             $totalChannels = $epg->channel_count ?? $epg->channels()->count();
             $totalProgrammes = $epg->programme_count ?? 150000; // Default estimate
 
-            // Start by clearing existing cache
-            $this->clearCache($epg);
-            $cacheDir = $this->getCacheDir($epg);
-            Storage::disk('local')->makeDirectory($cacheDir);
+            // Build a complete immutable generation before publishing it. The
+            // active pointer stays untouched while parsing, so existing readers
+            // continue using their resolved generation without interruption.
+            $cacheDir = $this->cacheGenerations()->createGenerationDirectory($epg);
 
             // Parse and save channels and programmes in a single pass
             Log::debug("Parsing EPG data for {$epg->name}");
-            $stats = $this->parseAndSaveEpgDataSinglePass($epg, $filePath, $totalChannels, $totalProgrammes);
+            $stats = $this->parseAndSaveEpgDataSinglePass($epg, $filePath, $totalChannels, $totalProgrammes, $cacheDir);
             Log::debug("Processed {$stats['channels']} channels and {$stats['programmes']} programmes across {$stats['date_count']} dates");
-
-            // Drop any read handle memoized before this rebuild so the freshly
-            // swapped-in SQLite store (not the pre-rebuild file, or a cached
-            // "no store, use JSONL" null) is what populateDvrProgrammes and
-            // later reads on this instance pick up.
-            $this->forgetProgrammeStore($epg);
 
             // Save metadata
             $metadata = [
@@ -208,9 +187,15 @@ class EpgCacheService
             ];
 
             Storage::disk('local')->put(
-                $this->getCacheFilePath($epg, self::METADATA_FILE),
+                $cacheDir.'/'.self::METADATA_FILE,
                 json_encode($metadata, JSON_PRETTY_PRINT)
             );
+
+            $this->cacheGenerations()->publish($epg, $cacheDir);
+
+            // Drop any read handle memoized before this rebuild so subsequent
+            // local reads resolve the newly published immutable generation.
+            $this->forgetProgrammeStore($epg);
 
             // Flag EPG as cached
             $epg->update([
@@ -346,7 +331,7 @@ class EpgCacheService
      * This method parses both channels and programmes in one pass through the file,
      * reducing processing time by ~50% compared to double parsing.
      */
-    private function parseAndSaveEpgDataSinglePass(Epg $epg, string $filePath, int $totalChannels, int $totalProgrammes): array
+    private function parseAndSaveEpgDataSinglePass(Epg $epg, string $filePath, int $totalChannels, int $totalProgrammes, string $cacheDir): array
     {
         $reader = new XMLReader;
         $reader->open('compress.zlib://'.$filePath);
@@ -361,7 +346,7 @@ class EpgCacheService
         $progressUpdateInterval = 5000; // Update progress every 5000 items instead of 50
 
         $store = new EpgProgrammeStore;
-        $store->beginWrite(Storage::disk('local')->path($this->getCacheFilePath($epg, self::PROGRAMMES_DB_FILE)));
+        $store->beginWrite(Storage::disk('local')->path($cacheDir.'/'.self::PROGRAMMES_DB_FILE));
 
         try {
             while (@$reader->read()) {
@@ -402,7 +387,7 @@ class EpgCacheService
 
                         // Save in larger batches for better performance
                         if (count($channelBatch) >= $channelBatchSize) {
-                            $this->saveChannelBatchOptimized($epg, $channelBatch, $channelCount <= $channelBatchSize);
+                            $this->saveChannelBatchOptimized($cacheDir, $channelBatch, $channelCount <= $channelBatchSize);
                             $channelBatch = [];
                         }
                     }
@@ -489,7 +474,7 @@ class EpgCacheService
 
             // Save any remaining channels
             if (! empty($channelBatch)) {
-                $this->saveChannelBatchOptimized($epg, $channelBatch, $channelCount <= $channelBatchSize);
+                $this->saveChannelBatchOptimized($cacheDir, $channelBatch, $channelCount <= $channelBatchSize);
             }
 
             // Commit, index, and atomically swap the SQLite store into place.
@@ -512,9 +497,9 @@ class EpgCacheService
     /**
      * Optimized channel batch save using JSONL append instead of merge
      */
-    private function saveChannelBatchOptimized(Epg $epg, array $channelBatch, bool $isFirst): void
+    private function saveChannelBatchOptimized(string $cacheDir, array $channelBatch, bool $isFirst): void
     {
-        $channelsPath = $this->getCacheFilePath($epg, self::CHANNELS_FILE);
+        $channelsPath = $cacheDir.'/'.self::CHANNELS_FILE;
         $fullPath = Storage::disk('local')->path($channelsPath);
 
         // Ensure directory exists

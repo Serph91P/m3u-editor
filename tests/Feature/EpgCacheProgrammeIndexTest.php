@@ -7,6 +7,7 @@ use App\Models\EpgChannel;
 use App\Models\EpgProgramme;
 use App\Models\Playlist;
 use App\Models\User;
+use App\Services\EpgCacheGenerationResolver;
 use App\Services\EpgCacheService;
 use App\Services\EpgProgrammeStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -71,7 +72,7 @@ function cacheXmltvForIndex(array $channelIds, array $programmes): array
     return ['epg' => $epg, 'playlist' => $playlist, 'date' => now()->format('Y-m-d')];
 }
 
-it('writes a single programmes.sqlite and no legacy jsonl artifacts', function () {
+it('writes a single programmes.sqlite generation and no legacy jsonl artifacts', function () {
     ['epg' => $epg] = cacheXmltvForIndex(
         ['channel.a', 'channel.b'],
         [
@@ -81,9 +82,11 @@ it('writes a single programmes.sqlite and no legacy jsonl artifacts', function (
         ],
     );
 
-    $files = Storage::disk('local')->files("epg-cache/{$epg->uuid}/v2");
+    $cacheRoot = "epg-cache/{$epg->uuid}/v2";
+    $activeDirectory = app(EpgCacheGenerationResolver::class)->resolve($epg);
+    $files = Storage::disk('local')->allFiles($cacheRoot);
 
-    expect($files)->toContain("epg-cache/{$epg->uuid}/v2/programmes.sqlite")
+    expect($files)->toContain("{$activeDirectory}/programmes.sqlite")
         ->and(collect($files)->filter(fn ($f) => str_contains($f, '.jsonl'))->all())->toBe([])
         ->and(collect($files)->filter(fn ($f) => str_contains($f, '.building'))->all())->toBe([]);
 });
