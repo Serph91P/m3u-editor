@@ -85,27 +85,54 @@ class EpgCacheGenerationResolver
             throw new RuntimeException("Cannot publish incomplete EPG cache generation {$generationDirectory}");
         }
 
-        Cache::lock($this->mutationLockName($epg), 30)->block(10, function () use ($epg, $generation): void {
-            $cacheDirectory = $this->cacheDirectory($epg);
-            $cachePath = Storage::disk('local')->path($cacheDirectory);
-            if (! is_dir($cachePath) && ! mkdir($cachePath, 0755, true) && ! is_dir($cachePath)) {
-                throw new RuntimeException("Failed to create EPG cache directory {$cachePath}");
-            }
-
-            $pointerPath = $cachePath.'/'.self::ACTIVE_POINTER_FILE;
-            $temporaryPointerPath = $pointerPath.'.building-'.bin2hex(random_bytes(8));
-            $pointer = json_encode(['generation' => $generation], JSON_THROW_ON_ERROR);
-
-            if (file_put_contents($temporaryPointerPath, $pointer, LOCK_EX) === false) {
-                throw new RuntimeException("Failed to write EPG cache pointer {$temporaryPointerPath}");
-            }
-
-            if (! @rename($temporaryPointerPath, $pointerPath)) {
-                @unlink($temporaryPointerPath);
-
-                throw new RuntimeException("Failed to publish EPG cache pointer {$pointerPath}");
-            }
+        $this->mutate($epg, function () use ($epg, $generation): void {
+            $this->publishGeneration($epg, $generation);
         });
+    }
+
+    /**
+     * Run a short mutation that observes and publishes one EPG generation.
+     * Callers must do all remote work before entering this critical section.
+     */
+    public function mutate(Epg $epg, \Closure $callback): mixed
+    {
+        return Cache::lock($this->mutationLockName($epg), 30)->block(10, $callback);
+    }
+
+    /**
+     * Publish a complete generation while {@see mutate()} already holds the lock.
+     */
+    public function publishWithinMutationLock(Epg $epg, string $generationDirectory): void
+    {
+        $generation = $this->generationName($epg, $generationDirectory);
+        if (! $this->isComplete($generationDirectory)) {
+            throw new RuntimeException("Cannot publish incomplete EPG cache generation {$generationDirectory}");
+        }
+
+        $this->publishGeneration($epg, $generation);
+    }
+
+    private function publishGeneration(Epg $epg, string $generation): void
+    {
+        $cacheDirectory = $this->cacheDirectory($epg);
+        $cachePath = Storage::disk('local')->path($cacheDirectory);
+        if (! is_dir($cachePath) && ! mkdir($cachePath, 0755, true) && ! is_dir($cachePath)) {
+            throw new RuntimeException("Failed to create EPG cache directory {$cachePath}");
+        }
+
+        $pointerPath = $cachePath.'/'.self::ACTIVE_POINTER_FILE;
+        $temporaryPointerPath = $pointerPath.'.building-'.bin2hex(random_bytes(8));
+        $pointer = json_encode(['generation' => $generation], JSON_THROW_ON_ERROR);
+
+        if (file_put_contents($temporaryPointerPath, $pointer, LOCK_EX) === false) {
+            throw new RuntimeException("Failed to write EPG cache pointer {$temporaryPointerPath}");
+        }
+
+        if (! @rename($temporaryPointerPath, $pointerPath)) {
+            @unlink($temporaryPointerPath);
+
+            throw new RuntimeException("Failed to publish EPG cache pointer {$pointerPath}");
+        }
     }
 
     public function mutationLockName(Epg $epg): string
