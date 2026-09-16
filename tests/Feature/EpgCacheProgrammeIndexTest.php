@@ -1,5 +1,7 @@
 <?php
 
+use App\Events\EpgCreated;
+use App\Events\PlaylistCreated;
 use App\Models\Channel;
 use App\Models\DvrSetting;
 use App\Models\Epg;
@@ -17,7 +19,7 @@ use Illuminate\Support\Facades\Storage;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    Event::fake();
+    Event::fake([EpgCreated::class, PlaylistCreated::class]);
     Storage::fake('local');
 });
 
