@@ -3170,6 +3170,7 @@ class PlaylistResource extends Resource implements CopilotResource
                 ->collapsed($creating)
                 ->columns(3)
                 ->schema([
+                    ...PlaylistFacade::getOutputTogglesSchema(),
                     Toggle::make('sync_logs_enabled')
                         ->label(__('Enable Sync Logs'))
                         ->inline(false)

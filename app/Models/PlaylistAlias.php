@@ -50,6 +50,10 @@ class PlaylistAlias extends Model
         'custom_headers' => 'array',
         'strict_live_ts' => 'boolean',
         'use_sticky_session' => 'boolean',
+        'hdhr_enabled' => 'boolean',
+        'm3u_enabled' => 'boolean',
+        'xapi_enabled' => 'boolean',
+        'xmltv_enabled' => 'boolean',
     ];
 
     /**

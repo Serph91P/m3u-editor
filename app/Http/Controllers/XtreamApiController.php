@@ -5404,7 +5404,14 @@ class XtreamApiController extends Controller
         $username = $request->input('username');
         $password = $request->input('password');
 
-        return PlaylistFacade::authenticate($username, $password);
+        $result = PlaylistFacade::authenticate($username, $password);
+
+        // Ensure Xtream API output is enabled for this playlist
+        if (is_array($result) && $result[0] !== null && ! $result[0]->xapi_enabled) {
+            $result[0] = null;
+        }
+
+        return $result;
     }
 
     private function formatRuntimeFromSeconds(?int $seconds): ?string

@@ -42,6 +42,15 @@ class EpgGenerateController extends Controller
         return htmlspecialchars((string) $value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
     }
 
+    private function outputDisabledResponse(bool $outputEnabled)
+    {
+        if ($outputEnabled) {
+            return null;
+        }
+
+        return response()->json(['Error' => 'Output disabled'], 403);
+    }
+
     /**
      * Generate the EPG XML file
      *
@@ -58,6 +67,11 @@ class EpgGenerateController extends Controller
         // Handle network playlists - generate EPG from networks
         if ($playlist instanceof Playlist && $playlist->is_network_playlist) {
             return $this->generateNetworkPlaylistEpg($playlist);
+        }
+
+        // Ensure XMLTV output is enabled
+        if ($response = $this->outputDisabledResponse($playlist->xmltv_enabled)) {
+            return $response;
         }
 
         // Check if we have a valid cached file
@@ -80,6 +94,11 @@ class EpgGenerateController extends Controller
         $playlist = PlaylistFacade::resolvePlaylistByUuid($uuid);
         if (! $playlist) {
             return response()->json(['Error' => 'Playlist Not Found'], 404);
+        }
+
+        // Ensure XMLTV output is enabled
+        if ($response = $this->outputDisabledResponse($playlist->xmltv_enabled)) {
+            return $response;
         }
 
         // Check if we have a valid cached file

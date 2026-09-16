@@ -13,6 +13,11 @@ use App\Filament\Tables\CustomPlaylistCategoriesTable;
 use App\Filament\Tables\CustomPlaylistGroupsTable;
 use App\Filament\Tables\SourceCategoriesTable;
 use App\Filament\Tables\SourceGroupsTable;
+use App\Livewire\MediaFlowProxyUrl;
+use App\Livewire\PlaylistEpgUrl;
+use App\Livewire\PlaylistM3uUrl;
+use App\Livewire\XtreamApiInfo;
+use App\Livewire\XtreamDnsStatus;
 use App\Models\Bouquet;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
@@ -39,7 +44,10 @@ use Filament\Forms\Components\ModalTableSelect;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas;
+use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Livewire;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
@@ -53,6 +61,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Exists;
+use Override;
 
 class PlaylistAliasResource extends Resource implements CopilotResource
 {
@@ -83,6 +92,53 @@ class PlaylistAliasResource extends Resource implements CopilotResource
     public static function getNavigationSort(): ?int
     {
         return 5;
+    }
+
+    #[Override]
+    public static function infolist(Schema $schema): Schema
+    {
+        return $schema
+            ->components([
+                Fieldset::make(__('Links'))
+                    ->schema([
+                        Section::make()
+                            ->columns(2)
+                            ->schema([
+                                Grid::make()
+                                    ->columnSpan(1)
+                                    ->columns(1)
+                                    ->schema([
+                                        Livewire::make(PlaylistM3uUrl::class)
+                                            ->columnSpanFull(),
+                                    ]),
+                                Grid::make()
+                                    ->columnSpan(1)
+                                    ->columns(1)
+                                    ->schema([
+                                        Livewire::make(PlaylistEpgUrl::class),
+                                    ]),
+                            ]),
+                    ]),
+                Fieldset::make(__('Xtream API'))
+                    ->schema([
+                        Section::make()
+                            ->columns(1)
+                            ->schema([
+                                Livewire::make(XtreamApiInfo::class),
+                                Livewire::make(XtreamDnsStatus::class),
+                            ]),
+                    ]),
+                PlaylistFacade::mediaFlowProxyEnabled()
+                    ? Fieldset::make(__('MediaFlow Proxy'))
+                        ->schema([
+                            Section::make()
+                                ->columns(1)
+                                ->schema([
+                                    Livewire::make(MediaFlowProxyUrl::class, ['section' => 'all']),
+                                ]),
+                        ])
+                    : null,
+            ]);
     }
 
     public static function form(Schema $schema): Schema
@@ -268,6 +324,9 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                 Actions\EditAction::make()
                     ->slideOver()
                     ->button()->hiddenLabel()->size('sm'),
+                Actions\ViewAction::make('view')
+                    ->slideOver()
+                    ->button()->hiddenLabel()->size('sm'),
             ], position: RecordActionsPosition::BeforeCells)
             ->toolbarActions([
                 Actions\BulkActionGroup::make([
@@ -341,7 +400,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                 ->hidden(fn ($get): bool => ! $get('edit_uuid'))
                 ->required(),
 
-            Schemas\Components\Fieldset::make(__('Source Playlist'))
+            Fieldset::make(__('Source Playlist'))
                 ->schema([
                     // The alias persists to one of three FK columns (playlist_id /
                     // custom_playlist_id / merged_playlist_id). The form presents that as a
@@ -417,7 +476,9 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                     self::ownedSourceIdField('merged_playlist_id', 'merged_playlists'),
                 ]),
 
-            Schemas\Components\Fieldset::make(__('Provider Credentials'))
+            ...PlaylistFacade::getOutputTogglesSchema(),
+
+            Fieldset::make(__('Provider Credentials'))
                 ->columnSpanFull()
                 ->schema([
                     Forms\Components\Toggle::make('inherit_dns_failover')
@@ -538,7 +599,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                         ])->columnSpanFull(),
                 ]),
 
-            Schemas\Components\Fieldset::make(__('Streaming Output'))
+            Fieldset::make(__('Streaming Output'))
                 ->columns(2)
                 ->schema([
                     Forms\Components\Toggle::make('enable_proxy')
@@ -614,7 +675,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->helperText(__('Lock clients to specific backend origins after redirects to prevent playback loops when load balancers bounce between origins. Disable if your provider doesn\'t use load balancing.')),
                         ])->hidden(fn (Get $get): bool => ! $get('enable_proxy')),
 
-                    Schemas\Components\Fieldset::make(__('Transcoding Settings (optional)'))
+                    Fieldset::make(__('Transcoding Settings (optional)'))
                         ->columnSpanFull()
                         ->schema([
                             Forms\Components\Select::make('stream_profile_id')
@@ -644,7 +705,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->helperText(__('Select a transcoding profile to apply to VOD and Series streams for external clients (VLC, Kodi, etc.). Does not affect the in-app player. Leave empty for direct stream proxying.'))
                                 ->placeholder(__('Leave empty for direct stream proxying')),
                         ])->hidden(fn (Get $get): bool => ! $get('enable_proxy')),
-                    Schemas\Components\Fieldset::make(__('HTTP Headers (optional)'))
+                    Fieldset::make(__('HTTP Headers (optional)'))
                         ->columnSpanFull()
                         ->schema([
                             Forms\Components\Repeater::make('custom_headers')
@@ -666,7 +727,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                         ])->hidden(fn (Get $get): bool => ! $get('enable_proxy')),
                 ])->columnSpanFull(),
 
-            Schemas\Components\Fieldset::make(__('Auth (optional)'))
+            Fieldset::make(__('Auth (optional)'))
                 ->columns(2)
                 ->schema([
                     Forms\Components\TextInput::make('username')
@@ -698,11 +759,11 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                         ->columnSpan(2),
                 ]),
 
-            Schemas\Components\Fieldset::make(__('Channel Filter (optional)'))
+            Fieldset::make(__('Channel Filter (optional)'))
                 ->columnSpanFull()
                 ->hidden(fn (Get $get): bool => ! $get('playlist_id') && ! $get('custom_playlist_id') && ! $get('merged_playlist_id'))
                 ->schema([
-                    Schemas\Components\Fieldset::make(__('Bouquets'))
+                    Fieldset::make(__('Bouquets'))
                         ->columnSpanFull()
                         ->schema([
                             Forms\Components\Select::make('bouquets')
@@ -765,7 +826,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                             ? __('Groups and categories are listed per source playlist. A selection only allows that group from the playlist it was picked from, so a same-named group in another source stays filtered out unless you select it too.')
                             : __('The lists below combine any groups you created in the custom playlist with the original source playlist groups.')),
 
-                    Schemas\Components\Fieldset::make(__('Live channel groups'))
+                    Fieldset::make(__('Live channel groups'))
                         ->schema([
                             ModalTableSelect::make('group_filter.selected_groups')
                                 ->tableConfiguration(SourceGroupsTable::class)
@@ -938,7 +999,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->dehydrateStateUsing(fn ($state): array => self::liveGroupSortNames($state)),
                         ]),
 
-                    Schemas\Components\Fieldset::make(__('VOD groups'))
+                    Fieldset::make(__('VOD groups'))
                         ->schema([
                             ModalTableSelect::make('group_filter.selected_vod_groups')
                                 ->tableConfiguration(SourceGroupsTable::class)
@@ -1036,7 +1097,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->getOptionLabelsUsing(fn (array $values): array => array_combine($values, $values)),
                         ]),
 
-                    Schemas\Components\Fieldset::make(__('Series categories'))
+                    Fieldset::make(__('Series categories'))
                         ->schema([
                             ModalTableSelect::make('group_filter.selected_categories')
                                 ->tableConfiguration(SourceCategoriesTable::class)

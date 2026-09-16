@@ -890,6 +890,28 @@ class PlaylistService
         return strtr($template, $replacements);
     }
 
+    public static function getOutputTogglesSchema(): array
+    {
+        return [
+            Fieldset::make(__('Enabled output types'))
+                ->columns(4)
+                ->schema([
+                    Toggle::make('hdhr_enabled')
+                        ->label(__('HDHR'))
+                        ->default(true),
+                    Toggle::make('m3u_enabled')
+                        ->label(__('M3U'))
+                        ->default(true),
+                    Toggle::make('xapi_enabled')
+                        ->label(__('Xtream API'))
+                        ->default(true),
+                    Toggle::make('xmltv_enabled')
+                        ->label(__('XMLTV (EPG)'))
+                        ->default(true),
+                ]),
+        ];
+    }
+
     /**
      * Get the schema for adding items to a custom playlist.
      */
