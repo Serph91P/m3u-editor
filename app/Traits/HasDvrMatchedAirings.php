@@ -172,46 +172,79 @@ trait HasDvrMatchedAirings
         }
 
         if ($rule->channel_id) {
-            $channelQuery = Channel::where('id', $rule->channel_id)->with('epgChannel');
-
-            if (! $includeDisabled) {
-                $channelQuery->where('enabled', true);
-            }
-
-            $stringId = $channelQuery->first()?->epgChannel?->channel_id;
-
-            return $stringId ? [$stringId] : [];
+            return static::resolveEpgScopeForChannelLabel($rule, $rule->channel_id, $includeDisabled);
         }
 
         if ($rule->source_channel_id) {
-            $channelQuery = Channel::where('id', $rule->source_channel_id)->with('epgChannel');
-
-            if (! $includeDisabled) {
-                $channelQuery->where('enabled', true);
-            }
-
-            $stringId = $channelQuery->first()?->epgChannel?->channel_id;
-
-            return $stringId ? [$stringId] : [];
+            return static::resolveEpgScopeForChannelLabel($rule, $rule->source_channel_id, $includeDisabled);
         }
 
-        $channelQuery = $rule->dvrSetting->ownerChannels();
+        $ownerChannelsSubquery = $rule->dvrSetting->ownerChannelsSubquery();
 
-        if (! $channelQuery) {
+        if (! $ownerChannelsSubquery) {
             return [];
         }
 
-        $channelQuery->whereNotNull('channels.epg_channel_id')
-            ->with('epgChannel');
+        // Resolve distinct EPG channel string IDs entirely at the database
+        // level - playlists can have hundreds of thousands of channels, and
+        // this runs on every keystroke of the matched-airings preview, so
+        // hydrating every Channel/EpgChannel model here is not an option.
+        $query = Channel::whereIn('channels.id', $ownerChannelsSubquery)
+            ->whereNotNull('channels.epg_channel_id')
+            ->join('epg_channels', 'epg_channels.id', '=', 'channels.epg_channel_id');
 
         if (! $includeDisabled) {
-            $channelQuery->where('channels.enabled', true);
+            $query->where('channels.enabled', true);
         }
 
-        return $channelQuery->get()
-            ->map(fn (Channel $c) => $c->epgChannel?->channel_id)
+        return $query->distinct()
+            ->pluck('epg_channels.channel_id')
             ->filter()
-            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Resolve EPG scope for a rule pinned to a specific channel. The channel
+     * selector groups channels by displayed label (title, falling back to
+     * name) because IPTV providers commonly list several duplicate rows for
+     * the same channel (quality/stream variants) - one enabled, one not,
+     * sometimes with different EPG mappings or none at all. Pinning to a
+     * channel must therefore scope to every channel sharing that label, not
+     * just the single DB row the user happened to select, or picking a
+     * duplicate with no (or a stale) EPG mapping silently hides airings a
+     * sibling duplicate would have matched.
+     *
+     * @return list<string>
+     */
+    private static function resolveEpgScopeForChannelLabel(DvrRecordingRule $rule, int $channelId, bool $includeDisabled): array
+    {
+        $pinned = Channel::find($channelId, ['id', 'title', 'name']);
+
+        if (! $pinned) {
+            return [];
+        }
+
+        $label = $pinned->title ?: $pinned->name;
+
+        $ownerChannelsSubquery = $rule->dvrSetting->ownerChannelsSubquery();
+
+        if (! $ownerChannelsSubquery) {
+            return [];
+        }
+
+        $query = Channel::whereIn('channels.id', $ownerChannelsSubquery)
+            ->where(fn (Builder $q) => $q->where('channels.title', $label)->orWhere('channels.name', $label))
+            ->whereNotNull('channels.epg_channel_id')
+            ->join('epg_channels', 'epg_channels.id', '=', 'channels.epg_channel_id');
+
+        if (! $includeDisabled) {
+            $query->where('channels.enabled', true);
+        }
+
+        return $query->distinct()
+            ->pluck('epg_channels.channel_id')
+            ->filter()
             ->values()
             ->all();
     }

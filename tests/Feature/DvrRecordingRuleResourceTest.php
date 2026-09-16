@@ -3,6 +3,7 @@
 use App\Enums\DvrSeriesMode;
 use App\Filament\Resources\DvrRecordingRules\Pages\CreateDvrRecordingRule;
 use App\Filament\Resources\DvrRecordingRules\Pages\EditDvrRecordingRule;
+use App\Filament\Resources\DvrRecordingRules\Pages\ListDvrRecordingRules;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\DvrRecordingRule;
@@ -89,7 +90,17 @@ it('re-renders the airings preview from the edited form values on an existing ru
             ->first(fn ($component) => $component instanceof View);
         Assert::assertNotNull($viewField, 'Airings preview View component not found');
 
-        $subtitles = array_column($viewField->getViewData()['airings'] ?? [], 'subtitle');
+        // The View field's own viewData is now just the (cheap) props for the
+        // deferred preview - resolve it the same way the real wire:init call
+        // would (HasDvrMatchedAiringsPreviewCache, mixed into the page).
+        $viewData = $viewField->getViewData();
+        $page->instance()->loadDvrMatchedAiringsPreview(
+            $viewData['cacheKey'],
+            $viewData['ruleId'],
+            $viewData['ruleAttributes'],
+        );
+
+        $subtitles = array_column($page->instance()->dvrAiringsPreview, 'subtitle');
 
         foreach ($expectedSubtitles as $subtitle) {
             Assert::assertContains($subtitle, $subtitles);
@@ -173,11 +184,114 @@ it('scopes the channel selector to the currently selected playlist', function ()
     Livewire::test(CreateDvrRecordingRule::class)
         ->fillForm(['dvr_setting_id' => $dvrSettingOne->id])
         ->assertFormFieldExists('channel_id', function (Select $field) use ($channelOne, $channelTwo): bool {
-            $options = $field->getOptions();
+            $results = $field->getSearchResults('Channel');
 
-            Assert::assertArrayHasKey($channelOne->id, $options);
-            Assert::assertArrayNotHasKey($channelTwo->id, $options);
+            Assert::assertArrayHasKey($channelOne->id, $results);
+            Assert::assertArrayNotHasKey($channelTwo->id, $results);
 
             return true;
         });
+});
+
+it('can reopen the edit slideover after closing it once', function () {
+    // Regression test: an earlier implementation of the airings preview used a
+    // nested #[Lazy] Livewire child component, which corrupted the hosting
+    // component's child tracking - the slideover would throw "Snapshot missing"
+    // and silently fail to reopen after being closed once. The preview must
+    // live entirely on the hosting component (HasDvrMatchedAiringsPreviewCache),
+    // not as a separate child.
+    $dvrSetting = DvrSetting::factory()->enabled()->create(['user_id' => $this->user->id]);
+    $rule = DvrRecordingRule::factory()
+        ->series()
+        ->for($dvrSetting, 'dvrSetting')
+        ->for($this->user)
+        ->create(['series_title' => 'Old Show']);
+
+    $page = Livewire::test(ListDvrRecordingRules::class)
+        ->mountTableAction('edit', $rule)
+        ->assertOk()
+        ->unmountTableAction()
+        ->assertOk()
+        ->mountTableAction('edit', $rule)
+        ->assertOk();
+});
+
+it('scopes a pinned channel to every channel sharing its label, not just the selected row', function () {
+    // Regression test: IPTV providers commonly list duplicate rows for the same
+    // channel (quality/stream variants). Pinning a rule to one such duplicate
+    // must scope by the shared displayed label, not the single selected row -
+    // otherwise picking the duplicate with no (or a stale) EPG mapping silently
+    // hides airings a sibling duplicate would have matched.
+    $playlist = Playlist::factory()->for($this->user)->create();
+    $dvrSetting = DvrSetting::factory()->enabled()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $playlist->id,
+    ]);
+
+    $epg = Epg::factory()->for($this->user)->create();
+    $mappedEpgChannel = EpgChannel::factory()->create([
+        'epg_id' => $epg->id,
+        'user_id' => $this->user->id,
+        'channel_id' => 'ms.now',
+    ]);
+
+    // The duplicate the user actually pins: disabled, with no EPG mapping.
+    $unmappedDuplicate = Channel::factory()->for($playlist)->create([
+        'title' => 'MS NOW',
+        'epg_channel_id' => null,
+        'enabled' => false,
+    ]);
+
+    // A sibling duplicate with the correct EPG mapping.
+    Channel::factory()->for($playlist)->create([
+        'title' => 'MS NOW',
+        'epg_channel_id' => $mappedEpgChannel->id,
+        'enabled' => true,
+    ]);
+
+    EpgProgramme::factory()->upcoming(60)->create([
+        'epg_id' => $epg->id,
+        'title' => 'MS Now Live',
+        'epg_channel_id' => 'ms.now',
+        'subtitle' => 'MS-NOW-EPISODE',
+    ]);
+
+    $rule = DvrRecordingRule::factory()
+        ->series()
+        ->for($dvrSetting, 'dvrSetting')
+        ->for($this->user)
+        ->create([
+            'series_title' => 'MS Now Live',
+            'channel_id' => $unmappedDuplicate->id,
+            'series_mode' => DvrSeriesMode::All,
+        ]);
+
+    $page = Livewire::test(EditDvrRecordingRule::class, ['record' => $rule->getRouteKey()])
+        ->fillForm(['series_title' => 'MS Now Live']);
+
+    $flatten = function ($components) use (&$flatten): array {
+        $out = [];
+        foreach ($components as $component) {
+            $out[] = $component;
+            if (method_exists($component, 'getChildComponents')) {
+                $out = array_merge($out, $flatten($component->getChildComponents()));
+            }
+        }
+
+        return $out;
+    };
+
+    $viewField = collect($flatten($page->instance()->form->getComponents()))
+        ->first(fn ($component) => $component instanceof View);
+    $viewData = $viewField->getViewData();
+
+    $page->instance()->loadDvrMatchedAiringsPreview(
+        $viewData['cacheKey'],
+        $viewData['ruleId'],
+        $viewData['ruleAttributes'],
+    );
+
+    $subtitles = array_column($page->instance()->dvrAiringsPreview, 'subtitle');
+
+    expect($subtitles)->toContain('MS-NOW-EPISODE');
 });

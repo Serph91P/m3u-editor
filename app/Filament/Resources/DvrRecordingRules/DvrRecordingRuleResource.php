@@ -2,7 +2,6 @@
 
 namespace App\Filament\Resources\DvrRecordingRules;
 
-use App\Enums\DvrMatchMode;
 use App\Enums\DvrRuleType;
 use App\Enums\DvrSeriesMode;
 use App\Models\Channel;
@@ -118,7 +117,14 @@ class DvrRecordingRuleResource extends Resource
 
                 Select::make('channel_id')
                     ->label(__('Channel'))
-                    ->options(function (Get $get): array {
+                    ->searchable()
+                    // Playlists can have hundreds of thousands of channels, so this
+                    // must never load/return the full channel list - search matches
+                    // are queried lazily as the user types, selecting only the
+                    // columns needed (Channel rows carry heavy JSON columns like
+                    // movie_data/sync_settings/stream_stats that must not be
+                    // hydrated just to build a dropdown label).
+                    ->getSearchResultsUsing(function (Get $get, string $search): array {
                         $dvrSetting = DvrSetting::find($get('dvr_setting_id'));
 
                         if (! $dvrSetting) {
@@ -130,18 +136,28 @@ class DvrRecordingRuleResource extends Resource
                         // may have multiple streams/quality variants for the same
                         // channel, but channels without a title must not collapse
                         // into a single "untitled" option.
-                        return Channel::whereIn('id', $dvrSetting->ownerChannelsSubquery())
+                        $results = Channel::whereIn('id', $dvrSetting->ownerChannelsSubquery())
+                            ->where(fn ($query) => $query->where('title', 'like', "%{$search}%")
+                                ->orWhere('name', 'like', "%{$search}%"))
                             ->orderBy('title')
-                            ->get()
+                            ->limit(50)
+                            ->get(['id', 'title', 'name'])
                             ->unique(fn (Channel $channel): string => $channel->title ?: $channel->name)
                             ->mapWithKeys(fn (Channel $channel): array => [
                                 $channel->id => $channel->title ?: $channel->name,
                             ])
-                            ->prepend(__('From Original Source'), 0)
                             ->all();
+
+                        if ($search === '' || str_contains(mb_strtolower(__('From Original Source')), mb_strtolower($search))) {
+                            $results = [0 => __('From Original Source')] + $results;
+                        }
+
+                        return $results;
                     })
+                    ->getOptionLabelUsing(fn (mixed $value): ?string => ((int) $value === 0)
+                        ? __('From Original Source')
+                        : (Channel::find($value)?->title ?: Channel::find($value)?->name))
                     ->disabled(fn (Get $get): bool => ! $get('dvr_setting_id'))
-                    ->searchable()
                     ->nullable()
                     ->live(onBlur: true)
                     ->helperText(fn (Get $get): ?string => self::isRuleType($get('type'), DvrRuleType::Series)
@@ -208,60 +224,60 @@ class DvrRecordingRuleResource extends Resource
                     ->required(),
 
                 View::make('filament.forms.dvr-matched-airings')
-                    ->viewData(fn (?DvrRecordingRule $record, Get $get): array => [
-                        'airings' => static::resolveMatchedAiringsFromForm($record, $get),
-                    ])
+                    ->viewData(fn (?DvrRecordingRule $record, Get $get, $livewire): array => static::buildMatchedAiringsPreviewProps($record, $get, $livewire))
                     ->visible(fn (Get $get): bool => self::isRuleType($get('type'), DvrRuleType::Series))
                     ->columnSpanFull(),
             ]);
     }
 
     /**
-     * Build a temporary DvrRecordingRule from form values to preview
-     * matched airings. Works for both new rules (no record yet) and
-     * existing rules being edited - the preview always reflects the form's
-     * CURRENT (possibly unsaved) values, so onBlur changes to the title,
-     * channel or record-episodes mode re-render the airings immediately.
+     * Build the (cheap - no DB queries) props for the deferred matched-airings
+     * preview. Resolving the actual airings can scan every EPG-mapped channel on
+     * a playlist (hundreds of thousands of channels), so that work must never run
+     * synchronously while the create/edit modal is opening - see
+     * App\Filament\Concerns\HasDvrMatchedAiringsPreviewCache, which the hosting
+     * Livewire component runs via wire:init in its own follow-up request.
+     *
+     * The 'cacheKey' identifies the current inputs (series_title, channel,
+     * record-episodes mode, ...): whenever it changes, the blade view's
+     * wire:key forces the preview element to be replaced, re-triggering
+     * wire:init - this is what makes onBlur edits refresh the preview for
+     * both new and edited rules. 'airings' is only populated once the
+     * Livewire component's cached result matches the CURRENT cacheKey -
+     * otherwise the view renders a loading placeholder.
      */
-    protected static function resolveMatchedAiringsFromForm(?DvrRecordingRule $record, Get $get): array
+    protected static function buildMatchedAiringsPreviewProps(?DvrRecordingRule $record, Get $get, $livewire): array
     {
         $type = DvrRuleType::tryFrom($get('type')?->value ?? $get('type'));
-        if ($type !== DvrRuleType::Series) {
-            return [];
-        }
 
         // On the initial mount the form state may not be filled yet, so fall back
         // to the record's values - the preview must render for existing rules
         // before any onBlur edit.
         $seriesTitle = trim((string) ($get('series_title') ?? $record?->series_title ?? ''));
-        if ($seriesTitle === '') {
-            return [];
-        }
-
         $dvrSettingId = $get('dvr_setting_id');
-        if (! $dvrSettingId) {
-            return [];
-        }
 
-        $tempRule = new DvrRecordingRule([
-            // Existing records supply the base (fields outside the form -
-            // tmdb_id, enable_comskip, keep_last, ...) so edited rules preview
-            // with their full context. There is no match_mode field on this
-            // form, so it always comes from the record (or the model default).
-            ...($record?->getAttributes() ?? []),
+        $ruleAttributes = [
             'series_title' => $seriesTitle,
-            'match_mode' => $record?->match_mode ?? DvrMatchMode::Contains,
-            'series_mode' => is_string($get('series_mode'))
-                ? (DvrSeriesMode::tryFrom($get('series_mode')) ?? $record?->series_mode)
-                : ($get('series_mode') ?? $record?->series_mode ?? DvrSeriesMode::All),
+            'series_mode' => is_string($get('series_mode')) ? $get('series_mode') : $get('series_mode')?->value,
             'dvr_setting_id' => $dvrSettingId,
             'epg_channel_id' => $get('epg_channel_id') ?? $record?->epg_channel_id,
             'channel_id' => $get('channel_id') ?? $record?->channel_id,
             'source_channel_id' => $get('source_channel_id') ?? $record?->source_channel_id,
             'sports_dedup_days' => $get('sports_dedup_days') ?? $record?->sports_dedup_days,
-        ]);
+        ];
 
-        return static::resolveMatchedAirings($tempRule);
+        if ($type !== DvrRuleType::Series || $seriesTitle === '' || ! $dvrSettingId) {
+            $ruleAttributes = [];
+        }
+
+        $cacheKey = md5(json_encode([$record?->id, $ruleAttributes]));
+
+        return [
+            'ruleId' => $record?->id,
+            'ruleAttributes' => $ruleAttributes,
+            'cacheKey' => $cacheKey,
+            'airings' => $livewire->dvrAiringsPreviewKey === $cacheKey ? $livewire->dvrAiringsPreview : null,
+        ];
     }
 
     public static function table(Table $table): Table

@@ -355,33 +355,71 @@ class DvrSchedulerService
 
         // 2. Pinned channel: derive EPG scope from that channel's mapping
         if ($rule->channel_id) {
-            $stringId = $rule->channel?->epgChannel?->channel_id;
-
-            return $stringId ? [$stringId] : [];
+            return $this->resolveEpgScopeForChannelLabel($rule, $rule->channel_id);
         }
 
         // 2.5. Source channel: created via Browse Shows; use the original channel's EPG mapping
         if ($rule->source_channel_id) {
-            $stringId = $rule->sourceChannel?->epgChannel?->channel_id;
-
-            return $stringId ? [$stringId] : [];
+            return $this->resolveEpgScopeForChannelLabel($rule, $rule->source_channel_id);
         }
 
         // 3. No explicit channel: scope to all EPG-mapped channels reachable through
         // the rule's DVR setting owner (a Playlist, CustomPlaylist, or MergedPlaylist).
-        $channelQuery = $rule->dvrSetting->ownerChannels();
+        // Resolved entirely at the database level - playlists can have hundreds of
+        // thousands of channels, so hydrating every Channel/EpgChannel model here
+        // is not an option (this also runs from the interactive airings preview).
+        $ownerChannelsSubquery = $rule->dvrSetting->ownerChannelsSubquery();
 
-        if (! $channelQuery) {
+        if (! $ownerChannelsSubquery) {
             return [];
         }
 
-        return $channelQuery
+        return Channel::whereIn('channels.id', $ownerChannelsSubquery)
             ->whereNotNull('channels.epg_channel_id')
-            ->with('epgChannel')
-            ->get()
-            ->map(fn (Channel $c) => $c->epgChannel?->channel_id)
+            ->join('epg_channels', 'epg_channels.id', '=', 'channels.epg_channel_id')
+            ->distinct()
+            ->pluck('epg_channels.channel_id')
             ->filter()
-            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Resolve EPG scope for a rule pinned to a specific channel. The channel
+     * selector groups channels by displayed label (title, falling back to
+     * name) because IPTV providers commonly list several duplicate rows for
+     * the same channel (quality/stream variants) - one enabled, one not,
+     * sometimes with different EPG mappings or none at all. Pinning to a
+     * channel must therefore scope to every channel sharing that label, not
+     * just the single DB row the user happened to select, or picking a
+     * duplicate with no (or a stale) EPG mapping silently drops airings a
+     * sibling duplicate would have matched.
+     *
+     * @return list<string>
+     */
+    private function resolveEpgScopeForChannelLabel(DvrRecordingRule $rule, int $channelId): array
+    {
+        $pinned = Channel::find($channelId, ['id', 'title', 'name']);
+
+        if (! $pinned) {
+            return [];
+        }
+
+        $label = $pinned->title ?: $pinned->name;
+
+        $ownerChannelsSubquery = $rule->dvrSetting->ownerChannelsSubquery();
+
+        if (! $ownerChannelsSubquery) {
+            return [];
+        }
+
+        return Channel::whereIn('channels.id', $ownerChannelsSubquery)
+            ->where(fn (Builder $q) => $q->where('channels.title', $label)->orWhere('channels.name', $label))
+            ->whereNotNull('channels.epg_channel_id')
+            ->join('epg_channels', 'epg_channels.id', '=', 'channels.epg_channel_id')
+            ->distinct()
+            ->pluck('epg_channels.channel_id')
+            ->filter()
             ->values()
             ->all();
     }

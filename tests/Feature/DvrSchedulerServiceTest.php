@@ -650,6 +650,37 @@ it('does not schedule a programme whose EPG channel has no playlist mapping', fu
     expect(DvrRecording::where('dvr_recording_rule_id', $rule->id)->count())->toBe(0);
 });
 
+it('schedules via a duplicate-titled sibling channel when the pinned channel row has no EPG mapping', function () {
+    // IPTV providers commonly list several duplicate rows for the same channel
+    // (quality/stream variants). Pinning a rule to a duplicate with no (or a
+    // stale) EPG mapping must still schedule via a sibling duplicate that
+    // shares the same displayed label and does have the mapping.
+    $mappedEpgChannel = EpgChannel::factory()->create(['channel_id' => 'ms.now']);
+
+    $unmappedDuplicate = Channel::factory()
+        ->for($this->setting->playlist)
+        ->create(['title' => 'MS NOW', 'epg_channel_id' => null, 'enabled' => false]);
+
+    Channel::factory()
+        ->for($this->setting->playlist)
+        ->create(['title' => 'MS NOW', 'epg_channel_id' => $mappedEpgChannel->id, 'enabled' => true]);
+
+    $rule = DvrRecordingRule::factory()
+        ->series()
+        ->for($this->setting, 'dvrSetting')
+        ->for($this->user)
+        ->create(['series_title' => 'MS Now Live', 'channel_id' => $unmappedDuplicate->id]);
+
+    EpgProgramme::factory()->upcoming(10)->create([
+        'title' => 'MS Now Live',
+        'epg_channel_id' => 'ms.now',
+    ]);
+
+    $this->service->matchAndSchedule(30);
+
+    expect(DvrRecording::where('dvr_recording_rule_id', $rule->id)->count())->toBe(1);
+});
+
 // --- Phase 0: Stale-window handling ---
 
 it('marks scheduled recordings whose window has fully passed as Failed', function () {
