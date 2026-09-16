@@ -45,3 +45,16 @@ it('uses the same PUT lineup contract through the EPG add action service path', 
         && $request->url() === 'https://json.schedulesdirect.org/20141201/lineups/USA-NY12345-X%2Fplus'
         && $request->body() === '');
 });
+
+it('deletes a lineup using an encoded lineup resource', function () {
+    Http::fake([
+        'json.schedulesdirect.org/20141201/lineups/*' => Http::response(['code' => 0, 'message' => 'OK']),
+    ]);
+
+    $lineupId = 'USA-NY12345-X/plus';
+    $result = (new SchedulesDirectService)->removeLineup('token', $lineupId);
+
+    expect($result)->toBe(['code' => 0, 'message' => 'OK']);
+    Http::assertSent(fn ($request) => $request->method() === 'DELETE'
+        && $request->url() === 'https://json.schedulesdirect.org/20141201/lineups/USA-NY12345-X%2Fplus');
+});

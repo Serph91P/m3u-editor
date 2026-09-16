@@ -196,7 +196,7 @@ it('handles missing artwork gracefully', function () {
     expect($xmlContent)->not->toContain('<icon');
 });
 
-it('skips one transient program batch and completes the XMLTV replacement', function () {
+it('attempts remaining program batches and preserves XMLTV on partial failure', function () {
     $user = User::factory()->create();
     $stationIds = array_map(fn (int $id): string => (string) $id, range(1, 11));
     $epg = Epg::factory()->create([
@@ -242,12 +242,16 @@ it('skips one transient program batch and completes the XMLTV replacement', func
     });
 
     Storage::fake('local');
-    (new SchedulesDirectService)->syncEpgData($epg);
+    Storage::disk('local')->put($epg->file_path, '<tv>previous</tv>');
+    $before = Storage::disk('local')->get($epg->file_path);
+
+    expect(fn () => (new SchedulesDirectService)->syncEpgData($epg))
+        ->toThrow(Exception::class, 'SchedulesDirect program import completed only partially; 2 program batch(es) failed.');
 
     $xmlContent = Storage::disk('local')->get($epg->file_path);
-    expect($programRequests)->toBeGreaterThan(1)
-        ->and($xmlContent)->toEndWith("</tv>\n")
-        ->and(simplexml_load_string($xmlContent))->not->toBeFalse();
+    expect($programRequests)->toBe(6)
+        ->and($xmlContent)->toBe($before)
+        ->and($epg->fresh()->sd_errors)->toHaveCount(3);
     expect(Storage::disk('local')->allFiles(dirname($epg->file_path)))->toHaveCount(1);
 });
 
