@@ -899,6 +899,7 @@ class EpgResource extends Resource implements CopilotResource
                     $lineups = $service->getAccountLineupsAsOptions($record);
                     $count = count($lineups);
                     $max = $service->getAccountMaxLineups($record->sd_token);
+                    $slotsUsed = __(':used of :max slots used', ['used' => $count, 'max' => $max]);
                     $available = [];
                     try {
                         foreach ($service->getHeadends($record->sd_token, $record->sd_country, $record->sd_postal_code) as $headend) {
@@ -919,12 +920,12 @@ class EpgResource extends Resource implements CopilotResource
                             ->disabled($count >= $max || empty($available))
                             ->helperText(empty($available)
                                 ? __('Could not fetch available lineups. Adding a lineup is disabled.')
-                                : __("{$count} of {$max} slots used")),
+                                : $slotsUsed),
                         Select::make('lineup_to_remove')
                             ->label(__('Lineup to Remove'))
                             ->options($lineups)
                             ->required(fn (Get $get): bool => blank($get('lineup_to_add')))
-                            ->hint(__("{$count} of {$max} slots used"))
+                            ->hint($slotsUsed)
                             ->helperText(__('Select the lineup you want to remove from your SchedulesDirect account.')),
                     ];
                 } catch (Exception $e) {
