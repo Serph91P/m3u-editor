@@ -74,14 +74,6 @@ class EpgCacheService
     private array $activeCacheDirectories = [];
 
     /**
-     * Get the cache directory path for an EPG
-     */
-    private function getCacheDir(Epg $epg): string
-    {
-        return "epg-cache/{$epg->uuid}/".self::CACHE_VERSION;
-    }
-
-    /**
      * Returns the directory of the best available cache: current version first,
      * then each legacy version in order. Falls back to the current version path
      * (which may not yet exist) when no cache has been written yet.
