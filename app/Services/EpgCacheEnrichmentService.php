@@ -5,25 +5,37 @@ namespace App\Services;
 use App\Models\Epg;
 use App\Plugins\Support\PluginExecutionContext;
 use App\Rules\UrlIsAllowed;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Storage;
-use RuntimeException;
 use Throwable;
 
 /**
- * Host-owned, conditional enrichment API for immutable EPG cache generations.
+ * Host-owned, conditional enrichment API for an EPG's one canonical cache file.
  *
- * Plugins receive canonical programme data and opaque locators only. The host
- * validates authorisation and patches, then builds and publishes a replacement
- * generation under the existing per-EPG mutation lock.
+ * Plugins receive canonical programme data and opaque locators only, then send
+ * back patches pinned to the cache revision and row revisions they were given.
+ * The host re-checks both inside a single write transaction on the canonical
+ * `programmes.sqlite` and commits the row updates together with a new cache
+ * revision, so a batch is either published as a whole or not at all.
+ *
+ * Statuses returned to the plugin:
+ * - `ok`, `applied`, `noop` - the request succeeded (or changed nothing).
+ * - `conflict`, `stale_snapshot`, `invalid_patch`, `invalid_selection`,
+ *   `invalid_cursor`, `invalid_snapshot` - the request is wrong or outdated.
+ * - `legacy_cache_read_only` - the cache predates the single-source format.
+ * - `transient_error` - the cache was locked by another writer; retry later.
+ * - `*_denied` - the plugin or caller is not allowed to touch this EPG.
+ *
+ * A genuinely failed write (disk error, corrupt store) is not reported as a
+ * status at all: it surfaces as an exception so the caller sees a host failure
+ * rather than being told its patch was invalid.
  */
 class EpgCacheEnrichmentService
 {
     private const MAX_PAGE_SIZE = 100;
 
     private const MAX_PATCHES = 100;
-
-    private const LEGACY_GENERATION = 'legacy';
 
     /** @var list<string> */
     private const MUTABLE_FIELDS = [
@@ -47,9 +59,12 @@ class EpgCacheEnrichmentService
     /** @var list<string> */
     private const IMAGE_ORIENTATIONS = ['P', 'L'];
 
-    public function __construct(private readonly EpgCacheGenerationResolver $generations) {}
+    public function __construct(private readonly EpgCacheStorage $storage) {}
 
     /**
+     * Read one bounded page of the canonical cache, pinned to its current cache
+     * revision. Nothing is copied: the snapshot is a read of the one store.
+     *
      * @param  array{limit?: int, cursor?: string}  $selection
      * @return array<string, mixed>
      */
@@ -64,27 +79,46 @@ class EpgCacheEnrichmentService
             return ['status' => $window];
         }
 
-        $directory = $this->generations->resolve($epg);
-        if (! $this->isImmutableGeneration($epg, $directory)) {
-            return $this->snapshotLegacy($context, $epg, $directory, $window);
+        $directory = $this->storage->resolve($epg);
+        if (! $this->storage->isCanonical($epg, $directory)) {
+            return $this->snapshotLegacy($context, $epg, $window);
         }
 
-        $generation = basename($directory);
-        $rows = $this->readRows($directory, $window['after'], $window['limit'] + 1);
+        $store = $this->openReader($epg);
+        if ($store === null) {
+            return $this->snapshotLegacy($context, $epg, $window);
+        }
+
+        try {
+            $revision = $store->readCacheRevision();
+            $rows = array_map($this->hydrateRawRow(...), $store->readPage($window['after'], $window['limit'] + 1));
+        } finally {
+            $store->close();
+        }
+
+        if ($revision === null) {
+            return $this->snapshotLegacy($context, $epg, $window);
+        }
+
         $hasMore = count($rows) > $window['limit'];
         $rows = array_slice($rows, 0, $window['limit']);
 
         return [
             'status' => 'ok',
-            'generation' => $generation,
-            'cache_revision' => hash('sha256', $generation),
-            'token' => $this->encryptToken($context, $epg, $generation, $rows),
+            'cache_revision' => $revision,
+            'token' => $this->encryptToken($context, $epg, $revision, $rows),
             'programmes' => array_map($this->publicRow(...), $rows),
             'next_cursor' => $this->nextCursor($rows, $hasMore),
         ];
     }
 
     /**
+     * Conditionally apply an enrichment batch to the canonical cache file.
+     *
+     * Validation and the revision pre-check run outside the per-EPG mutation
+     * lock (they are read-only), then the write transaction re-verifies the
+     * same revisions under the lock before committing.
+     *
      * @param  list<array{locator: string, row_revision: string, changes: array<string, mixed>}>  $patches
      * @return array{status: string}
      */
@@ -101,77 +135,84 @@ class EpgCacheEnrichmentService
         if (! is_array($snapshot) || ($snapshot['epg_id'] ?? null) !== $epg->id || ($snapshot['plugin_id'] ?? null) !== $context->plugin->id) {
             return ['status' => 'invalid_snapshot'];
         }
-
-        $directory = $this->generations->resolve($epg);
-        if (! $this->isImmutableGeneration($epg, $directory)) {
+        if (! is_string($snapshot['cache_revision'] ?? null)) {
+            // A snapshot taken from a legacy cache is never mutable.
             return ['status' => 'legacy_cache_read_only'];
         }
-        if (basename($directory) !== ($snapshot['generation'] ?? null)) {
-            return ['status' => 'stale_snapshot'];
+        if (! $this->storage->isCanonical($epg, $this->storage->resolve($epg))) {
+            return ['status' => 'legacy_cache_read_only'];
         }
 
-        $prevalidatedChanges = $this->prevalidatedChanges($directory, $snapshot, $patches);
-        if ($prevalidatedChanges === null) {
-            return ['status' => 'conflict'];
+        $prevalidated = $this->prevalidateChanges($epg, $snapshot, $patches);
+        if ($prevalidated['status'] !== 'ok') {
+            return ['status' => $prevalidated['status']];
         }
-        if ($prevalidatedChanges === []) {
+        if ($prevalidated['changes'] === []) {
             return ['status' => 'noop'];
         }
 
-        $replacement = null;
         try {
-            $replacement = $this->copyGeneration($epg, $directory);
-            $this->writeChanges($replacement, $prevalidatedChanges);
-        } catch (Throwable) {
-            $this->discardGeneration($replacement);
-
-            return ['status' => 'invalid_patch'];
+            return $this->storage->mutate($epg, fn (): array => $this->applyWithinMutationLock($context, $epg, $snapshot, $prevalidated['changes']));
+        } catch (LockTimeoutException) {
+            return ['status' => 'transient_error'];
+        } catch (EpgCacheBusyException) {
+            return ['status' => 'transient_error'];
         }
-
-        try {
-            $result = $this->generations->mutate($epg, fn (): array => $this->publishReplacement($context, $epg, $snapshot, $prevalidatedChanges, $replacement));
-        } catch (Throwable) {
-            $result = ['status' => 'invalid_patch'];
-        }
-
-        if ($result['status'] !== 'applied') {
-            $this->discardGeneration($replacement);
-
-            return $result;
-        }
-
-        $this->clearPlaylistCaches($epg);
-
-        return $result;
     }
 
     /**
-     * Re-check every precondition inside the mutation lock, then publish.
+     * Re-check every precondition under the mutation lock and commit the batch
+     * in place, so a rebuild that landed while this patch waited cannot be
+     * overwritten with data derived from the superseded cache.
      *
      * @param  array<string, mixed>  $snapshot
-     * @param  array<int, array{programme: array<string, mixed>, expected_revision: string}>  $prevalidatedChanges
+     * @param  array<int, array{programme: array<string, mixed>, expected_revision: string}>  $changes
      * @return array{status: string}
      */
-    private function publishReplacement(PluginExecutionContext $context, Epg $epg, array $snapshot, array $prevalidatedChanges, string $replacement): array
+    private function applyWithinMutationLock(PluginExecutionContext $context, Epg $epg, array $snapshot, array $changes): array
     {
         if ($denial = $this->authorizationDenial($context, $epg)) {
             return ['status' => $denial];
         }
-
-        $source = $this->generations->resolve($epg);
-        if (! $this->isImmutableGeneration($epg, $source)) {
+        if (! $this->storage->isCanonical($epg, $this->storage->resolve($epg))) {
             return ['status' => 'legacy_cache_read_only'];
         }
-        if (basename($source) !== ($snapshot['generation'] ?? null)) {
-            return ['status' => 'stale_snapshot'];
-        }
-        if (! $this->hasExpectedRevisions($source, $prevalidatedChanges)) {
-            return ['status' => 'conflict'];
+
+        $dataByRowid = [];
+        $expectedRevisions = [];
+        foreach ($changes as $rowid => $change) {
+            $dataByRowid[$rowid] = json_encode(EpgProgrammeStore::dehydrate($change['programme']), JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+            $expectedRevisions[$rowid] = $change['expected_revision'];
         }
 
-        $this->generations->publishWithinMutationLock($epg, $replacement);
+        $store = $this->openWriter($this->programmesPath($epg));
+        try {
+            $result = $store->applyConditionalUpdates($snapshot['cache_revision'], $dataByRowid, $expectedRevisions);
+        } finally {
+            $store->close();
+        }
+
+        if ($result['status'] !== 'applied') {
+            return ['status' => $result['status']];
+        }
+
+        $this->clearPlaylistCaches($epg);
 
         return ['status' => 'applied'];
+    }
+
+    /**
+     * Open the canonical store for a conditional write.
+     *
+     * Visibility is protected (not private) so tests can shorten the SQLite
+     * busy timeout instead of waiting it out.
+     */
+    protected function openWriter(string $sqlitePath): EpgProgrammeStore
+    {
+        $store = new EpgProgrammeStore;
+        $store->openWrite($sqlitePath);
+
+        return $store;
     }
 
     /**
@@ -240,39 +281,24 @@ class EpgCacheEnrichmentService
         return $this->encodeCursor((int) $rows[array_key_last($rows)]['rowid']);
     }
 
-    /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
-    private function readRows(string $directory, ?int $after, int $limit): array
+    /**
+     * Open the single canonical programme store for reading, or null when the
+     * canonical cache holds no SQLite store yet (legacy JSONL layout).
+     */
+    private function openReader(Epg $epg): ?EpgProgrammeStore
     {
-        $store = EpgProgrammeStore::openRead(Storage::disk('local')->path($directory.'/programmes.sqlite'));
-        try {
-            $raw = $store->readPage($after ?? 0, $limit);
-        } finally {
-            $store->close();
+        $path = $this->programmesPath($epg);
+        if (! Storage::disk('local')->exists($this->storage->path($epg, EpgCacheStorage::PROGRAMMES_DB_FILE))) {
+            return null;
         }
 
-        return array_map($this->hydrateRawRow(...), $raw);
+        return EpgProgrammeStore::openRead($path);
     }
 
-    /**
-     * Fetch specific rows by rowid in one connection/query, keyed by rowid.
-     *
-     * @param  list<int>  $rowids
-     * @return array<int, array{rowid: int, programme: array<string, mixed>, revision: string}>
-     */
-    private function readRowsByIds(string $directory, array $rowids): array
+    /** Absolute path of the one canonical programme store. */
+    private function programmesPath(Epg $epg): string
     {
-        if ($rowids === []) {
-            return [];
-        }
-
-        $store = EpgProgrammeStore::openRead(Storage::disk('local')->path($directory.'/programmes.sqlite'));
-        try {
-            $raw = $store->readRowsByIds($rowids);
-        } finally {
-            $store->close();
-        }
-
-        return array_map($this->hydrateRawRow(...), $raw);
+        return Storage::disk('local')->path($this->storage->path($epg, EpgCacheStorage::PROGRAMMES_DB_FILE));
     }
 
     /**
@@ -283,7 +309,7 @@ class EpgCacheEnrichmentService
     {
         $programme = EpgProgrammeStore::hydrate(json_decode($row['data'], true) ?: [], $row['channel_id'], $row['start_ts'], $row['stop_ts']);
 
-        return ['rowid' => $row['rowid'], 'programme' => $programme, 'revision' => $this->revision($programme)];
+        return ['rowid' => $row['rowid'], 'programme' => $programme, 'revision' => EpgProgrammeStore::revisionOf($programme)];
     }
 
     /**
@@ -300,7 +326,7 @@ class EpgCacheEnrichmentService
     }
 
     /** @param list<array{rowid: int, programme: array<string, mixed>, revision: string}> $rows */
-    private function encryptToken(PluginExecutionContext $context, Epg $epg, string $generation, array $rows): string
+    private function encryptToken(PluginExecutionContext $context, Epg $epg, ?string $cacheRevision, array $rows): string
     {
         $revisionsByRowid = [];
         foreach ($rows as $row) {
@@ -310,7 +336,7 @@ class EpgCacheEnrichmentService
         return Crypt::encryptString(json_encode([
             'epg_id' => $epg->id,
             'plugin_id' => $context->plugin->id,
-            'generation' => $generation,
+            'cache_revision' => $cacheRevision,
             'rows' => $revisionsByRowid,
         ], JSON_THROW_ON_ERROR));
     }
@@ -327,93 +353,78 @@ class EpgCacheEnrichmentService
         }
     }
 
-    private function copyGeneration(Epg $epg, string $source): string
-    {
-        $target = $this->generations->createGenerationDirectory($epg);
-        $disk = Storage::disk('local');
-        foreach ($this->generations->generationFiles() as $file) {
-            if (! $disk->copy("{$source}/{$file}", "{$target}/{$file}")) {
-                throw new RuntimeException('Failed to copy EPG cache generation.');
-            }
-        }
-
-        return $target;
-    }
-
-    private function discardGeneration(?string $directory): void
-    {
-        if ($directory !== null) {
-            Storage::disk('local')->deleteDirectory($directory);
-        }
-    }
-
     /**
-     * Validate every patch against the snapshot revisions and the generation on
-     * disk, returning only the rows whose programme actually changes. Null means
-     * the patch set must be rejected as a conflict.
+     * Validate every patch against the snapshot revisions and the canonical
+     * cache file, returning only the rows whose programme actually changes.
      *
      * @param  array<string, mixed>  $snapshot
      * @param  list<array<string, mixed>>  $patches
-     * @return array<int, array{programme: array<string, mixed>, expected_revision: string}>|null
+     * @return array{status: string, changes: array<int, array{programme: array<string, mixed>, expected_revision: string}>}
      */
-    private function prevalidatedChanges(string $directory, array $snapshot, array $patches): ?array
+    private function prevalidateChanges(Epg $epg, array $snapshot, array $patches): array
     {
         $expected = $snapshot['rows'] ?? [];
         if (! is_array($expected)) {
-            return null;
+            return ['status' => 'conflict', 'changes' => []];
         }
 
         $pending = [];
         foreach ($patches as $patch) {
-            $rowid = $this->decodeLocator($patch['locator'] ?? null);
+            $rowid = is_array($patch) ? $this->decodeLocator($patch['locator'] ?? null) : null;
             if ($rowid === null || isset($pending[$rowid])) {
-                return null;
+                return ['status' => 'conflict', 'changes' => []];
             }
 
             $expectedRevision = $expected[(string) $rowid] ?? null;
-            if ($expectedRevision === null || ($patch['row_revision'] ?? null) !== $expectedRevision) {
-                return null;
+            if (! is_string($expectedRevision) || ($patch['row_revision'] ?? null) !== $expectedRevision) {
+                return ['status' => 'conflict', 'changes' => []];
             }
 
             if (! is_array($patch['changes'] ?? null)) {
-                return null;
+                return ['status' => 'conflict', 'changes' => []];
             }
             $patchChanges = $this->validatePatch($patch['changes']);
             if ($patchChanges === null) {
-                return null;
+                return ['status' => 'conflict', 'changes' => []];
             }
 
             $pending[$rowid] = ['changes' => $patchChanges, 'expected_revision' => $expectedRevision];
         }
 
-        $current = $this->readRowsByIds($directory, array_keys($pending));
+        $store = $this->openReader($epg);
+        if ($store === null) {
+            return ['status' => 'legacy_cache_read_only', 'changes' => []];
+        }
+
+        try {
+            $revision = $store->readCacheRevision();
+            $current = $store->readRowsByIds(array_keys($pending));
+        } finally {
+            $store->close();
+        }
+
+        if ($revision === null) {
+            return ['status' => 'legacy_cache_read_only', 'changes' => []];
+        }
+        if (! hash_equals($snapshot['cache_revision'], $revision)) {
+            return ['status' => 'stale_snapshot', 'changes' => []];
+        }
+
         $changes = [];
         foreach ($pending as $rowid => $patch) {
             $row = $current[$rowid] ?? null;
-            if ($row === null || $row['revision'] !== $patch['expected_revision']) {
-                return null;
+            if ($row === null || ! hash_equals($patch['expected_revision'], EpgProgrammeStore::rawRowRevision($row))) {
+                return ['status' => 'conflict', 'changes' => []];
             }
 
-            $programme = array_replace($row['programme'], $patch['changes']);
-            if ($programme !== $row['programme']) {
-                $changes[$rowid] = ['programme' => $programme, 'expected_revision' => $patch['expected_revision']];
-            }
-        }
-
-        return $changes;
-    }
-
-    /** @param array<int, array{programme: array<string, mixed>, expected_revision: string}> $prevalidatedChanges */
-    private function hasExpectedRevisions(string $directory, array $prevalidatedChanges): bool
-    {
-        $current = $this->readRowsByIds($directory, array_keys($prevalidatedChanges));
-        foreach ($prevalidatedChanges as $rowid => $change) {
-            if (! isset($current[$rowid]) || $current[$rowid]['revision'] !== $change['expected_revision']) {
-                return false;
+            $programme = EpgProgrammeStore::hydrate(json_decode($row['data'], true) ?: [], $row['channel_id'], $row['start_ts'], $row['stop_ts']);
+            $patched = array_replace($programme, $patch['changes']);
+            if ($patched !== $programme) {
+                $changes[$rowid] = ['programme' => $patched, 'expected_revision' => $patch['expected_revision']];
             }
         }
 
-        return true;
+        return ['status' => 'ok', 'changes' => $changes];
     }
 
     /**
@@ -504,33 +515,6 @@ class EpgCacheEnrichmentService
         return ! $denied;
     }
 
-    /** @param array<int, array{programme: array<string, mixed>, expected_revision: string}> $changes */
-    private function writeChanges(string $directory, array $changes): void
-    {
-        $dataByRowid = [];
-        foreach ($changes as $rowid => $change) {
-            $dataByRowid[$rowid] = json_encode(EpgProgrammeStore::dehydrate($change['programme']), JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
-        }
-
-        $store = EpgProgrammeStore::openRead(Storage::disk('local')->path($directory.'/programmes.sqlite'));
-        try {
-            $store->updateRows($dataByRowid);
-        } finally {
-            $store->close();
-        }
-    }
-
-    private function isImmutableGeneration(Epg $epg, string $directory): bool
-    {
-        return $this->generations->isGenerationDirectory($epg, $directory);
-    }
-
-    /** @param array<string, mixed> $programme */
-    private function revision(array $programme): string
-    {
-        return hash('sha256', json_encode($programme, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
-    }
-
     private function encodeCursor(int $rowid): string
     {
         return Crypt::encryptString((string) $rowid);
@@ -563,27 +547,40 @@ class EpgCacheEnrichmentService
     }
 
     /**
-     * Read-only snapshot of a pre-generation (flat v2 or v1 JSONL) cache.
+     * Read-only snapshot of a pre-single-source cache (flat v2 without revision
+     * state, or v1 JSONL). These caches stay readable but are never mutated.
      *
      * @param  array{limit: int, after: int}  $window
      * @return array<string, mixed>
      */
-    private function snapshotLegacy(PluginExecutionContext $context, Epg $epg, string $directory, array $window): array
+    private function snapshotLegacy(PluginExecutionContext $context, Epg $epg, array $window): array
     {
-        $rows = Storage::disk('local')->exists($directory.'/programmes.sqlite')
-            ? $this->readRows($directory, $window['after'], $window['limit'] + 1)
-            : $this->readLegacyJsonlRows($directory, $window['after'], $window['limit'] + 1);
+        $rows = $this->legacyStoreRows($epg, $window['after'], $window['limit'] + 1);
         $hasMore = count($rows) > $window['limit'];
         $rows = array_slice($rows, 0, $window['limit']);
 
         return [
             'status' => 'ok',
-            'generation' => self::LEGACY_GENERATION,
-            'cache_revision' => self::LEGACY_GENERATION,
-            'token' => $this->encryptToken($context, $epg, self::LEGACY_GENERATION, []),
+            'cache_revision' => null,
+            'token' => $this->encryptToken($context, $epg, null, []),
             'programmes' => array_map($this->publicRow(...), $rows),
             'next_cursor' => $this->nextCursor($rows, $hasMore),
         ];
+    }
+
+    /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
+    private function legacyStoreRows(Epg $epg, int $after, int $limit): array
+    {
+        $store = $this->openReader($epg);
+        if ($store === null) {
+            return $this->readLegacyJsonlRows($this->storage->resolve($epg), $after, $limit);
+        }
+
+        try {
+            return array_map($this->hydrateRawRow(...), $store->readPage($after, $limit));
+        } finally {
+            $store->close();
+        }
     }
 
     /** @return list<array{rowid: int, programme: array<string, mixed>, revision: string}> */
@@ -615,7 +612,7 @@ class EpgCacheEnrichmentService
 
                     $programme = $record['programme'];
                     $programme['channel'] ??= $record['channel'];
-                    $rows[] = ['rowid' => $rowid, 'programme' => $programme, 'revision' => $this->revision($programme)];
+                    $rows[] = ['rowid' => $rowid, 'programme' => $programme, 'revision' => EpgProgrammeStore::revisionOf($programme)];
                     if (count($rows) >= $limit) {
                         return $rows;
                     }

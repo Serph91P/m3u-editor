@@ -9,8 +9,8 @@ use App\Models\PluginRun;
 use App\Models\User;
 use App\Plugins\Support\PluginExecutionContext;
 use App\Services\EpgCacheEnrichmentService;
-use App\Services\EpgCacheGenerationResolver;
 use App\Services\EpgCacheService;
+use App\Services\EpgCacheStorage;
 use App\Services\EpgProgrammeStore;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Bus;
@@ -60,10 +60,13 @@ function mutationLockContext(User $user): PluginExecutionContext
     return new PluginExecutionContext($plugin, $run, 'manual', false, null, $user, []);
 }
 
-function completeMutationLockGeneration(Epg $epg, string $title): string
+/** Write the canonical cache file set holding a single programme. */
+function mutationLockCache(Epg $epg, string $title): void
 {
-    $resolver = app(EpgCacheGenerationResolver::class);
-    $directory = $resolver->createGenerationDirectory($epg);
+    $directory = "epg-cache/{$epg->uuid}/v2";
+    Storage::disk('local')->put("{$directory}/metadata.json", json_encode(['cache_created' => time(), 'cache_version' => 'v2'], JSON_THROW_ON_ERROR));
+    Storage::disk('local')->put("{$directory}/channels.json", '{}');
+
     $store = new EpgProgrammeStore;
     $store->beginWrite(Storage::disk('local')->path("{$directory}/programmes.sqlite"));
     $store->insert('channel.one', '2026-09-16', Carbon::parse('2026-09-16T01:00:00.000000Z')->getTimestamp(), null, [
@@ -73,19 +76,31 @@ function completeMutationLockGeneration(Epg $epg, string $title): string
         'title' => $title,
     ]);
     $store->finish();
-    Storage::disk('local')->put("{$directory}/metadata.json", json_encode(['cache_version' => 'v2'], JSON_THROW_ON_ERROR));
-    Storage::disk('local')->put("{$directory}/channels.json", '{}');
-    $resolver->publish($epg, $directory);
+}
 
-    return $directory;
+function mutationLockTitle(Epg $epg): ?string
+{
+    $store = EpgProgrammeStore::openRead(Storage::disk('local')->path("epg-cache/{$epg->uuid}/v2/programmes.sqlite"));
+    try {
+        $rows = $store->readRowsByIds([1]);
+    } finally {
+        $store->close();
+    }
+
+    $row = $rows[1] ?? null;
+    if ($row === null) {
+        return null;
+    }
+
+    return EpgProgrammeStore::hydrate(json_decode($row['data'], true) ?: [], $row['channel_id'], $row['start_ts'], $row['stop_ts'])['title'];
 }
 
 it('validates the request patch before entering the shared mutation lock', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();
-    completeMutationLockGeneration($epg, 'Original');
-    $resolver = app(EpgCacheGenerationResolver::class);
-    $service = new class($resolver) extends EpgCacheEnrichmentService
+    mutationLockCache($epg, 'Original');
+    $storage = app(EpgCacheStorage::class);
+    $service = new class($storage) extends EpgCacheEnrichmentService
     {
         public bool $insideMutationLock = false;
 
@@ -102,7 +117,7 @@ it('validates the request patch before entering the shared mutation lock', funct
     $context = mutationLockContext($user);
     $snapshot = $service->snapshot($context, $epg, []);
     $lock = Mockery::mock();
-    Cache::shouldReceive('lock')->once()->with($resolver->mutationLockName($epg), 30)->andReturn($lock);
+    Cache::shouldReceive('lock')->once()->with('epg-cache-mutation:'.$epg->uuid, 30)->andReturn($lock);
     $lock->shouldReceive('block')->once()->with(10, Mockery::type(Closure::class))->andReturnUsing(function (int $seconds, Closure $callback) use ($service): array {
         $service->insideMutationLock = true;
 
@@ -118,28 +133,27 @@ it('validates the request patch before entering the shared mutation lock', funct
         'row_revision' => $snapshot['programmes'][0]['row_revision'],
         'changes' => ['title' => 'Updated'],
     ]])['status'])->toBe('applied')
-        ->and($service->validationLockStates)->toBe([false]);
+        ->and($service->validationLockStates)->toBe([false])
+        ->and(mutationLockTitle($epg))->toBe('Updated');
 });
 
-it('cleans a staged generation and preserves playlist outputs after a lock conflict', function (): void {
+it('keeps the concurrent rebuild, preserves playlist outputs, and leaves no staging litter when a rebuild lands under the lock', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();
     $playlist = Playlist::factory()->for($user)->create();
     $epgChannel = EpgChannel::factory()->for($user)->for($epg)->create();
     Channel::factory()->for($user)->for($playlist)->create(['epg_channel_id' => $epgChannel->id]);
-    $source = completeMutationLockGeneration($epg, 'Original');
-    $replacement = completeMutationLockGeneration($epg, 'Concurrent update');
-    $resolver = app(EpgCacheGenerationResolver::class);
-    $resolver->publish($epg, $source);
+    mutationLockCache($epg, 'Original');
     Storage::disk('local')->put(EpgCacheService::getPlaylistEpgCachePath($playlist), '<tv/>');
     Storage::disk('local')->put(EpgCacheService::getPlaylistEpgCachePath($playlist, true), 'gzip');
     $service = app(EpgCacheEnrichmentService::class);
     $context = mutationLockContext($user);
     $snapshot = $service->snapshot($context, $epg, []);
     $lock = Mockery::mock();
-    Cache::shouldReceive('lock')->once()->with($resolver->mutationLockName($epg), 30)->andReturn($lock);
-    $lock->shouldReceive('block')->once()->with(10, Mockery::type(Closure::class))->andReturnUsing(function (int $seconds, Closure $callback) use ($epg, $replacement, $resolver): array {
-        $resolver->publishWithinMutationLock($epg, $replacement);
+    Cache::shouldReceive('lock')->once()->with('epg-cache-mutation:'.$epg->uuid, 30)->andReturn($lock);
+    $lock->shouldReceive('block')->once()->with(10, Mockery::type(Closure::class))->andReturnUsing(function (int $seconds, Closure $callback) use ($epg): array {
+        // A scheduled rebuild replaced the canonical cache while this patch waited.
+        mutationLockCache($epg, 'Concurrent update');
 
         return $callback();
     });
@@ -149,8 +163,8 @@ it('cleans a staged generation and preserves playlist outputs after a lock confl
         'row_revision' => $snapshot['programmes'][0]['row_revision'],
         'changes' => ['title' => 'Plugin update'],
     ]])['status'])->toBe('stale_snapshot')
-        ->and($resolver->resolve($epg))->toBe($replacement)
-        ->and(Storage::disk('local')->directories("epg-cache/{$epg->uuid}/v2/generations"))->toHaveCount(2)
+        ->and(mutationLockTitle($epg))->toBe('Concurrent update')
         ->and(Storage::disk('local')->exists(EpgCacheService::getPlaylistEpgCachePath($playlist)))->toBeTrue()
-        ->and(Storage::disk('local')->exists(EpgCacheService::getPlaylistEpgCachePath($playlist, true)))->toBeTrue();
+        ->and(Storage::disk('local')->exists(EpgCacheService::getPlaylistEpgCachePath($playlist, true)))->toBeTrue()
+        ->and(collect(Storage::disk('local')->allFiles("epg-cache/{$epg->uuid}"))->filter(fn (string $file): bool => str_contains($file, '.building'))->all())->toBe([]);
 });
