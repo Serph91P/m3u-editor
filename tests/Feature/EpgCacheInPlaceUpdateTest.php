@@ -384,6 +384,36 @@ it('reports a transient error rather than an invalid patch when the row pre-chec
     }
 });
 
+it('reports a transient error instead of throwing when the canonical store is locked during a snapshot', function (): void {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    writeInPlaceCache($epg, ['Original']);
+
+    $service = new class(app(EpgCacheStorage::class)) extends EpgCacheEnrichmentService
+    {
+        protected function openReader(Epg $epg): ?EpgProgrammeStore
+        {
+            return EpgProgrammeStore::openRead(inPlaceProgrammesPath($epg), 50);
+        }
+    };
+    $context = inPlaceContext($user);
+
+    $blocker = new PDO('sqlite:'.inPlaceProgrammesPath($epg));
+    $blocker->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $blocker->exec('BEGIN EXCLUSIVE');
+
+    try {
+        // Contention is reported like apply() reports it: as a retryable status,
+        // never as an uncaught exception the plugin would read as a host failure.
+        expect($service->snapshot($context, $epg, [])['status'])->toBe('transient_error');
+    } finally {
+        $blocker->exec('ROLLBACK');
+        $blocker = null;
+    }
+
+    expect($service->snapshot($context, $epg, [])['status'])->toBe('ok');
+});
+
 it('surfaces a failed update instead of reporting the patch as applied', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();

@@ -65,8 +65,11 @@ class EpgCacheEnrichmentService
      * Read one bounded page of the canonical cache, pinned to its current cache
      * revision. Nothing is copied: the snapshot is a read of the one store.
      *
+     * A cache locked by another writer is reported as `transient_error`, not
+     * thrown: the read is retryable and says nothing about the plugin's request.
+     *
      * @param  array{limit?: int, cursor?: string}  $selection
-     * @return array<string, mixed>
+     * @return array<string, mixed> status is ok, transient_error or one of the denial/selection statuses
      */
     public function snapshot(PluginExecutionContext $context, Epg $epg, array $selection = []): array
     {
@@ -92,6 +95,11 @@ class EpgCacheEnrichmentService
         try {
             $revision = $store->readCacheRevision();
             $rows = array_map($this->hydrateRawRow(...), $store->readPage($window['after'], $window['limit'] + 1));
+        } catch (EpgCacheBusyException) {
+            // The read lost a race with another writer: retryable contention,
+            // reported the same way apply() reports it rather than as an
+            // uncaught throw the plugin would read as a host failure.
+            return ['status' => 'transient_error'];
         } finally {
             $store->close();
         }
