@@ -46,6 +46,7 @@ use App\Services\EmbyPublicationCatalogService;
 use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
+use App\Services\TmdbService;
 use App\Services\VodFileNameService;
 use App\Services\XtreamCategoryService;
 use App\Settings\GeneralSettings;
@@ -1967,6 +1968,44 @@ class XtreamApiController extends Controller
                 'info' => $defaultInfo,
                 'movie_data' => $defaultMovieData,
             ]));
+        } elseif ($action === 'get_actor_filmography') {
+            $personId = $request->input('person_id');
+            $name = trim((string) $request->input('name', ''));
+
+            if ((! $personId || ! is_numeric($personId)) && $name === '') {
+                return response()->json(['error' => 'person_id or name parameter is required for get_actor_filmography action'], 400);
+            }
+
+            $service = app(TmdbService::class);
+            $personId = $personId && is_numeric($personId) ? (int) $personId : 0;
+
+            if ($personId <= 0) {
+                $personId = (int) ($service->searchPersonIdByName($name) ?? 0);
+            }
+
+            if ($personId <= 0) {
+                return response()->json(['error' => 'Actor not found'], 404);
+            }
+
+            $person = $service->getPersonDetails($personId);
+
+            if (! $person) {
+                return response()->json(['error' => 'Actor not found'], 404);
+            }
+
+            if ($playlist->enable_logo_proxy && ! empty($person['photo'])) {
+                $person['photo'] = $this->proxyImageUrl($person['photo'], self::photoProxyWidth());
+            }
+
+            $credits = $this->resolveFilmographyLibraryMeta(
+                $service->getPersonCombinedCredits($personId),
+                $playlist
+            );
+
+            return response()->json([
+                'person' => $person,
+                'credits' => $credits,
+            ]);
         } elseif ($action === 'get_short_epg') {
             // Handle network playlists - return EPG from network schedule
             if ($isNetworkPlaylist) {
@@ -3961,6 +4000,71 @@ class XtreamApiController extends Controller
         }
 
         return $related;
+    }
+
+    /**
+     * Annotate an actor's TMDB combined credits with whether each one exists
+     * as a Series/VOD channel in the given playlist's library, and that local
+     * record's id, so the client can deep-link straight to it. Mirrors
+     * resolveRelatedLibraryItems()'s batched whereIn lookup - the credit list
+     * is small and bounded (TMDB's own response), so this stays cheap without
+     * needing a cursor over the whole library.
+     *
+     * @param  array<int, array<string, mixed>>  $credits
+     * @param  Playlist|MergedPlaylist  $playlist  Untyped to match resolveRelatedLibraryItems() -
+     *                                             authenticate() can hand back either, and both expose compatible
+     *                                             series()/channels() relations.
+     * @return array<int, array<string, mixed>>
+     */
+    private function resolveFilmographyLibraryMeta(array $credits, $playlist): array
+    {
+        $movieTmdbIds = [];
+        $seriesTmdbIds = [];
+
+        foreach ($credits as $credit) {
+            $tmdbId = (int) ($credit['tmdb_id'] ?? 0);
+            if (! $tmdbId) {
+                continue;
+            }
+
+            if (($credit['media_type'] ?? null) === 'tv') {
+                $seriesTmdbIds[$tmdbId] = true;
+            } else {
+                $movieTmdbIds[$tmdbId] = true;
+            }
+        }
+
+        $channelIdsByTmdbId = collect();
+        if (! empty($movieTmdbIds)) {
+            $channelIdsByTmdbId = PlaylistGenerateController::getChannelQuery($playlist, isVod: true)
+                ->whereIn('channels.tmdb_id', array_keys($movieTmdbIds))
+                ->get(['id', 'tmdb_id'])
+                ->keyBy('tmdb_id');
+        }
+
+        $seriesIdsByTmdbId = collect();
+        if (! empty($seriesTmdbIds)) {
+            $seriesIdsByTmdbId = $playlist->series()
+                ->where('enabled', true)
+                ->whereIn('series.tmdb_id', array_keys($seriesTmdbIds))
+                ->get(['id', 'tmdb_id'])
+                ->keyBy('tmdb_id');
+        }
+
+        return array_map(function (array $credit) use ($channelIdsByTmdbId, $seriesIdsByTmdbId, $playlist): array {
+            $tmdbId = (int) ($credit['tmdb_id'] ?? 0);
+            $isSeries = ($credit['media_type'] ?? null) === 'tv';
+            $match = $tmdbId ? ($isSeries ? $seriesIdsByTmdbId->get($tmdbId) : $channelIdsByTmdbId->get($tmdbId)) : null;
+
+            if ($playlist->enable_logo_proxy && ! empty($credit['poster_url'])) {
+                $credit['poster_url'] = $this->proxyImageUrl($credit['poster_url'], self::posterProxyWidth());
+            }
+
+            $credit['in_library'] = (bool) $match;
+            $credit['local_id'] = $match ? (int) $match->id : null;
+
+            return $credit;
+        }, $credits);
     }
 
     /**
