@@ -286,6 +286,46 @@ it('reports a transient error instead of an invalid patch when the cache file is
         ->and(inPlaceTitles($epg))->toBe([1 => 'Updated']);
 });
 
+it('reports a transient error instead of a legacy read-only cache when the store is locked during the revision pre-check', function (): void {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    writeInPlaceCache($epg, ['Original']);
+
+    // Short SQLite busy timeout: a contended read must fail fast instead of
+    // waiting it out (same reason the write path is opened with a short one).
+    $service = new class(app(EpgCacheStorage::class)) extends EpgCacheEnrichmentService
+    {
+        protected function openReader(Epg $epg): ?EpgProgrammeStore
+        {
+            return EpgProgrammeStore::openRead(inPlaceProgrammesPath($epg), 50);
+        }
+    };
+    $context = inPlaceContext($user);
+    $snapshot = $service->snapshot($context, $epg, []);
+
+    // The revision pre-check runs outside the mutation lock, so another writer
+    // can hold SQLite's exclusive lock while the plugin's batch is validated.
+    $blocker = new PDO('sqlite:'.inPlaceProgrammesPath($epg));
+    $blocker->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $blocker->exec('BEGIN EXCLUSIVE');
+
+    try {
+        // An empty batch keeps the pre-check on the revision read alone, so the
+        // lock can only be reported as contention - never as a legacy cache.
+        expect($service->apply($context, $epg, $snapshot['token'], [])['status'])->toBe('transient_error');
+    } finally {
+        $blocker->exec('ROLLBACK');
+        $blocker = null;
+    }
+
+    expect($service->apply($context, $epg, $snapshot['token'], [[
+        'locator' => $snapshot['programmes'][0]['locator'],
+        'row_revision' => $snapshot['programmes'][0]['row_revision'],
+        'changes' => ['title' => 'Updated'],
+    ]])['status'])->toBe('applied')
+        ->and(inPlaceTitles($epg))->toBe([1 => 'Updated']);
+});
+
 it('surfaces a failed update instead of reporting the patch as applied', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();

@@ -143,7 +143,13 @@ class EpgCacheEnrichmentService
             return ['status' => 'legacy_cache_read_only'];
         }
 
-        $prevalidated = $this->prevalidateChanges($epg, $snapshot, $patches);
+        try {
+            $prevalidated = $this->prevalidateChanges($epg, $snapshot, $patches);
+        } catch (EpgCacheBusyException) {
+            // The pre-check read lost a race with another writer: retryable, and
+            // nothing to blame on the plugin's batch.
+            return ['status' => 'transient_error'];
+        }
         if ($prevalidated['status'] !== 'ok') {
             return ['status' => $prevalidated['status']];
         }
@@ -284,8 +290,11 @@ class EpgCacheEnrichmentService
     /**
      * Open the single canonical programme store for reading, or null when the
      * canonical cache holds no SQLite store yet (legacy JSONL layout).
+     *
+     * Visibility is protected (not private) so tests can shorten the SQLite
+     * busy timeout instead of waiting it out, as {@see openWriter()} does.
      */
-    private function openReader(Epg $epg): ?EpgProgrammeStore
+    protected function openReader(Epg $epg): ?EpgProgrammeStore
     {
         $path = $this->programmesPath($epg);
         if (! Storage::disk('local')->exists($this->storage->path($epg, EpgCacheStorage::PROGRAMMES_DB_FILE))) {

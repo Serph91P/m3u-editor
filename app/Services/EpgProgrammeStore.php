@@ -255,13 +255,22 @@ class EpgProgrammeStore
     /**
      * Open an existing store for reading. Caller is responsible for checking the
      * file exists first and for {@see close()}ing when done.
+     *
+     * `$busyTimeoutMs` overrides SQLite's default (60s) busy timeout. Exposure
+     * is for tests, so a contended read can be exercised without waiting the
+     * default out; leaving it null keeps the driver default.
      */
-    public static function openRead(string $sqlitePath): self
+    public static function openRead(string $sqlitePath, ?int $busyTimeoutMs = null): self
     {
         $store = new self;
         $store->path = $sqlitePath;
         $store->pdo = new PDO('sqlite:'.$sqlitePath);
         $store->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        if ($busyTimeoutMs !== null) {
+            // Explicit int cast: the timeout is concatenated into a PRAGMA
+            // statement, which SQLite cannot parameterize.
+            $store->pdo->exec('PRAGMA busy_timeout='.(int) $busyTimeoutMs);
+        }
 
         return $store;
     }
@@ -384,6 +393,10 @@ class EpgProgrammeStore
     /**
      * The cache revision this store publishes, or null for a store written
      * before revisions existed - a legacy cache that stays read-only.
+     *
+     * A read that failed because another writer holds SQLite's lock is not a
+     * cache format: it surfaces as {@see EpgCacheBusyException} so the caller
+     * can report retryable contention instead of a legacy read-only cache.
      */
     public function readCacheRevision(): ?string
     {
@@ -391,7 +404,11 @@ class EpgProgrammeStore
             $statement = $this->pdo->prepare('SELECT value FROM '.self::CACHE_STATE_TABLE.' WHERE key = ?');
             $statement->execute([self::REVISION_KEY]);
             $value = $statement->fetchColumn();
-        } catch (PDOException) {
+        } catch (PDOException $e) {
+            if ($busy = EpgCacheBusyException::forSqlite($e)) {
+                throw $busy;
+            }
+
             return null;
         }
 
