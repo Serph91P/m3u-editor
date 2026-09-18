@@ -5,6 +5,7 @@ use App\Models\Plugin;
 use App\Models\PluginRun;
 use App\Models\User;
 use App\Plugins\Support\PluginExecutionContext;
+use App\Services\EpgCacheBusyException;
 use App\Services\EpgCacheEnrichmentService;
 use App\Services\EpgCacheStorage;
 use App\Services\EpgProgrammeStore;
@@ -324,6 +325,63 @@ it('reports a transient error instead of a legacy read-only cache when the store
         'changes' => ['title' => 'Updated'],
     ]])['status'])->toBe('applied')
         ->and(inPlaceTitles($epg))->toBe([1 => 'Updated']);
+});
+
+it('reports a locked store as contention when reading rows by rowid', function (): void {
+    $epg = Epg::factory()->for(User::factory())->create();
+    writeInPlaceCache($epg, ['Original']);
+
+    // A short busy timeout, so the contended read fails fast instead of waiting
+    // the driver default out.
+    $store = EpgProgrammeStore::openRead(inPlaceProgrammesPath($epg), 50);
+
+    $blocker = new PDO('sqlite:'.inPlaceProgrammesPath($epg));
+    $blocker->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $blocker->exec('BEGIN EXCLUSIVE');
+
+    try {
+        expect(fn () => $store->readRowsByIds([1]))->toThrow(EpgCacheBusyException::class);
+    } finally {
+        $store->close();
+        $blocker->exec('ROLLBACK');
+        $blocker = null;
+    }
+});
+
+it('reports a transient error rather than an invalid patch when the row pre-check read is locked', function (): void {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->for($user)->create();
+    writeInPlaceCache($epg, ['Original']);
+
+    $service = new class(app(EpgCacheStorage::class)) extends EpgCacheEnrichmentService
+    {
+        protected function openReader(Epg $epg): ?EpgProgrammeStore
+        {
+            return EpgProgrammeStore::openRead(inPlaceProgrammesPath($epg), 50);
+        }
+    };
+    $context = inPlaceContext($user);
+    $snapshot = $service->snapshot($context, $epg, []);
+
+    $blocker = new PDO('sqlite:'.inPlaceProgrammesPath($epg));
+    $blocker->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $blocker->exec('BEGIN EXCLUSIVE');
+
+    try {
+        $status = $service->apply($context, $epg, $snapshot['token'], [[
+            'locator' => $snapshot['programmes'][0]['locator'],
+            'row_revision' => $snapshot['programmes'][0]['row_revision'],
+            'changes' => ['title' => 'Updated'],
+        ]])['status'];
+
+        // A read that lost the race for the lock is retryable contention, not a
+        // verdict on the plugin's batch and not a cache-format verdict either.
+        expect($status)->toBe('transient_error')
+            ->and($status)->not->toBeIn(['invalid_patch', 'legacy_cache_read_only']);
+    } finally {
+        $blocker->exec('ROLLBACK');
+        $blocker = null;
+    }
 });
 
 it('surfaces a failed update instead of reporting the patch as applied', function (): void {

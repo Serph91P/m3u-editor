@@ -374,8 +374,15 @@ class EpgProgrammeStore
      * Fetch specific rows by rowid in a single query, so a caller re-verifying
      * a batch of patch locators does not open one connection/query per row.
      *
+     * A read that failed because another writer holds SQLite's lock is not a
+     * missing row: it surfaces as {@see EpgCacheBusyException} so the caller can
+     * report retryable contention - the same distinction
+     * {@see readCacheRevision()} makes for the revision pre-check.
+     *
      * @param  list<int>  $rowids
      * @return array<int, array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}> keyed by rowid
+     *
+     * @throws EpgCacheBusyException when another connection holds the lock
      */
     public function readRowsByIds(array $rowids): array
     {
@@ -384,10 +391,15 @@ class EpgProgrammeStore
         }
 
         $placeholders = implode(',', array_fill(0, count($rowids), '?'));
-        $statement = $this->pdo->prepare("SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid IN ({$placeholders})");
-        $statement->execute(array_values($rowids));
 
-        return $this->fetchRawRows($statement);
+        try {
+            $statement = $this->pdo->prepare("SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid IN ({$placeholders})");
+            $statement->execute(array_values($rowids));
+
+            return $this->fetchRawRows($statement);
+        } catch (PDOException $e) {
+            throw EpgCacheBusyException::forSqlite($e) ?? $e;
+        }
     }
 
     /**
