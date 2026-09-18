@@ -163,6 +163,42 @@ it('refuses to publish an incomplete rebuild and leaves the canonical cache unto
     expect(epgCacheFiles($epg))->toBe(canonicalEpgCacheFiles($epg));
 });
 
+it('refuses to publish a rebuild whose staged file is not a JSON object', function (string $brokenFile, string $contents): void {
+    $epg = Epg::factory()->for(User::factory())->create();
+    $directory = writeCanonicalEpgCache($epg, 'Original');
+    $storage = app(EpgCacheStorage::class);
+
+    $staged = [];
+    foreach ([EpgCacheStorage::PROGRAMMES_DB_FILE, EpgCacheStorage::CHANNELS_FILE, EpgCacheStorage::METADATA_FILE] as $file) {
+        $staged[$file] = $storage->stagedPath($directory, $file);
+    }
+
+    $store = new EpgProgrammeStore;
+    $store->beginWrite(Storage::disk('local')->path($staged[EpgCacheStorage::PROGRAMMES_DB_FILE]));
+    $store->insert('channel.one', now()->format('Y-m-d'), now()->getTimestamp(), null, [
+        ...EpgProgrammeStore::EMPTY_PROGRAMME,
+        'channel' => 'channel.one',
+        'start' => now()->toISOString(),
+        'title' => 'Replacement',
+    ]);
+    $store->finish();
+
+    Storage::disk('local')->put($staged[EpgCacheStorage::CHANNELS_FILE], '{"channel.one":{"display_name":"Replacement"}}');
+    Storage::disk('local')->put($staged[EpgCacheStorage::METADATA_FILE], json_encode(['cache_created' => time(), 'cache_version' => 'v2'], JSON_THROW_ON_ERROR));
+    Storage::disk('local')->put($staged[$brokenFile], $contents);
+
+    expect(fn () => $storage->publishRebuild($epg, $staged))->toThrow(RuntimeException::class);
+
+    expect(storedProgrammeTitle($epg))->toBe('Original');
+
+    $storage->discardStaged($staged);
+
+    expect(epgCacheFiles($epg))->toBe(canonicalEpgCacheFiles($epg));
+})->with([
+    'a truncated metadata file' => [EpgCacheStorage::METADATA_FILE, '{"cache_created": 1'],
+    'a channels file that is no object' => [EpgCacheStorage::CHANNELS_FILE, 'null'],
+]);
+
 it('publishes a rebuild under the per-EPG mutation lock so readers never see a half-swapped cache', function () {
     $epg = Epg::factory()->for(User::factory())->create();
     $directory = writeCanonicalEpgCache($epg, 'Original');

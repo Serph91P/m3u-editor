@@ -117,10 +117,11 @@ class EpgCacheStorage
 
     /**
      * Atomically swap a completed rebuild into the canonical cache. Every staged
-     * file must exist and the staged programme store must be structurally sound
-     * before the first rename, and the renames run under the per-EPG mutation
-     * lock so a concurrent enrichment commit can never target a file that is
-     * being replaced.
+     * file must exist, `metadata.json` and `channels.json` must hold JSON
+     * objects, and the staged programme store must be structurally sound before
+     * the first rename, and the renames run under the per-EPG mutation lock so a
+     * concurrent enrichment commit can never target a file that is being
+     * replaced.
      *
      * @param  array<string, string>  $staged  canonical filename => staged path
      *
@@ -132,6 +133,12 @@ class EpgCacheStorage
         foreach (self::PUBLISH_ORDER as $file) {
             if (! isset($staged[$file]) || ! is_string($staged[$file]) || ! $disk->exists($staged[$file])) {
                 throw new RuntimeException("Cannot publish an incomplete EPG cache rebuild: {$file} is missing.");
+            }
+        }
+
+        foreach ([self::CHANNELS_FILE, self::METADATA_FILE] as $file) {
+            if (! $this->isJsonObjectOrArray($disk->get($staged[$file]))) {
+                throw new RuntimeException("Cannot publish an EPG cache rebuild: {$file} does not hold a JSON object.");
             }
         }
 
@@ -158,6 +165,25 @@ class EpgCacheStorage
                 }
             }
         });
+    }
+
+    /**
+     * Whether `$contents` decodes to a JSON object or array - the only shape the
+     * `metadata.json` and `channels.json` of a cache are ever allowed to have.
+     * A truncated or scalar payload would otherwise be published and served to
+     * readers as if the rebuild had succeeded.
+     */
+    private function isJsonObjectOrArray(?string $contents): bool
+    {
+        if ($contents === null) {
+            return false;
+        }
+
+        try {
+            return is_array(json_decode($contents, true, flags: JSON_THROW_ON_ERROR));
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**
