@@ -348,6 +348,30 @@ it('reports a locked store as contention when reading rows by rowid', function (
     }
 });
 
+it('reports a locked store as contention when reading a page by rowid', function (): void {
+    $epg = Epg::factory()->for(User::factory())->create();
+    writeInPlaceCache($epg, ['Original']);
+
+    // A short busy timeout, so the contended read fails fast instead of waiting
+    // the driver default out.
+    $store = EpgProgrammeStore::openRead(inPlaceProgrammesPath($epg), 50);
+
+    $blocker = new PDO('sqlite:'.inPlaceProgrammesPath($epg));
+    $blocker->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $blocker->exec('BEGIN EXCLUSIVE');
+
+    try {
+        // A paged read that lost the race for the lock is contention, not a
+        // verdict on the store: it must be reported as retryable like the
+        // revision and by-rowid reads are.
+        expect(fn () => $store->readPage(0, 10))->toThrow(EpgCacheBusyException::class);
+    } finally {
+        $store->close();
+        $blocker->exec('ROLLBACK');
+        $blocker = null;
+    }
+});
+
 it('reports a transient error rather than an invalid patch when the row pre-check read is locked', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();

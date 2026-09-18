@@ -360,14 +360,25 @@ class EpgProgrammeStore
      * Used by the plugin enrichment API, which addresses programmes by opaque
      * rowid locator rather than by date/channel.
      *
+     * A read that failed because another writer holds SQLite's lock is not an
+     * empty page: it surfaces as {@see EpgCacheBusyException} so the caller can
+     * report retryable contention - the same distinction
+     * {@see readRowsByIds()} and {@see readCacheRevision()} make.
+     *
      * @return list<array{rowid: int, channel_id: string, start_ts: int, stop_ts: ?int, data: string}>
+     *
+     * @throws EpgCacheBusyException when another connection holds the lock
      */
     public function readPage(int $afterRowid, int $limit): array
     {
-        $statement = $this->pdo->prepare('SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid > ? ORDER BY rowid LIMIT ?');
-        $statement->execute([$afterRowid, $limit]);
+        try {
+            $statement = $this->pdo->prepare('SELECT rowid, channel_id, start_ts, stop_ts, data FROM programmes WHERE rowid > ? ORDER BY rowid LIMIT ?');
+            $statement->execute([$afterRowid, $limit]);
 
-        return array_values($this->fetchRawRows($statement));
+            return array_values($this->fetchRawRows($statement));
+        } catch (PDOException $e) {
+            throw EpgCacheBusyException::forSqlite($e) ?? $e;
+        }
     }
 
     /**
