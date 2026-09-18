@@ -280,7 +280,9 @@ class EpgProgrammeStore
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         // Rollback journal, not WAL: one canonical file, no -wal/-shm sidecars.
         $this->pdo->exec('PRAGMA journal_mode=DELETE');
-        $this->pdo->exec('PRAGMA busy_timeout='.$busyTimeoutMs);
+        // Explicit int cast: the timeout is concatenated into a PRAGMA
+        // statement, which SQLite cannot parameterize.
+        $this->pdo->exec('PRAGMA busy_timeout='.(int) $busyTimeoutMs);
     }
 
     public function close(): void
