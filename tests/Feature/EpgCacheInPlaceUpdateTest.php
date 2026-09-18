@@ -372,7 +372,7 @@ it('reports a locked store as contention when reading a page by rowid', function
     }
 });
 
-it('reports a transient error rather than an invalid patch when the row pre-check read is locked', function (): void {
+it('reports a transient error rather than an invalid patch when the store is locked during the pre-check of a non-empty batch', function (): void {
     $user = User::factory()->create();
     $epg = Epg::factory()->for($user)->create();
     writeInPlaceCache($epg, ['Original']);
