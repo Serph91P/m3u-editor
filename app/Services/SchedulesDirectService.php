@@ -676,6 +676,10 @@ class SchedulesDirectService
      */
     public function removeLineupFromEpg(Epg $epg, string $lineupId): void
     {
+        if (in_array($lineupId, $epg->configuredSchedulesDirectLineupIds(), true)) {
+            throw new Exception(__('Remove this lineup from the EPG selection before removing it from the SchedulesDirect account.'));
+        }
+
         if (! $epg->hasValidSchedulesDirectToken()) {
             $this->authenticateFromEpg($epg);
             $epg->refresh();
@@ -719,6 +723,60 @@ class SchedulesDirectService
     }
 
     /**
+     * Persist an EPG's selected lineups only after confirming that each selection
+     * belongs to the provider account and fits its current selection limit.
+     *
+     * @param  array<int, string>  $lineupIds
+     */
+    public function saveEpgLineupSelection(Epg $epg, array $lineupIds): void
+    {
+        if (! $epg->hasValidSchedulesDirectToken()) {
+            $this->authenticateFromEpg($epg);
+            $epg->refresh();
+        }
+
+        $lineupIds = $this->validateEpgLineupSelection($epg->sd_token, $lineupIds);
+
+        $epg->sd_lineup_ids = $lineupIds;
+        $epg->synchronizeSchedulesDirectLineupIds();
+        $epg->save();
+    }
+
+    /**
+     * Normalize an EPG selection and verify that it is entirely subscribed on
+     * the provider account before it is persisted.
+     *
+     * @param  array<int, mixed>  $lineupIds
+     * @return array<int, string>
+     */
+    public function validateEpgLineupSelection(string $token, array $lineupIds): array
+    {
+        $lineupIds = collect($lineupIds)
+            ->filter(fn (mixed $lineupId): bool => is_string($lineupId) && filled(trim($lineupId)))
+            ->map(fn (string $lineupId): string => trim($lineupId))
+            ->unique()
+            ->values()
+            ->all();
+        $maxLineups = $this->getAccountMaxLineups($token);
+
+        if (count($lineupIds) > $maxLineups) {
+            throw new Exception(__('Select at most :max SchedulesDirect lineups for this EPG.', ['max' => $maxLineups]));
+        }
+
+        $accountLineupIds = collect($this->getAccountLineups($token)['lineups'] ?? [])
+            ->pluck('lineup')
+            ->filter()
+            ->all();
+        $missingLineups = array_values(array_diff($lineupIds, $accountLineupIds));
+
+        if ($missingLineups !== []) {
+            throw new Exception(__('Select only lineups already added to this SchedulesDirect account.'));
+        }
+
+        return $lineupIds;
+    }
+
+    /**
      * Remove the lineup that is currently configured on the EPG from the SD account.
      * No-op if no lineup is configured.
      */
@@ -736,7 +794,7 @@ class SchedulesDirectService
      */
     public function getLineup(string $token, string $lineupId): array
     {
-        $response = $this->makeRequest('GET', "/lineups/{$lineupId}", [], $token);
+        $response = $this->makeRequest('GET', '/lineups/'.rawurlencode($lineupId), [], $token);
 
         return $response->json();
     }
@@ -1183,27 +1241,38 @@ class SchedulesDirectService
                 'sd_progress' => 0,
             ]);
 
-            // Check if lineup is already in account; add it if not
-            try {
-                $lineupData = $this->getLineup($epg->sd_token, $epg->sd_lineup_id);
-            } catch (Exception $e) {
-                // 4003/4004 = lineup not found/not subscribed
-                if ($e->getCode() === self::LINEUP_NOT_IN_ACCOUNT_CODE
-                    || str_contains($e->getMessage(), 'not in account')
-                    || str_contains($e->getMessage(), 'not subscribed')
-                ) {
-                    Log::debug("Adding lineup {$epg->sd_lineup_id} to SchedulesDirect account", ['epg_id' => $epg->id]);
-                    $this->addLineup($epg->sd_token, $epg->sd_lineup_id);
-                    $lineupData = $this->getLineup($epg->sd_token, $epg->sd_lineup_id);
-                } else {
-                    throw $e;
+            // Resolve every explicitly selected lineup before replacing any local
+            // XMLTV output. A failed lineup leaves the prior document intact.
+            $lineupData = [
+                'map' => [],
+                'stations' => [],
+            ];
+            $stationIds = [];
+            $knownStationIds = [];
+
+            foreach ($epg->configuredSchedulesDirectLineupIds() as $lineupId) {
+                $selectedLineup = $this->getLineup($epg->sd_token, $lineupId);
+                $stationsById = collect($selectedLineup['stations'] ?? [])
+                    ->keyBy('stationID');
+
+                foreach ($selectedLineup['map'] ?? [] as $mapping) {
+                    $stationId = $mapping['stationID'] ?? null;
+                    if (! $stationId || isset($knownStationIds[$stationId])) {
+                        continue;
+                    }
+
+                    $knownStationIds[$stationId] = true;
+                    $stationIds[] = $stationId;
+                    $lineupData['map'][] = $mapping;
+
+                    if ($station = $stationsById->get($stationId)) {
+                        $lineupData['stations'][] = $station;
+                    }
                 }
             }
 
-            // Refresh station IDs from the current lineup on every sync so stations
-            // Schedules Direct removes/remaps server-side don't linger and get
-            // requested after they're no longer valid (causes SD to block the app).
-            $stationIds = array_column($lineupData['map'], 'stationID');
+            // Refresh station IDs from every selected lineup on each sync so stations
+            // removed/remapped by Schedules Direct never remain in later requests.
             $epg->update(['sd_station_ids' => $stationIds]);
 
             // Use limited stations for faster processing

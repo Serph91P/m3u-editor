@@ -62,3 +62,11 @@ it('renders the SchedulesDirect lineup slot counter from a static parameterized 
         ->and(str_contains($addHelperText, '1 of 4 slots used'))->toBeFalse()
         ->and($fields['lineup_to_remove']->getHint())->toBe('Slots 1/4 used');
 });
+
+it("uses a multiple select for an EPG's selected SchedulesDirect lineups", function () {
+    $resource = file_get_contents(app_path('Filament/Resources/Epgs/EpgResource.php'));
+
+    expect($resource)->toContain("Select::make('sd_lineup_ids')")
+        ->toContain('->multiple()')
+        ->not->toContain("Select::make('sd_lineup_id')");
+});
