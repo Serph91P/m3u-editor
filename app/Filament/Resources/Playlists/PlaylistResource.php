@@ -70,6 +70,7 @@ use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\Component;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\ModalTableSelect;
 use Filament\Forms\Components\Repeater;
@@ -1950,133 +1951,7 @@ class PlaylistResource extends Resource implements CopilotResource
                     Repeater::make('dynamic_groups_config')
                         ->label(__('Dynamic Groups Configuration'))
                         ->columnSpanFull()
-                        ->schema([
-                            Toggle::make('enabled')
-                                ->label(__('Enabled'))
-                                ->default(true)
-                                ->inline(false)
-                                ->columnSpan(1),
-                            Select::make('type')
-                                ->label(__('Content Type'))
-                                ->options([
-                                    'vod' => __('VOD (Movies)'),
-                                    'series' => __('Series'),
-                                ])
-                                ->live()
-                                ->required()
-                                ->afterStateUpdated(function (Set $set): void {
-                                    // Reset source-dependent fields so the user
-                                    // cannot keep a provider/genre/network that
-                                    // is no longer relevant after switching
-                                    // between vod and series.
-                                    $set('source', null);
-                                    $set('tmdb_params', []);
-                                })
-                                ->columnSpan(2),
-                            Select::make('source')
-                                ->label(__('Source'))
-                                ->options(function (Get $get): array {
-                                    $type = $get('type');
-
-                                    if ($type === 'series') {
-                                        return [
-                                            'trending' => __('Trending'),
-                                            'popular' => __('Popular'),
-                                            'top_genre' => __('Top Genre'),
-                                            'tmdb_network' => __('By TV Network'),
-                                            'provider' => __('By Streaming Service'),
-                                        ];
-                                    }
-
-                                    return [
-                                        'trending' => __('Trending'),
-                                        'popular' => __('Popular'),
-                                        'now_playing' => __('In Theatres'),
-                                        'upcoming' => __('Coming Soon'),
-                                        'top_genre' => __('Top Genre'),
-                                        'provider' => __('By Streaming Service'),
-                                    ];
-                                })
-                                ->live()
-                                ->required()
-                                ->columnSpan(3),
-                            Select::make('tmdb_params.genre_id')
-                                ->label(__('Genre'))
-                                ->options(function (Get $get): array {
-                                    $tmdb = app(TmdbService::class);
-                                    if (! $tmdb->isConfigured()) {
-                                        return [];
-                                    }
-                                    $genres = $get('type') === 'series'
-                                        ? $tmdb->getTvGenres()
-                                        : $tmdb->getMovieGenres();
-
-                                    return array_column($genres, 'name', 'id');
-                                })
-                                ->required()
-                                ->visible(fn (Get $get): bool => $get('source') === 'top_genre')
-                                ->columnSpan(5),
-                            Select::make('tmdb_params.network_id')
-                                ->label(__('TV Network'))
-                                ->options(TmdbService::TV_NETWORKS)
-                                ->required()
-                                ->visible(fn (Get $get): bool => $get('source') === 'tmdb_network')
-                                ->columnSpan(5),
-                            Select::make('tmdb_params.provider_id')
-                                ->label(__('Streaming Service'))
-                                ->options(function (Get $get): array {
-                                    $tmdb = app(TmdbService::class);
-                                    if (! $tmdb->isConfigured()) {
-                                        return [];
-                                    }
-                                    $region = $get('tmdb_params.region') ?: 'US';
-                                    $mediaType = $get('type') === 'series' ? 'tv' : 'movie';
-                                    $providers = $tmdb->getWatchProviders($mediaType, $region);
-
-                                    return array_column($providers, 'name', 'id');
-                                })
-                                ->required()
-                                ->live()
-                                ->visible(fn (Get $get): bool => $get('source') === 'provider')
-                                ->columnSpan(4),
-                            TextInput::make('tmdb_params.region')
-                                ->label(__('Region'))
-                                ->placeholder('US')
-                                ->maxLength(2)
-                                ->live()
-                                ->visible(fn (Get $get): bool => $get('source') === 'provider')
-                                ->columnSpan(1),
-                            Select::make('tmdb_params.time_window')
-                                ->label(__('Time Window'))
-                                ->options([
-                                    'day' => __('Today'),
-                                    'week' => __('This Week'),
-                                ])
-                                ->default('week')
-                                ->visible(fn (Get $get): bool => $get('source') === 'trending')
-                                ->columnSpan(5),
-                            Select::make('tmdb_params.pages')
-                                ->label(__('Pages to Fetch'))
-                                ->hintIcon(
-                                    'heroicon-m-question-mark-circle',
-                                    tooltip: __('TMDB paginates results ~20 per page. Increase this if items you expect (e.g. a recent theatrical release) aren\'t showing up — they may simply be on a later page than the default covers. Applies to all paginated sources (Trending, Popular, Now Playing, Upcoming, Top Genre).')
-                                )
-                                ->options([
-                                    1 => '1 (~20 items)',
-                                    2 => '2 (~40 items)',
-                                    3 => '3 (~60 items, default)',
-                                    4 => '4 (~80 items)',
-                                    5 => '5 (~100 items, max)',
-                                ])
-                                ->default(3)
-                                ->native(false)
-                                ->columnSpan(3),
-                            TextInput::make('name')
-                                ->label(__('Category Name'))
-                                ->placeholder(__('e.g. Trending Now, Top Comedy, Netflix'))
-                                ->required()
-                                ->columnSpan(3),
-                        ])
+                        ->schema(self::getDynamicGroupRuleSchema())
                         ->columns(12)
                         ->reorderable()
                         ->reorderableWithButtons()
@@ -3595,6 +3470,148 @@ class PlaylistResource extends Resource implements CopilotResource
 
         // Return sections and fields
         return $sections;
+    }
+
+    /**
+     * Reusable Dynamic Groups (TMDB) rule schema - the field set used inside
+     * the `dynamic_groups_config` Repeater on the Playlist form, exposed as a
+     * static method so other surfaces (notably the VOD / Series Dynamic
+     * Groups listing pages' CreateAction) can build the same rule shape
+     * without re-declaring each field. Returns only the *rule* fields -
+     * cache_* fields intentionally live on the Playlist form only and are not
+     * ported here as part of the creation-from-listing flow.
+     *
+     * @return array<int, Component>
+     */
+    public static function getDynamicGroupRuleSchema(): array
+    {
+        return [
+            Toggle::make('enabled')
+                ->label(__('Enabled'))
+                ->default(true)
+                ->inline(false)
+                ->columnSpan(1),
+            Select::make('type')
+                ->label(__('Content Type'))
+                ->options([
+                    'vod' => __('VOD (Movies)'),
+                    'series' => __('Series'),
+                ])
+                ->live()
+                ->required()
+                ->afterStateUpdated(function (Set $set): void {
+                    // Reset source-dependent fields so the user
+                    // cannot keep a provider/genre/network that
+                    // is no longer relevant after switching
+                    // between vod and series.
+                    $set('source', null);
+                    $set('tmdb_params', []);
+                })
+                ->columnSpan(2),
+            Select::make('source')
+                ->label(__('Source'))
+                ->options(function (Get $get): array {
+                    $type = $get('type');
+
+                    if ($type === 'series') {
+                        return [
+                            'trending' => __('Trending'),
+                            'popular' => __('Popular'),
+                            'top_genre' => __('Top Genre'),
+                            'tmdb_network' => __('By TV Network'),
+                            'provider' => __('By Streaming Service'),
+                        ];
+                    }
+
+                    return [
+                        'trending' => __('Trending'),
+                        'popular' => __('Popular'),
+                        'now_playing' => __('In Theatres'),
+                        'upcoming' => __('Coming Soon'),
+                        'top_genre' => __('Top Genre'),
+                        'provider' => __('By Streaming Service'),
+                    ];
+                })
+                ->live()
+                ->required()
+                ->columnSpan(3),
+            Select::make('tmdb_params.genre_id')
+                ->label(__('Genre'))
+                ->options(function (Get $get): array {
+                    $tmdb = app(TmdbService::class);
+                    if (! $tmdb->isConfigured()) {
+                        return [];
+                    }
+                    $genres = $get('type') === 'series'
+                        ? $tmdb->getTvGenres()
+                        : $tmdb->getMovieGenres();
+
+                    return array_column($genres, 'name', 'id');
+                })
+                ->required()
+                ->visible(fn (Get $get): bool => $get('source') === 'top_genre')
+                ->columnSpan(5),
+            Select::make('tmdb_params.network_id')
+                ->label(__('TV Network'))
+                ->options(TmdbService::TV_NETWORKS)
+                ->required()
+                ->visible(fn (Get $get): bool => $get('source') === 'tmdb_network')
+                ->columnSpan(5),
+            Select::make('tmdb_params.provider_id')
+                ->label(__('Streaming Service'))
+                ->options(function (Get $get): array {
+                    $tmdb = app(TmdbService::class);
+                    if (! $tmdb->isConfigured()) {
+                        return [];
+                    }
+                    $region = $get('tmdb_params.region') ?: 'US';
+                    $mediaType = $get('type') === 'series' ? 'tv' : 'movie';
+                    $providers = $tmdb->getWatchProviders($mediaType, $region);
+
+                    return array_column($providers, 'name', 'id');
+                })
+                ->required()
+                ->live()
+                ->visible(fn (Get $get): bool => $get('source') === 'provider')
+                ->columnSpan(4),
+            TextInput::make('tmdb_params.region')
+                ->label(__('Region'))
+                ->placeholder('US')
+                ->maxLength(2)
+                ->live()
+                ->visible(fn (Get $get): bool => $get('source') === 'provider')
+                ->columnSpan(1),
+            Select::make('tmdb_params.time_window')
+                ->label(__('Time Window'))
+                ->options([
+                    'day' => __('Today'),
+                    'week' => __('This Week'),
+                ])
+                ->default('week')
+                ->visible(fn (Get $get): bool => $get('source') === 'trending')
+                ->columnSpan(5),
+            Select::make('tmdb_params.pages')
+                ->label(__('Pages to Fetch'))
+                ->hintIcon(
+                    'heroicon-m-question-mark-circle',
+                    tooltip: __('TMDB paginates results ~20 per page. Increase this if items you expect (e.g. a recent theatrical release) aren\'t showing up - they may simply be on a later page than the default covers. Applies to all paginated sources (Trending, Popular, Now Playing, Upcoming, Top Genre).')
+                )
+                ->options([
+                    1 => '1 (~20 items)',
+                    2 => '2 (~40 items)',
+                    3 => '3 (~60 items, default)',
+                    4 => '4 (~80 items)',
+                    5 => '5 (~100 items, max)',
+                ])
+                ->default(3)
+                ->native(false)
+                ->columnSpan(3),
+            TextInput::make('name')
+                ->label(__('Category Name'))
+                ->placeholder(__('e.g. Trending Now, Top Comedy, Netflix'))
+                ->required()
+                ->columnSpan(3),
+        ];
     }
 
     /**
