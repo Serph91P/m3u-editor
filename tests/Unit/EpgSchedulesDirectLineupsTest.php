@@ -53,7 +53,10 @@ it('merges stations from every configured lineup without duplicates', function (
             'map' => [['stationID' => 'TWO', 'channel' => '2'], ['stationID' => 'ONE', 'channel' => '1']],
             'stations' => [['stationID' => 'TWO', 'name' => 'Two'], ['stationID' => 'ONE', 'name' => 'One']],
         ]),
-        'json.schedulesdirect.org/20141201/schedules' => Http::response([]),
+        'json.schedulesdirect.org/20141201/schedules' => Http::response([
+            ['stationID' => 'ONE', 'programs' => []],
+            ['stationID' => 'TWO', 'programs' => []],
+        ]),
     ]);
 
     Storage::fake('local');
@@ -123,4 +126,26 @@ it('rejects more selected lineups than the account permits', function () {
         ->toThrow(Exception::class, 'Select at most 1 SchedulesDirect lineups for this EPG.');
 
     Http::assertSentCount(1);
+});
+
+it('does not remove an account lineup selected by another EPG on the same account', function () {
+    $epg = Epg::withoutEvents(fn () => Epg::factory()->create([
+        'sd_token' => 'token',
+        'sd_token_expires_at' => now()->addHour(),
+        'sd_username' => 'shared@example.com',
+    ]));
+    Epg::withoutEvents(fn () => Epg::factory()->create([
+        'user_id' => $epg->user_id,
+        'source_type' => 'schedules_direct',
+        'sd_username' => 'shared@example.com',
+        'sd_lineup_ids' => ['USA-ONE'],
+        'sd_lineup_id' => 'USA-ONE',
+    ]));
+
+    Http::fake();
+
+    expect(fn () => (new SchedulesDirectService)->removeLineupFromEpg($epg, 'USA-ONE'))
+        ->toThrow(Exception::class, 'Remove this lineup from every EPG using this SchedulesDirect account before removing it from the account.');
+
+    Http::assertNothingSent();
 });

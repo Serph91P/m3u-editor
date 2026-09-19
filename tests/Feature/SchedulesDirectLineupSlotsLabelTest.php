@@ -70,3 +70,20 @@ it("uses a multiple select for an EPG's selected SchedulesDirect lineups", funct
         ->toContain('->multiple()')
         ->not->toContain("Select::make('sd_lineup_id')");
 });
+
+it('limits the normal EPG lineup picker to account-confirmed lineups', function () {
+    $resource = file_get_contents(app_path('Filament/Resources/Epgs/EpgResource.php'));
+    $lineupField = strstr($resource, "Select::make('sd_lineup_ids')");
+    $lineupField = substr($lineupField, 0, strpos($lineupField, "TextInput::make('sd_days_to_import')"));
+
+    expect($lineupField)->toContain('$service->getUserLineups($authData[\'token\'])')
+        ->not->toContain('$service->getHeadends($authData[\'token\'], $country, $postalCode)');
+});
+
+it('does not advertise account lineup deletion from the EPG delete action', function () {
+    $resource = file_get_contents(app_path('Filament/Resources/Epgs/EpgResource.php'));
+
+    expect($resource)->not->toContain('Also delete lineup from SchedulesDirect account')
+        ->not->toContain('delete_sd_lineup')
+        ->not->toContain('removeConfiguredLineup');
+});

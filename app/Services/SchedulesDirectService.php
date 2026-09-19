@@ -187,7 +187,7 @@ class SchedulesDirectService
     /**
      * Generator to process schedules in memory-efficient chunks
      */
-    private function processScheduleChunks(string $token, array $stationIds, array $dates): Generator
+    private function processScheduleChunks(string $token, array $stationIds, array $dates, array &$scheduleChunkFailures): Generator
     {
         foreach ($this->getStationChunks($stationIds, self::STATIONS_PER_CHUNK) as $chunkIndex => $stationChunk) {
             $chunkNumber = $chunkIndex + 1;
@@ -221,7 +221,14 @@ class SchedulesDirectService
                     }
                 } catch (Exception $e) {
                     if ($retry === self::MAX_RETRIES - 1) {
-                        Log::error("Max retries exceeded for chunk {$chunkNumber}, skipping");
+                        $scheduleChunkFailures[] = [
+                            'chunk' => $chunkNumber,
+                            'code' => $e->getCode(),
+                            'message' => $e->getMessage(),
+                        ];
+                        Log::error("Max retries exceeded for schedule chunk {$chunkNumber}", [
+                            'error' => $e->getMessage(),
+                        ]);
                     }
                 }
             }
@@ -680,6 +687,16 @@ class SchedulesDirectService
             throw new Exception(__('Remove this lineup from the EPG selection before removing it from the SchedulesDirect account.'));
         }
 
+        $lineupUsedByAnotherEpg = Epg::query()
+            ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
+            ->whereKeyNot($epg->getKey())
+            ->get()
+            ->contains(fn (Epg $otherEpg): bool => in_array($lineupId, $otherEpg->configuredSchedulesDirectLineupIds(), true));
+
+        if ($lineupUsedByAnotherEpg) {
+            throw new Exception(__('Remove this lineup from every EPG using this SchedulesDirect account before removing it from the account.'));
+        }
+
         if (! $epg->hasValidSchedulesDirectToken()) {
             $this->authenticateFromEpg($epg);
             $epg->refresh();
@@ -774,19 +791,6 @@ class SchedulesDirectService
         }
 
         return $lineupIds;
-    }
-
-    /**
-     * Remove the lineup that is currently configured on the EPG from the SD account.
-     * No-op if no lineup is configured.
-     */
-    public function removeConfiguredLineup(Epg $epg): void
-    {
-        if (! $epg->hasSchedulesDirectLineup()) {
-            return;
-        }
-
-        $this->removeLineupFromEpg($epg, $epg->sd_lineup_id);
     }
 
     /**
@@ -1476,7 +1480,8 @@ class SchedulesDirectService
         $progressStep = 0;
         $totalProgramsWritten = 0;
         $programBatchFailures = [];
-        foreach ($this->processScheduleChunks($epg->sd_token, $stationIds, $dates) as $scheduleChunk) {
+        $scheduleChunkFailures = [];
+        foreach ($this->processScheduleChunks($epg->sd_token, $stationIds, $dates, $scheduleChunkFailures) as $scheduleChunk) {
             $subChunkSize = max(1, (int) ceil(count($scheduleChunk) / self::PROGRESS_STEPS_PER_BATCH));
             foreach (array_chunk($scheduleChunk, $subChunkSize) as $scheduleSubChunk) {
                 $progressStep++;
@@ -1561,8 +1566,15 @@ class SchedulesDirectService
 
             unset($scheduleChunk);
         }
-        if ($programBatchFailures !== []) {
-            $epg->update(['sd_errors' => array_merge($epg->sd_errors ?? [], $programBatchFailures)]);
+        $batchFailures = array_merge($scheduleChunkFailures, $programBatchFailures);
+        if ($batchFailures !== []) {
+            $epg->update(['sd_errors' => array_merge($epg->sd_errors ?? [], $batchFailures)]);
+            if ($scheduleChunkFailures !== []) {
+                throw new Exception(sprintf(
+                    'SchedulesDirect schedule import completed only partially; %d schedule batch(es) failed.',
+                    count($scheduleChunkFailures)
+                ));
+            }
             throw new Exception(sprintf(
                 'SchedulesDirect program import completed only partially; %d program batch(es) failed.',
                 count($programBatchFailures)

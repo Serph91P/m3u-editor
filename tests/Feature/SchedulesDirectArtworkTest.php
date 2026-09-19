@@ -288,3 +288,32 @@ it('preserves the existing XMLTV file when a permanent program batch fails', fun
     expect(Storage::disk('local')->get($epg->file_path))->toBe($before);
     expect(Storage::disk('local')->allFiles(dirname($epg->file_path)))->toHaveCount(1);
 });
+
+it('preserves the existing XMLTV file when schedule retries are exhausted', function () {
+    $user = User::factory()->create();
+    $epg = Epg::factory()->create([
+        'user_id' => $user->id,
+        'sd_token' => 'valid-token',
+        'sd_token_expires_at' => now()->addHour(),
+        'sd_lineup_id' => 'USA-NY12345-X',
+        'sd_days_to_import' => 1,
+    ]);
+    Storage::fake('local');
+    Storage::disk('local')->put($epg->file_path, '<tv>previous</tv>');
+    $before = Storage::disk('local')->get($epg->file_path);
+
+    Http::fake([
+        'json.schedulesdirect.org/20141201/lineups/*' => Http::response([
+            'map' => [['stationID' => '12345', 'channel' => '1']],
+            'stations' => [['stationID' => '12345', 'name' => 'Station']],
+        ]),
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(['message' => 'temporary'], 503),
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->syncEpgData($epg))
+        ->toThrow(Exception::class, 'SchedulesDirect schedule import completed only partially; 1 schedule batch(es) failed.');
+
+    expect(Storage::disk('local')->get($epg->file_path))->toBe($before)
+        ->and(Storage::disk('local')->allFiles(dirname($epg->file_path)))->toHaveCount(1)
+        ->and($epg->fresh()->sd_errors)->toHaveCount(2);
+});

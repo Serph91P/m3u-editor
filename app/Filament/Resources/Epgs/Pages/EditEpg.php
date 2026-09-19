@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Epgs\Pages;
 use App\Filament\Resources\Epgs\Concerns\ValidatesSchedulesDirectLineupSelection;
 use App\Filament\Resources\Epgs\EpgResource;
 use App\Models\Epg;
+use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
 
 class EditEpg extends EditRecord
@@ -17,7 +18,7 @@ class EditEpg extends EditRecord
     {
         return [
             EpgResource::getManageSdLineupsAction(),
-            EpgResource::getSdDeleteAction(),
+            DeleteAction::make(),
         ];
     }
 
