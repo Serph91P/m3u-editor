@@ -595,6 +595,13 @@ class ProcessM3uImport implements ShouldQueue
                 ? $vodCategories
                 : collect([]);
 
+            // Cross-type signal for the SourceGroup stale-prune guard (issue #1530): if
+            // another enabled stream type's category fetch returned real data this run,
+            // the provider answered successfully, so a *different* enabled type coming
+            // back empty is more likely a genuine "zero categories now" than a transient
+            // provider glitch, and its stale SourceGroup rows are safe to prune.
+            $providerRespondedThisRun = $liveGroups->isNotEmpty() || $vodGroups->isNotEmpty();
+
             // Setup common field values
             $channelFields = [
                 'title' => null,
@@ -769,6 +776,7 @@ class ProcessM3uImport implements ShouldQueue
                 vodStreamsEnabled: $vodStreamsEnabled,
                 liveGroups: $liveGroups,
                 vodGroups: $vodGroups,
+                providerRespondedThisRun: $providerRespondedThisRun,
             );
         } catch (Exception $e) {
             // Log the exception
@@ -1196,6 +1204,7 @@ class ProcessM3uImport implements ShouldQueue
         bool $vodStreamsEnabled = false,
         ?Collection $liveGroups = null,
         ?Collection $vodGroups = null,
+        bool $providerRespondedThisRun = false,
     ) {
         // Get the playlist ID
         $playlistId = $playlist->id;
@@ -1204,10 +1213,10 @@ class ProcessM3uImport implements ShouldQueue
         // generators are iterated so shouldIncludeChannel() / shouldIncludeVod() see
         // post-rename selected-group names on the first sync after a provider rename.
         [$this->selectedGroups, $liveGroupsByName] = $this->syncSourceGroupType(
-            $liveGroups ?? collect(), 'live', 'selected_groups', $this->selectedGroups, $playlist
+            $liveGroups ?? collect(), 'live', 'selected_groups', $this->selectedGroups, $playlist, $providerRespondedThisRun
         );
         [$this->selectedVodGroups, $vodGroupsByName] = $this->syncSourceGroupType(
-            $vodGroups ?? collect(), 'vod', 'selected_vod_groups', $this->selectedVodGroups, $playlist
+            $vodGroups ?? collect(), 'vod', 'selected_vod_groups', $this->selectedVodGroups, $playlist, $providerRespondedThisRun
         );
 
         // Setup group sort, if Playlist auto sort is enabled
@@ -1645,6 +1654,9 @@ class ProcessM3uImport implements ShouldQueue
      * @param  string  $type  'live' or 'vod'.
      * @param  string  $selectedKey  import_prefs key ('selected_groups' or 'selected_vod_groups').
      * @param  array  $currentSelected  Current value of $this->selectedGroups or $this->selectedVodGroups.
+     * @param  bool  $providerRespondedThisRun  Whether another enabled stream type returned a
+     *                                          non-empty category list this run, proving the provider answered successfully. Used to
+     *                                          trust an empty $groups for *this* type as a genuine removal instead of a glitch.
      * @return array{0: list<string>, 1: Collection} Updated selected-groups array, and a category_name-keyed map for O(1) lookup.
      */
     private function syncSourceGroupType(
@@ -1653,6 +1665,7 @@ class ProcessM3uImport implements ShouldQueue
         string $selectedKey,
         array $currentSelected,
         Playlist $playlist,
+        bool $providerRespondedThisRun = false,
     ): array {
         $playlistId = $playlist->id;
         $categoryIds = $groups->pluck('category_id')->filter(fn ($id) => $id !== null)->unique();
@@ -1730,8 +1743,12 @@ class ProcessM3uImport implements ShouldQueue
             }
         }
 
-        // Guard against wiping everything if the provider temporarily returns an empty response.
-        if ($groups->isNotEmpty()) {
+        // Guard against wiping everything if the provider temporarily returns an empty
+        // response. If this type itself came back empty but another enabled type
+        // returned real data this run, the provider clearly answered, so trust this
+        // as a genuine "zero categories now" and prune instead of leaving stale rows
+        // behind indefinitely (issue #1530).
+        if ($groups->isNotEmpty() || $providerRespondedThisRun) {
             $currentNames = $groups->pluck('category_name');
             SourceGroup::where('playlist_id', $playlistId)
                 ->where('type', $type)
