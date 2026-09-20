@@ -1580,11 +1580,17 @@ class M3uProxyService
                 'profile_id' => $profile->id,
                 'original_channel_id' => $originalChannelId,  // For cross-provider failover pooling
                 'original_playlist_uuid' => $originalPlaylistUuid,  // For cross-provider failover pooling
-                'source_playlist_uuid' => $actualChannel->playlist instanceof Playlist ? $actualChannel->playlist->uuid : null,  // For DVR capacity accounting
                 'is_failover' => $isFailover,
                 'strict_live_ts' => $playlist->strict_live_ts ?? false,
                 'use_sticky_session' => $playlist->use_sticky_session ?? false,
             ];
+
+            // Tag the true source Playlist for DVR capacity accounting, but only when one
+            // exists - the proxy API rejects null metadata values, and a channel with no
+            // source Playlist (e.g. created directly under a Custom Playlist) is valid.
+            if ($actualChannel->playlist instanceof Playlist) {
+                $metadata['source_playlist_uuid'] = $actualChannel->playlist->uuid;
+            }
 
             // Add provider profile ID if using profiles
             if ($selectedProfile) {
@@ -1651,9 +1657,15 @@ class M3uProxyService
                 'use_sticky_session' => $playlist->use_sticky_session ?? false,
                 'original_channel_id' => $originalChannelId,  // For cross-provider failover pooling
                 'original_playlist_uuid' => $originalPlaylistUuid,  // For cross-provider failover pooling
-                'source_playlist_uuid' => $actualChannel->playlist instanceof Playlist ? $actualChannel->playlist->uuid : null,  // For DVR capacity accounting
                 'is_failover' => $isFailover,
             ];
+
+            // Tag the true source Playlist for DVR capacity accounting, but only when one
+            // exists - the proxy API rejects null metadata values, and a channel with no
+            // source Playlist (e.g. created directly under a Custom Playlist) is valid.
+            if ($actualChannel->playlist instanceof Playlist) {
+                $metadata['source_playlist_uuid'] = $actualChannel->playlist->uuid;
+            }
 
             // Add provider profile ID if using profiles
             if ($selectedProfile) {
@@ -2008,9 +2020,15 @@ class M3uProxyService
                 'use_sticky_session' => $playlist->use_sticky_session ?? false,
                 'original_episode_id' => $originalEpisodeId,           // Enables findExistingPooledStream reuse
                 'original_playlist_uuid' => $originalPlaylistUuid,
-                'source_playlist_uuid' => $actualEpisode->playlist instanceof Playlist ? $actualEpisode->playlist->uuid : null,  // For wrapper-aware capacity accounting
                 'is_failover' => $actualEpisode->id !== $originalEpisodeId,
             ];
+
+            // Tag the true source Playlist for wrapper-aware capacity accounting, but only
+            // when one exists - the proxy API rejects null metadata values, and an episode
+            // with no source Playlist (e.g. from a Custom Playlist-only entry) is valid.
+            if ($actualEpisode->playlist instanceof Playlist) {
+                $metadata['source_playlist_uuid'] = $actualEpisode->playlist->uuid;
+            }
 
             // Add provider profile ID if using profiles
             if ($selectedProfile) {
@@ -2056,9 +2074,15 @@ class M3uProxyService
                 'use_sticky_session' => $playlist->use_sticky_session ?? false,
                 'original_episode_id' => $originalEpisodeId,           // Enables findExistingPooledStream reuse
                 'original_playlist_uuid' => $originalPlaylistUuid,
-                'source_playlist_uuid' => $actualEpisode->playlist instanceof Playlist ? $actualEpisode->playlist->uuid : null,  // For wrapper-aware capacity accounting
                 'is_failover' => $actualEpisode->id !== $originalEpisodeId,
             ];
+
+            // Tag the true source Playlist for wrapper-aware capacity accounting, but only
+            // when one exists - the proxy API rejects null metadata values, and an episode
+            // with no source Playlist (e.g. from a Custom Playlist-only entry) is valid.
+            if ($actualEpisode->playlist instanceof Playlist) {
+                $metadata['source_playlist_uuid'] = $actualEpisode->playlist->uuid;
+            }
 
             // Add provider profile ID if using profiles
             if ($selectedProfile) {
