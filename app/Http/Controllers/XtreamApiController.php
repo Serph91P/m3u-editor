@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Casts\UtcDateTime;
 use App\Enums\ChannelLogoType;
 use App\Enums\DvrMatchMode;
 use App\Enums\DvrRecordingStatus;
@@ -4721,6 +4722,30 @@ class XtreamApiController extends Controller
         // app.timezone's wall-clock before Eloquent formats them for storage, or the
         // round-trip re-read will reconstruct the wrong absolute instant.
         $appTz = config('app.timezone', 'UTC');
+        $manualStart = Carbon::parse($startTime)->setTimezone($appTz);
+        $manualEnd = Carbon::parse($endTime)->setTimezone($appTz);
+
+        // Duplicate guard: same dvr_setting, same channel, same auth, overlapping
+        // manual_start/manual_end window. Mirrors createDvrSeriesRule's pattern
+        // below so a double-tap or two devices scheduling the same airing return
+        // 409 + the existing rule's id instead of creating a second manual rule.
+        $existing = DvrRecordingRule::where('dvr_setting_id', $dvrSetting->id)
+            ->where('type', DvrRuleType::Manual)
+            ->where('enabled', true)
+            ->where('channel_id', $channelId)
+            ->where('manual_start', '<', UtcDateTime::forQuery($manualEnd))
+            ->where('manual_end', '>', UtcDateTime::forQuery($manualStart))
+            ->when($playlistAuth, fn ($q) => $q->where('playlist_auth_id', $playlistAuth->id))
+            ->first();
+
+        if ($existing) {
+            return response()->json([
+                'error' => 'A recording for this airing already exists',
+                'rule_id' => $existing->id,
+                'duplicate' => true,
+            ], 409);
+        }
+
         $rule = DvrRecordingRule::create([
             'user_id' => $dvrSetting->user_id,
             'dvr_setting_id' => $dvrSetting->id,
@@ -4729,8 +4754,8 @@ class XtreamApiController extends Controller
             'channel_id' => $channelId,
             'series_title' => $title,
             'match_mode' => DvrMatchMode::Exact,
-            'manual_start' => Carbon::parse($startTime)->setTimezone($appTz),
-            'manual_end' => Carbon::parse($endTime)->setTimezone($appTz),
+            'manual_start' => $manualStart,
+            'manual_end' => $manualEnd,
             'start_early_seconds' => (int) $request->input('start_early_seconds', $dvrSetting->default_start_early_seconds ?? 0),
             'end_late_seconds' => (int) $request->input('end_late_seconds', $dvrSetting->default_end_late_seconds ?? 0),
             'enabled' => true,
