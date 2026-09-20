@@ -595,13 +595,6 @@ class ProcessM3uImport implements ShouldQueue
                 ? $vodCategories
                 : collect([]);
 
-            // Cross-type signal for the SourceGroup stale-prune guard (issue #1530): if
-            // another enabled stream type's category fetch returned real data this run,
-            // the provider answered successfully, so a *different* enabled type coming
-            // back empty is more likely a genuine "zero categories now" than a transient
-            // provider glitch, and its stale SourceGroup rows are safe to prune.
-            $providerRespondedThisRun = $liveGroups->isNotEmpty() || $vodGroups->isNotEmpty();
-
             // Setup common field values
             $channelFields = [
                 'title' => null,
@@ -776,7 +769,6 @@ class ProcessM3uImport implements ShouldQueue
                 vodStreamsEnabled: $vodStreamsEnabled,
                 liveGroups: $liveGroups,
                 vodGroups: $vodGroups,
-                providerRespondedThisRun: $providerRespondedThisRun,
             );
         } catch (Exception $e) {
             // Log the exception
@@ -1204,7 +1196,6 @@ class ProcessM3uImport implements ShouldQueue
         bool $vodStreamsEnabled = false,
         ?Collection $liveGroups = null,
         ?Collection $vodGroups = null,
-        bool $providerRespondedThisRun = false,
     ) {
         // Get the playlist ID
         $playlistId = $playlist->id;
@@ -1213,10 +1204,10 @@ class ProcessM3uImport implements ShouldQueue
         // generators are iterated so shouldIncludeChannel() / shouldIncludeVod() see
         // post-rename selected-group names on the first sync after a provider rename.
         [$this->selectedGroups, $liveGroupsByName] = $this->syncSourceGroupType(
-            $liveGroups ?? collect(), 'live', 'selected_groups', $this->selectedGroups, $playlist, $providerRespondedThisRun
+            $liveGroups ?? collect(), 'live', 'selected_groups', $this->selectedGroups, $playlist
         );
         [$this->selectedVodGroups, $vodGroupsByName] = $this->syncSourceGroupType(
-            $vodGroups ?? collect(), 'vod', 'selected_vod_groups', $this->selectedVodGroups, $playlist, $providerRespondedThisRun
+            $vodGroups ?? collect(), 'vod', 'selected_vod_groups', $this->selectedVodGroups, $playlist
         );
 
         // Setup group sort, if Playlist auto sort is enabled
@@ -1654,9 +1645,6 @@ class ProcessM3uImport implements ShouldQueue
      * @param  string  $type  'live' or 'vod'.
      * @param  string  $selectedKey  import_prefs key ('selected_groups' or 'selected_vod_groups').
      * @param  array  $currentSelected  Current value of $this->selectedGroups or $this->selectedVodGroups.
-     * @param  bool  $providerRespondedThisRun  Whether another enabled stream type returned a
-     *                                          non-empty category list this run, proving the provider answered successfully. Used to
-     *                                          trust an empty $groups for *this* type as a genuine removal instead of a glitch.
      * @return array{0: list<string>, 1: Collection} Updated selected-groups array, and a category_name-keyed map for O(1) lookup.
      */
     private function syncSourceGroupType(
@@ -1665,10 +1653,32 @@ class ProcessM3uImport implements ShouldQueue
         string $selectedKey,
         array $currentSelected,
         Playlist $playlist,
-        bool $providerRespondedThisRun = false,
     ): array {
         $playlistId = $playlist->id;
         $categoryIds = $groups->pluck('category_id')->filter(fn ($id) => $id !== null)->unique();
+        $currentNames = $groups->pluck('category_name');
+
+        // Prune stale rows *before* rename/upsert runs, not after. Doing this first frees up
+        // any name a doomed row is squatting on, so a genuine rename below can claim it directly
+        // instead of hitting a same-run name collision (issue #1530: a renamed category colliding
+        // with a stale row's old name left the stale row behind forever - see the conflict branch below).
+        // Guard against wiping everything if the provider temporarily returns an empty response.
+        if ($groups->isNotEmpty()) {
+            SourceGroup::where('playlist_id', $playlistId)
+                ->where('type', $type)
+                ->where(function ($query) use ($categoryIds, $currentNames) {
+                    $query->where(function ($q) use ($categoryIds) {
+                        // Rows tracked by source_group_id that are no longer in the feed.
+                        $q->whereNotNull('source_group_id')
+                            ->whereNotIn('source_group_id', $categoryIds);
+                    })->orWhere(function ($q) use ($currentNames) {
+                        // Legacy null-id rows whose name no longer appears in the feed.
+                        $q->whereNull('source_group_id')
+                            ->whereNotIn('name', $currentNames);
+                    });
+                })
+                ->delete();
+        }
 
         $existingBySourceId = $categoryIds->isNotEmpty()
             ? SourceGroup::where('playlist_id', $playlistId)
@@ -1678,30 +1688,55 @@ class ProcessM3uImport implements ShouldQueue
                 ->keyBy('source_group_id')
             : collect();
 
-        // Pre-load all name→id pairs so rename-collision checks are O(1) instead of one EXISTS query per rename.
+        // Pre-load name→row pairs (id + source_group_id) so rename-collision checks are O(1)
+        // instead of one EXISTS query per rename, and so we can tell apart the two kinds of
+        // name collision below.
         $nameIndex = SourceGroup::where('playlist_id', $playlistId)
             ->where('type', $type)
-            ->pluck('id', 'name');
+            ->get(['id', 'name', 'source_group_id'])
+            ->keyBy('name');
 
         $renames = [];
-        $groups->each(function ($group) use ($existingBySourceId, &$nameIndex, &$renames) {
+        $conflictedCategoryIds = [];
+        $groups->each(function ($group) use ($existingBySourceId, &$nameIndex, &$renames, &$conflictedCategoryIds) {
             $categoryId = $group['category_id'] ?? null;
             if ($categoryId === null) {
                 return;
             }
             $existing = $existingBySourceId->get($categoryId);
             if ($existing && $existing->name !== $group['category_name']) {
-                // If a different row already owns the target name, skip the in-place rename
-                // and let the upsert assign source_group_id to that row instead.
-                $conflictId = $nameIndex->get($group['category_name']);
-                if ($conflictId !== null && $conflictId !== $existing->id) {
+                $conflict = $nameIndex->get($group['category_name']);
+                if ($conflict !== null && $conflict->id !== $existing->id) {
+                    // The early prune above only clears rows the feed no longer references, so
+                    // any row still standing is either currently valid (non-null source_group_id,
+                    // guaranteed present in $categoryIds) or a legacy null-id row.
+                    if ($conflict->source_group_id === null) {
+                        // Legacy row is being absorbed by this rename: the id-tracked row under
+                        // the old name is superseded and, left alone, would become an orphaned
+                        // duplicate sharing this category's source_group_id forever (issue #1530,
+                        // since its own source_group_id would still be in $categoryIds every run).
+                        // Delete it and let the upsert below claim the name onto the legacy row.
+                        $oldName = $existing->name;
+                        $existing->delete();
+                        $renames[$oldName] = $group['category_name'];
+                        $nameIndex->forget($oldName);
+
+                        return;
+                    }
+
+                    // A different, still-current category already owns the target name - a
+                    // genuine same-run collision the provider itself created. Skip the rename
+                    // AND skip upserting this category this run, rather than letting the upsert
+                    // silently steal source_group_id from the row that legitimately owns the name.
+                    $conflictedCategoryIds[] = $categoryId;
+
                     return;
                 }
                 $renames[$existing->name] = $group['category_name'];
                 // Keep $nameIndex current so subsequent iterations see this rename,
                 // preventing a second category from targeting the same name and
                 // hitting the DB unique constraint on (name, playlist_id, type).
-                $nameIndex->put($group['category_name'], $existing->id);
+                $nameIndex->put($group['category_name'], $existing);
                 $nameIndex->forget($existing->name);
                 $existing->update(['name' => $group['category_name']]);
             }
@@ -1724,6 +1759,7 @@ class ProcessM3uImport implements ShouldQueue
         foreach ($groups->chunk(50) as $chunk) {
             $rows = collect($chunk)
                 ->filter(fn ($item) => ($item['category_id'] ?? null) !== null)
+                ->reject(fn ($item) => in_array($item['category_id'], $conflictedCategoryIds, true))
                 ->unique(fn ($item) => $item['category_name'].$playlistId.$type)
                 ->map(fn ($item) => [
                     'name' => $item['category_name'],
@@ -1741,29 +1777,6 @@ class ProcessM3uImport implements ShouldQueue
                     update: ['source_group_id']
                 );
             }
-        }
-
-        // Guard against wiping everything if the provider temporarily returns an empty
-        // response. If this type itself came back empty but another enabled type
-        // returned real data this run, the provider clearly answered, so trust this
-        // as a genuine "zero categories now" and prune instead of leaving stale rows
-        // behind indefinitely (issue #1530).
-        if ($groups->isNotEmpty() || $providerRespondedThisRun) {
-            $currentNames = $groups->pluck('category_name');
-            SourceGroup::where('playlist_id', $playlistId)
-                ->where('type', $type)
-                ->where(function ($query) use ($categoryIds, $currentNames) {
-                    $query->where(function ($q) use ($categoryIds) {
-                        // Rows tracked by source_group_id that are no longer in the feed.
-                        $q->whereNotNull('source_group_id')
-                            ->whereNotIn('source_group_id', $categoryIds);
-                    })->orWhere(function ($q) use ($currentNames) {
-                        // Legacy null-id rows whose name no longer appears in the feed.
-                        $q->whereNull('source_group_id')
-                            ->whereNotIn('name', $currentNames);
-                    });
-                })
-                ->delete();
         }
 
         $newNames = $groups->pluck('category_name')
