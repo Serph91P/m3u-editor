@@ -12,6 +12,7 @@ use App\Enums\PlaylistChannelId;
 use App\Events\ViewerFavoriteEvent;
 use App\Facades\PlaylistFacade;
 use App\Facades\ProxyFacade;
+use App\Jobs\FetchTmdbIds;
 use App\Jobs\RefreshMediaServerLibraryJob;
 use App\Models\ArrIntegration;
 use App\Models\Category;
@@ -1299,6 +1300,18 @@ class XtreamApiController extends Controller
                 }
             }
 
+            // On-demand TMDB enrichment: global opt-in (Settings > Integrations > TMDB >
+            // "Auto-enrichment on fetch"), for installs that don't run the bulk "Fetch TMDB
+            // Metadata" action. processSingleSeries() is self-gating on existing tmdb_id/
+            // plot/cover/etc., so once a series is enriched this is a cheap no-op on every
+            // later view - a one-time cost per series, persisted to $seriesItem.
+            if (! $isMediaServerSeries && app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch) {
+                $tmdb = app(TmdbService::class);
+                if ($tmdb->isConfigured()) {
+                    app(FetchTmdbIds::class)->processSingleSeries($tmdb, $seriesItem);
+                }
+            }
+
             // Gate on an episode actually carrying a dvr_recording_id rather
             // than on $isDvrSeries: DvrVodIntegrationService::findOrCreateSeries
             // matches by tmdb/tvmaze id or name without filtering on
@@ -1830,6 +1843,18 @@ class XtreamApiController extends Controller
                 // shouldn't be re-triggered on every client request), and don't fail the
                 // request if the live call errors - fall back to the cached data instead.
                 $channel->fetchMetadata(refresh: true, skipTmdb: true);
+            }
+
+            // On-demand TMDB enrichment: global opt-in (Settings > Integrations > TMDB >
+            // "Auto-enrichment on fetch"), for installs that don't run the bulk "Fetch TMDB
+            // Metadata" action. processVodChannel() is self-gating on existing tmdb_id/
+            // cast_list/etc., so once a title is enriched this is a cheap no-op on every
+            // later view - a one-time cost per title, persisted to $channel.
+            if (app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch) {
+                $tmdb = app(TmdbService::class);
+                if ($tmdb->isConfigured()) {
+                    app(FetchTmdbIds::class)->processVodChannel($tmdb, $channel);
+                }
             }
 
             // Build info section - use channel's info field if available, otherwise build from channel data

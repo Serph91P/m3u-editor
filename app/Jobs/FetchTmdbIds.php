@@ -509,8 +509,13 @@ class FetchTmdbIds implements ShouldQueue
 
     /**
      * Process a single VOD channel.
+     *
+     * Public so it can also be called synchronously and on-demand (outside of
+     * this job's queue dispatch) - e.g. Xtream get_vod_info enriching a title
+     * the first time it's viewed. Self-gating on existing tmdb_id/metadata,
+     * so repeat calls after the first successful enrichment are cheap no-ops.
      */
-    protected function processVodChannel(TmdbService $tmdb, Channel $channel): void
+    public function processVodChannel(TmdbService $tmdb, Channel $channel): void
     {
         $info = $channel->info ?? [];
         $hasMetadata = ! empty($info['plot']) && ! empty($info['cover_big']);
@@ -818,8 +823,14 @@ class FetchTmdbIds implements ShouldQueue
 
     /**
      * Process a single series.
+     *
+     * Public so it can also be called synchronously and on-demand (outside of
+     * this job's queue dispatch) - e.g. Xtream get_series_info enriching a
+     * series the first time it's viewed. Self-gating on existing tmdb_id/
+     * metadata, so repeat calls after the first successful enrichment are
+     * cheap no-ops.
      */
-    protected function processSingleSeries(TmdbService $tmdb, Series $series): void
+    public function processSingleSeries(TmdbService $tmdb, Series $series): void
     {
         // Resolve IDs from all storage locations (dedicated columns + legacy metadata array).
         ['tmdb' => $existingTmdbId, 'tvdb' => $existingTvdbId] = $series->getMovieDbIds();
