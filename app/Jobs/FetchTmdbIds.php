@@ -520,6 +520,16 @@ class FetchTmdbIds implements ShouldQueue
         $info = $channel->info ?? [];
         $hasMetadata = ! empty($info['plot']) && ! empty($info['cover_big']);
 
+        // Media-server syncs (Plex/Emby) can leave plot/cover populated while
+        // related_tmdb was never populated (media servers have no TMDB recommendations) -
+        // treat that as incomplete so it still routes through TMDB below to
+        // fill the gap, rather than being treated as fully enriched. Xtream-
+        // native content isn't held to this stricter bar, so titles enriched
+        // before related_tmdb existed keep their cheap no-op.
+        if ($hasMetadata && ! empty($info['media_server_id'])) {
+            $hasMetadata = array_key_exists('related_tmdb', $info);
+        }
+
         // Determine the best existing TMDB ID we have
         $tmdbId = $channel->getTmdbId();
 
@@ -579,8 +589,14 @@ class FetchTmdbIds implements ShouldQueue
             return;
         }
 
-        // If previously attempted but no match was found, skip unless overwriting
-        if (! $tmdbId && $channel->last_metadata_fetch && ! $this->overwriteExisting) {
+        // If previously attempted but no match was found, skip unless overwriting. Gated on
+        // info['tmdb_search_failed'] rather than last_metadata_fetch: media-server syncs
+        // (Plex/Emby) stamp last_metadata_fetch at sync time as an unrelated "synced from
+        // the media server" marker (see SyncMediaServer::syncVodItem()), so using that field
+        // here would make every media-server channel without a tmdb_id look like an already-
+        // failed TMDB search and permanently block the on-demand enrichment this method exists
+        // to drive.
+        if (! $tmdbId && ! empty($info['tmdb_search_failed']) && ! $this->overwriteExisting) {
             $this->skippedCount++;
 
             return;
@@ -722,10 +738,12 @@ class FetchTmdbIds implements ShouldQueue
                 }
 
                 // Populate "more like this" candidates (Xtream get_vod_info resolves
-                // these against the playlist's own library at request time).
-                if (! empty($details['recommendations'])) {
-                    $info['related_tmdb'] = $details['recommendations'];
-                }
+                // these against the playlist's own library at request time). Always
+                // set the key, even to an empty array, so it also acts as a sentinel
+                // marking that TMDB has been checked for recommendations - otherwise
+                // a title with genuinely none would never satisfy $hasMetadata and
+                // would be re-enriched on every request.
+                $info['related_tmdb'] = $details['recommendations'] ?? [];
 
                 // Populate director if available
                 if (! empty($details['director'])) {
@@ -772,7 +790,8 @@ class FetchTmdbIds implements ShouldQueue
             $this->foundCount++;
         } else {
             // Mark as attempted so we don't keep re-processing on every sync cycle
-            $channel->update(['last_metadata_fetch' => now()]);
+            $info['tmdb_search_failed'] = true;
+            $channel->update(['info' => $info, 'last_metadata_fetch' => now()]);
 
             Log::debug('FetchTmdbIds: No TMDB match found for VOD channel', [
                 'channel_id' => $channel->id,
@@ -836,7 +855,18 @@ class FetchTmdbIds implements ShouldQueue
         ['tmdb' => $existingTmdbId, 'tvdb' => $existingTvdbId] = $series->getMovieDbIds();
 
         // Only skip if we have IDs AND the metadata is populated
+        $seriesMetadataArr = $series->metadata ?? [];
         $hasMetadata = ! empty($series->plot) && ! empty($series->cover);
+
+        // Media-server syncs (Plex/Emby) can leave plot/cover populated while
+        // related_tmdbwas never populated (media servers have no TMDB recommendations) -
+        // treat that as incomplete so it still routes through TMDB below to
+        // fill the gap, rather than being treated as fully enriched. Xtream-
+        // native content isn't held to this stricter bar, so titles enriched
+        // before related_tmdb existed keep their cheap no-op.
+        if ($hasMetadata && ! empty($seriesMetadataArr['media_server_id'])) {
+            $hasMetadata = array_key_exists('related_tmdb', $seriesMetadataArr);
+        }
 
         if (($existingTvdbId || $existingTmdbId) && $hasMetadata && ! $this->overwriteExisting) {
             $needsEnrichment = false;
@@ -1080,11 +1110,13 @@ class FetchTmdbIds implements ShouldQueue
                 }
 
                 // Populate "more like this" candidates (Xtream get_series_info resolves
-                // these against the playlist's own library at request time).
-                if (! empty($details['recommendations'])) {
-                    $metadata['related_tmdb'] = $details['recommendations'];
-                    $updateData['metadata'] = $metadata;
-                }
+                // these against the playlist's own library at request time). Always
+                // set the key, even to an empty array, so it also acts as a sentinel
+                // marking that TMDB has been checked for recommendations - otherwise
+                // a series with genuinely none would never satisfy $hasMetadata and
+                // would be re-enriched on every request.
+                $metadata['related_tmdb'] = $details['recommendations'] ?? [];
+                $updateData['metadata'] = $metadata;
 
                 // Populate director if available
                 if (! empty($details['director'])) {
@@ -1294,9 +1326,6 @@ class FetchTmdbIds implements ShouldQueue
         ]);
     }
 
-    /**
-     * Clean title for TMDB search by applying user-defined patterns and stripping common prefixes.
-     */
     protected function cleanTitleForSearch(?string $title, bool $isSeries = false): string
     {
         $title = $title ?? '';

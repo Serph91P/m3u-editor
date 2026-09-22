@@ -1303,9 +1303,12 @@ class XtreamApiController extends Controller
             // On-demand TMDB enrichment: global opt-in (Settings > Integrations > TMDB >
             // "Auto-enrichment on fetch"), for installs that don't run the bulk "Fetch TMDB
             // Metadata" action. processSingleSeries() is self-gating on existing tmdb_id/
-            // plot/cover/etc., so once a series is enriched this is a cheap no-op on every
-            // later view - a one-time cost per series, persisted to $seriesItem.
-            if (! $isMediaServerSeries && app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch) {
+            // plot/cover/cast_list/related_tmdb, so once a series is fully enriched this
+            // is a cheap no-op on every later view - a one-time cost per series, persisted
+            // to $seriesItem. Media server series (Plex/Emby) are included: their synced
+            // metadata often has plot/cover but a cast_list with no TMDB person ids, so
+            // the self-gating check still routes them through TMDB to fill that gap.
+            if (app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch) {
                 $tmdb = app(TmdbService::class);
                 if ($tmdb->isConfigured()) {
                     app(FetchTmdbIds::class)->processSingleSeries($tmdb, $seriesItem);
