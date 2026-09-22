@@ -4,6 +4,7 @@ use App\Models\Category;
 use App\Models\Channel;
 use App\Models\ChannelFailover;
 use App\Models\CustomPlaylist;
+use App\Models\DynamicGroup;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Episode;
 use App\Models\Group;
@@ -516,4 +517,51 @@ it('builds a deterministic full user snapshot and records only enabled planned r
         ->and($enabled->refresh()->last_planned_revision)->toBe($first['mappings'][0]['revision'])
         ->and($enabled->status)->toBe('planned')
         ->and($disabled->refresh()->last_planned_revision)->toBeNull();
+});
+
+it('builds dynamic group movie mappings from current membership and updates their revision', function () {
+    config(['app.url' => 'https://m3u-editor.test', 'app.port' => null]);
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create(['name' => 'Movies', 'type' => 'vod']);
+    $dynamicGroup = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Current Movies',
+        'last_synced_at' => now(),
+    ]);
+
+    $firstChannel = Channel::factory()->for($user)->for($playlist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'First Movie',
+        'tmdb_id' => 1,
+    ]);
+    $nextChannel = Channel::factory()->for($user)->for($playlist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'Next Movie',
+        'tmdb_id' => 2,
+    ]);
+    $dynamicGroup->channels()->attach($firstChannel);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly(['type' => 'emby']);
+    $mapping = EmbyLibraryMapping::factory()->for($user)->for($integration, 'integration')->create([
+        'source_kind' => 'dynamic_group',
+        'source_identifier' => (string) $dynamicGroup->id,
+        'source_label' => $dynamicGroup->name,
+        'collection_type' => 'movies',
+    ]);
+
+    $first = app(EmbyPublicationCatalogService::class)->buildMapping($mapping, 'tuner', 'secret');
+    $second = app(EmbyPublicationCatalogService::class)->buildMapping($mapping, 'tuner', 'secret');
+
+    $dynamicGroup->channels()->sync([$nextChannel->id]);
+
+    $updated = app(EmbyPublicationCatalogService::class)->buildMapping($mapping, 'tuner', 'secret');
+
+    expect($first)->toBe($second)
+        ->and($first['items'])->toHaveCount(1)
+        ->and($first['items'][0]['display_title'])->toBe('First Movie')
+        ->and($updated['items'])->toHaveCount(1)
+        ->and($updated['items'][0]['display_title'])->toBe('Next Movie')
+        ->and($updated['revision'])->not->toBe($first['revision']);
 });

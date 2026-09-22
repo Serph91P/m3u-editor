@@ -5,6 +5,7 @@ use App\Filament\Resources\MediaServerIntegrations\RelationManagers\EmbyLibraryM
 use App\Models\Category;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
+use App\Models\DynamicGroup;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Group;
 use App\Models\MediaServerIntegration;
@@ -138,6 +139,27 @@ it('separates movie groups from series categories and hides published sources', 
     $seriesCategory = Category::factory()->for($user)->for($playlist)->create([
         'name' => 'Drama',
     ]);
+    $movieDynamicGroup = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Trending Movies',
+        'last_synced_at' => now(),
+    ]);
+    $seriesDynamicGroup = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'series',
+        'name' => 'Trending Shows',
+        'last_synced_at' => now(),
+    ]);
+    DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Inactive Movies',
+        'enabled' => false,
+        'last_synced_at' => now(),
+    ]);
+    DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Unmaterialized Movies',
+        'last_synced_at' => null,
+    ]);
     $integration = MediaServerIntegration::factory()->for($user)->createQuietly(['type' => 'emby']);
     EmbyLibraryMapping::factory()->for($integration, 'integration')->for($user)->create([
         'source_kind' => 'vod_group',
@@ -157,7 +179,11 @@ it('separates movie groups from series categories and hides published sources', 
         ->not->toHaveKey('vod:'.$liveGroup->id)
         ->and(embyBulkSourceOptions($component, 'tvshows'))
         ->toHaveKey('series_category:'.$seriesCategory->id, 'Drama (Provider)')
+        ->toHaveKey('dynamic_group:'.$seriesDynamicGroup->id, 'Trending Shows (Provider)')
+        ->not->toHaveKey('dynamic_group:'.$movieDynamicGroup->id)
         ->not->toHaveKey('vod:'.$movieGroup->id)
+        ->and(embyBulkSourceOptions($component, 'movies'))
+        ->toHaveKey('dynamic_group:'.$movieDynamicGroup->id, 'Trending Movies (Provider)')
         ->and(embyBulkSourceDescriptions($component, 'movies'))
         ->toHaveKey('vod:'.$movieGroup->id, 'Already published');
 });
@@ -181,7 +207,7 @@ it('bounds queries while rendering every bulk source option', function () {
         embyBulkSourceDescriptions($component, 'movies');
     }
 
-    expect(DB::getQueryLog())->toHaveCount(4);
+    expect(DB::getQueryLog())->toHaveCount(5);
     DB::disableQueryLog();
 });
 
@@ -229,8 +255,8 @@ it('bounds Custom Playlist queries while rendering bulk movie and series sources
         ->toHaveCount(8)
         ->and(array_filter(array_keys($seriesOptions), fn (string $key): bool => str_starts_with($key, 'custom_playlist:')))
         ->toHaveCount(8)
-        ->and($movieQueryCount)->toBeLessThanOrEqual(6)
-        ->and($seriesQueryCount)->toBeLessThanOrEqual(7);
+        ->and($movieQueryCount)->toBeLessThanOrEqual(7)
+        ->and($seriesQueryCount)->toBeLessThanOrEqual(8);
 });
 
 it('keeps an existing all-items publication disabled in the create modal', function () {

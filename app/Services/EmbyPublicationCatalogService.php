@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
+use App\Models\DynamicGroup;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Episode;
 use App\Models\Series;
@@ -146,6 +147,20 @@ class EmbyPublicationCatalogService
                                     ->where('type', $customPlaylist->uuid));
                         });
                 });
+        } elseif ($mapping->source_kind === 'dynamic_group') {
+            $dynamicGroup = DynamicGroup::query()
+                ->whereKey($mapping->source_identifier)
+                ->where('user_id', $mapping->user_id)
+                ->where('type', 'vod')
+                ->where('enabled', true)
+                ->whereNotNull('last_synced_at')
+                ->whereHas('playlist', fn ($playlistQuery) => $playlistQuery->where('user_id', $mapping->user_id))
+                ->first();
+            if ($dynamicGroup === null) {
+                return [];
+            }
+
+            $query->whereIn('channels.id', $dynamicGroup->channels()->select('channels.id'));
         } elseif ($mapping->source_kind !== 'all') {
             return [];
         }
@@ -259,6 +274,20 @@ class EmbyPublicationCatalogService
                                     ->where('type', $categoryTagType));
                         });
                 });
+        } elseif ($mapping->source_kind === 'dynamic_group') {
+            $dynamicGroup = DynamicGroup::query()
+                ->whereKey($mapping->source_identifier)
+                ->where('user_id', $mapping->user_id)
+                ->where('type', 'series')
+                ->where('enabled', true)
+                ->whereNotNull('last_synced_at')
+                ->whereHas('playlist', fn ($playlistQuery) => $playlistQuery->where('user_id', $mapping->user_id))
+                ->first();
+            if ($dynamicGroup === null) {
+                return [];
+            }
+
+            $query->whereIn('series.id', $dynamicGroup->series()->select('series.id'));
         } elseif ($mapping->source_kind !== 'all') {
             return [];
         }
