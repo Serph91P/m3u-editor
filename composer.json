@@ -93,6 +93,7 @@
         ],
         "security:scan": [
             "composer audit --format=summary",
+            "vendor/bin/vet",
             "npm audit --audit-level=high",
             "php artisan checkpoint:scan"
         ]
