@@ -1845,3 +1845,59 @@ it('caps the number of items rendered in the Preview modal without affecting the
             && str_contains($modalHtml, $fullPlan['revision']);
     }, $mapping);
 });
+
+it('persists a pending mapping when a newly created library is not immediately inventoried', function () {
+    config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([], 200)
+            ->push([[
+                'ItemId' => 'managed-library',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/managed/managed-movies'],
+            ]], 200),
+    ]);
+
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'publish_all' => true,
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasNoActionErrors();
+
+    $mapping = EmbyLibraryMapping::query()->sole();
+    expect($mapping->target_library_id)->toBeNull()
+        ->and($mapping->status)->toBe('pending')
+        ->and($mapping->last_planned_revision)->toBeNull();
+
+    $component->callAction(TestAction::make('reconcile')->table($mapping))
+        ->assertNotified();
+
+    expect($mapping->refresh()->target_library_id)->toBe('managed-library')
+        ->and($mapping->status)->toBe('planned')
+        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'))->toHaveCount(1);
+});

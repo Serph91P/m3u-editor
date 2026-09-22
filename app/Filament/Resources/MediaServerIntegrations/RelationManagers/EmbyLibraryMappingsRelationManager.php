@@ -673,13 +673,22 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                             'options' => EmbyLibraryMapping::DEFAULT_OPTIONS,
                             'status' => 'idle',
                         ]);
-                        $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
-                        $mapping->updateQuietly([
-                            'last_planned_revision' => $catalog['revision'],
-                            'status' => 'planned',
-                            'status_summary' => __('Revision planned for companion sync.'),
-                            'error_summary' => null,
-                        ]);
+                        if ($mappingDestination['pending']) {
+                            $mapping->updateQuietly([
+                                'last_planned_revision' => null,
+                                'status' => 'pending',
+                                'status_summary' => __('Pending'),
+                                'error_summary' => null,
+                            ]);
+                        } else {
+                            $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
+                            $mapping->updateQuietly([
+                                'last_planned_revision' => $catalog['revision'],
+                                'status' => 'planned',
+                                'status_summary' => __('Revision planned for companion sync.'),
+                                'error_summary' => null,
+                            ]);
+                        }
                         $created->push($mapping->refresh());
                     }
 
@@ -817,7 +826,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
 
     /**
      * @param  array<string, mixed>  $data
-     * @return array{library_id: string, name: string, collection_type: string, path: string, managed: bool}
+     * @return array{library_id: string|null, name: string, collection_type: string, path: string, managed: bool, pending: bool}
      */
     private function resolveSimpleDestination(array $data, ?string $sourceCollectionType): array
     {
@@ -853,6 +862,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 'collection_type' => $collectionType,
                 'path' => $paths[0],
                 'managed' => false,
+                'pending' => false,
             ];
         }
 
@@ -880,18 +890,19 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             false,
         );
         $libraryId = $result['library']['id'] ?? null;
-        if (! $result['success'] || ! is_string($libraryId) || $libraryId === '') {
+        if (! $result['success']) {
             throw ValidationException::withMessages([
-                'destination' => __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.'),
+                'destination' => __(EmbyLibraryMapping::redactSummary($result['message'])),
             ]);
         }
 
         return [
-            'library_id' => $libraryId,
+            'library_id' => is_string($libraryId) && $libraryId !== '' ? $libraryId : null,
             'name' => $name,
             'collection_type' => $collectionType,
             'path' => $path,
             'managed' => true,
+            'pending' => ! is_string($libraryId) || $libraryId === '',
         ];
     }
 
@@ -1383,6 +1394,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             [$mapping->output_path],
             false,
             $mapping->target_library_id,
+            createIfMissing: $mapping->status !== 'pending',
         );
 
         if (! $result['success']) {
