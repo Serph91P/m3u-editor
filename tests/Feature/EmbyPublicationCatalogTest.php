@@ -565,3 +565,49 @@ it('builds dynamic group movie mappings from current membership and updates thei
         ->and($updated['items'][0]['display_title'])->toBe('Next Movie')
         ->and($updated['revision'])->not->toBe($first['revision']);
 });
+
+it('builds dynamic group series mappings from current membership and empties stale sources', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $category = Category::factory()->for($user)->for($playlist)->create(['name' => 'Dynamic Shows']);
+    $dynamicGroup = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'series',
+        'name' => 'Current Shows',
+        'last_synced_at' => now(),
+    ]);
+    $firstSeries = Series::factory()->for($user)->for($playlist)->for($category)->createQuietly([
+        'enabled' => true, 'name' => 'First Show', 'tmdb_id' => 101,
+    ]);
+    $secondSeries = Series::factory()->for($user)->for($playlist)->for($category)->createQuietly([
+        'enabled' => true, 'name' => 'Second Show', 'tmdb_id' => 202,
+    ]);
+    $dynamicGroup->series()->attach($firstSeries);
+    $firstSeason = Season::factory()->for($user)->for($playlist)->for($category)->for($firstSeries)->createQuietly(['season_number' => 1]);
+    $secondSeason = Season::factory()->for($user)->for($playlist)->for($category)->for($secondSeries)->createQuietly(['season_number' => 1]);
+    Episode::factory()->for($user)->for($playlist)->for($firstSeries)->for($firstSeason)->createQuietly([
+        'enabled' => true, 'title' => 'First Episode', 'season' => 1, 'episode_num' => 1, 'tmdb_id' => 1001,
+    ]);
+    Episode::factory()->for($user)->for($playlist)->for($secondSeries)->for($secondSeason)->createQuietly([
+        'enabled' => true, 'title' => 'Second Episode', 'season' => 1, 'episode_num' => 1, 'tmdb_id' => 2001,
+    ]);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly(['type' => 'emby']);
+    $mapping = EmbyLibraryMapping::factory()->for($user)->for($integration, 'integration')->create([
+        'source_kind' => 'dynamic_group',
+        'source_identifier' => (string) $dynamicGroup->id,
+        'source_label' => $dynamicGroup->name,
+        'collection_type' => 'tvshows',
+    ]);
+
+    $first = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
+    $dynamicGroup->series()->sync([$secondSeries->id]);
+    $updated = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
+    $dynamicGroup->update(['enabled' => false]);
+    $stale = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
+
+    expect($first['items'][0]['display_title'])->toBe('First Show')
+        ->and($first['items'][0]['episodes'][0]['display_title'])->toBe('First Episode')
+        ->and($updated['items'][0]['display_title'])->toBe('Second Show')
+        ->and($updated['items'][0]['episodes'][0]['display_title'])->toBe('Second Episode')
+        ->and($updated['revision'])->not->toBe($first['revision'])
+        ->and($stale['items'])->toBe([]);
+});
