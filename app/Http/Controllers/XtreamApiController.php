@@ -50,6 +50,7 @@ use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
 use App\Services\TmdbService;
 use App\Services\VodFileNameService;
+use App\Services\WatchProgressLinker;
 use App\Services\XtreamCategoryService;
 use App\Settings\GeneralSettings;
 use App\Support\SeriesKey;
@@ -3064,7 +3065,20 @@ class XtreamApiController extends Controller
 
         $results = $query->limit($limit)->get();
 
-        $enriched = $results->map(function (ViewerWatchProgress $progress): array {
+        $linker = app(WatchProgressLinker::class);
+        $results->each(fn (ViewerWatchProgress $progress) => $linker->ensureLinked($progress, $playlist));
+
+        $enriched = $results->map(function (ViewerWatchProgress $progress): ?array {
+            // vod/episode rows whose stream_id no longer resolves (and couldn't be
+            // relinked via tmdb_id above) point at deleted content - drop them
+            // instead of surfacing a dead card the client can't do anything with.
+            if ($progress->content_type === 'vod' && ! $progress->channel) {
+                return null;
+            }
+            if ($progress->content_type === 'episode' && ! $progress->episode) {
+                return null;
+            }
+
             $data = $progress->toArray();
 
             if ($progress->content_type === 'episode') {
@@ -3152,7 +3166,7 @@ class XtreamApiController extends Controller
             unset($data['channel'], $data['episode']);
 
             return $data;
-        });
+        })->filter()->values();
 
         if ($includeUpNext) {
             $enriched = $this->appendUpNextEntries($enriched, $results, $viewer, $playlist, $limit);
