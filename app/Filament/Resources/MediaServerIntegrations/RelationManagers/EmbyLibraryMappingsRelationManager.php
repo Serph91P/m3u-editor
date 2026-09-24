@@ -675,6 +675,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                         ]);
                         if ($mappingDestination['pending']) {
                             $mapping->updateQuietly([
+                                'library_create_requested_at' => now(),
                                 'last_planned_revision' => null,
                                 'status' => 'pending',
                                 'status_summary' => __('Pending'),
@@ -892,7 +893,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         $libraryId = $result['library']['id'] ?? null;
         if (! $result['success']) {
             throw ValidationException::withMessages([
-                'destination' => __(EmbyLibraryMapping::redactSummary($result['message'])),
+                'destination' => __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.'),
             ]);
         }
 
@@ -1365,6 +1366,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             $data['collection_type'] = $collectionType;
             $data['output_path'] = $outputPath;
             $data['is_managed'] = false;
+            $data['library_create_requested_at'] = null;
         } elseif ($destinationMode === 'new') {
             $writablePaths = $this->ownerRecord->getEmbyPublisherWritablePaths();
             if (! in_array($data['output_path'] ?? null, $writablePaths, true)) {
@@ -1375,6 +1377,16 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
 
             $data['target_library_id'] = $record?->is_managed ? $record->target_library_id : null;
             $data['is_managed'] = true;
+            // Emby already accepted a create request for this exact library, so keep waiting on
+            // its inventory. Any destination change needs a fresh create request instead.
+            $isUnchangedPendingLibrary = $record?->library_create_requested_at !== null
+                && $data['target_library_id'] === null
+                && ($data['target_library_name'] ?? null) === $record->target_library_name
+                && ($data['collection_type'] ?? null) === $record->collection_type
+                && ($data['output_path'] ?? null) === $record->output_path;
+            $data['library_create_requested_at'] = $isUnchangedPendingLibrary
+                ? $record->library_create_requested_at
+                : null;
         } else {
             throw ValidationException::withMessages([
                 'destination_mode' => __('Choose an Emby library destination.'),
@@ -1394,7 +1406,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             [$mapping->output_path],
             false,
             $mapping->target_library_id,
-            createIfMissing: $mapping->status !== 'pending',
+            createIfMissing: $mapping->library_create_requested_at === null,
         );
 
         if (! $result['success']) {
@@ -1415,12 +1427,18 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
 
         $targetLibraryId = $result['library']['id'] ?? $mapping->target_library_id;
         if ($targetLibraryId !== $mapping->target_library_id) {
-            $mapping->updateQuietly(['target_library_id' => $targetLibraryId]);
+            $mapping->updateQuietly([
+                'target_library_id' => $targetLibraryId,
+                'library_create_requested_at' => null,
+            ]);
             $mapping->refresh();
         }
 
         if ($targetLibraryId === null) {
             $mapping->updateQuietly([
+                'library_create_requested_at' => $result['created']
+                    ? now()
+                    : $mapping->library_create_requested_at,
                 'last_planned_revision' => null,
                 'status' => 'pending',
                 'status_summary' => __('Pending'),
