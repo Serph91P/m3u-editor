@@ -1294,6 +1294,9 @@ class XtreamApiController extends Controller
                     refresh: ! $playlist->auto_fetch_series_metadata,
                     sync: false,
                     dispatchTmdb: (bool) $playlist->auto_fetch_series_metadata,
+                    // With on-demand TMDB enrichment on, an enriched series keeps its TMDB
+                    // fields rather than having the provider refresh overwrite them.
+                    preferTmdb: (bool) app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch,
                 );
                 if ($results !== null && $results !== false) {
                     // Provider returned new data — reload the model with fresh relations
@@ -1312,7 +1315,7 @@ class XtreamApiController extends Controller
             if (app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch) {
                 $tmdb = app(TmdbService::class);
                 if ($tmdb->isConfigured()) {
-                    app(FetchTmdbIds::class)->processSingleSeries($tmdb, $seriesItem);
+                    app(FetchTmdbIds::class)->processSingleSeries($tmdb, $seriesItem, backfillEnrichment: true);
                 }
             }
 
@@ -1846,7 +1849,13 @@ class XtreamApiController extends Controller
                 // one-time cached fetch. Skip the TMDB dispatch (unrelated to freshness, and
                 // shouldn't be re-triggered on every client request), and don't fail the
                 // request if the live call errors - fall back to the cached data instead.
-                $channel->fetchMetadata(refresh: true, skipTmdb: true);
+                // With on-demand TMDB enrichment on, an enriched title keeps its TMDB fields
+                // rather than having this provider refresh overwrite them.
+                $channel->fetchMetadata(
+                    refresh: true,
+                    skipTmdb: true,
+                    preferTmdb: (bool) app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch,
+                );
             }
 
             // On-demand TMDB enrichment: global opt-in (Settings > Integrations > TMDB >
@@ -1857,7 +1866,7 @@ class XtreamApiController extends Controller
             if (app(GeneralSettings::class)->tmdb_auto_enrich_on_fetch) {
                 $tmdb = app(TmdbService::class);
                 if ($tmdb->isConfigured()) {
-                    app(FetchTmdbIds::class)->processVodChannel($tmdb, $channel);
+                    app(FetchTmdbIds::class)->processVodChannel($tmdb, $channel, backfillEnrichment: true);
                 }
             }
 
