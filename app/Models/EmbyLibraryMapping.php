@@ -24,7 +24,7 @@ class EmbyLibraryMapping extends Model
      */
     public const LIBRARY_TYPES = ['movies', 'tvshows', 'mixed'];
 
-    public const SOURCE_KINDS = ['vod_group', 'series_category', 'custom_playlist_group', 'all'];
+    public const SOURCE_KINDS = ['vod_group', 'series_category', 'dynamic_group', 'custom_playlist_group', 'all'];
 
     public const DEFAULT_OPTIONS = [
         'naming' => 'media-year',

@@ -5,6 +5,7 @@ use App\Filament\Resources\MediaServerIntegrations\RelationManagers\EmbyLibraryM
 use App\Models\Category;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
+use App\Models\DynamicGroup;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Group;
 use App\Models\MediaServerIntegration;
@@ -40,13 +41,13 @@ function embyMappedGroupOptions($component, ?string $sourceKind, ?string $source
 }
 
 /** Invokes the relation manager's private sourceSearchOptions() directly. */
-function embySourceSearchOptions($component, ?string $sourceKind, string $search, ?string $onlyIdentifier = null): array
+function embySourceSearchOptions($component, ?string $sourceKind, string $search, ?string $onlyIdentifier = null, ?string $collectionType = null): array
 {
     $instance = $component->instance();
     $method = new ReflectionMethod($instance, 'sourceSearchOptions');
     $method->setAccessible(true);
 
-    return $method->invoke($instance, $sourceKind, $search, $onlyIdentifier);
+    return $method->invoke($instance, $sourceKind, $search, $onlyIdentifier, $collectionType);
 }
 
 /** Invokes the relation manager's private compatibleLibraryPathOptions() directly. */
@@ -138,6 +139,27 @@ it('separates movie groups from series categories and hides published sources', 
     $seriesCategory = Category::factory()->for($user)->for($playlist)->create([
         'name' => 'Drama',
     ]);
+    $movieDynamicGroup = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Trending Movies',
+        'last_synced_at' => now(),
+    ]);
+    $seriesDynamicGroup = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'series',
+        'name' => 'Trending Shows',
+        'last_synced_at' => now(),
+    ]);
+    DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Inactive Movies',
+        'enabled' => false,
+        'last_synced_at' => now(),
+    ]);
+    DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod',
+        'name' => 'Unmaterialized Movies',
+        'last_synced_at' => null,
+    ]);
     $integration = MediaServerIntegration::factory()->for($user)->createQuietly(['type' => 'emby']);
     EmbyLibraryMapping::factory()->for($integration, 'integration')->for($user)->create([
         'source_kind' => 'vod_group',
@@ -157,7 +179,11 @@ it('separates movie groups from series categories and hides published sources', 
         ->not->toHaveKey('vod:'.$liveGroup->id)
         ->and(embyBulkSourceOptions($component, 'tvshows'))
         ->toHaveKey('series_category:'.$seriesCategory->id, 'Drama (Provider)')
+        ->toHaveKey('dynamic_group:'.$seriesDynamicGroup->id, 'Trending Shows (Provider)')
+        ->not->toHaveKey('dynamic_group:'.$movieDynamicGroup->id)
         ->not->toHaveKey('vod:'.$movieGroup->id)
+        ->and(embyBulkSourceOptions($component, 'movies'))
+        ->toHaveKey('dynamic_group:'.$movieDynamicGroup->id, 'Trending Movies (Provider)')
         ->and(embyBulkSourceDescriptions($component, 'movies'))
         ->toHaveKey('vod:'.$movieGroup->id, 'Already published');
 });
@@ -181,7 +207,7 @@ it('bounds queries while rendering every bulk source option', function () {
         embyBulkSourceDescriptions($component, 'movies');
     }
 
-    expect(DB::getQueryLog())->toHaveCount(4);
+    expect(DB::getQueryLog())->toHaveCount(5);
     DB::disableQueryLog();
 });
 
@@ -229,8 +255,8 @@ it('bounds Custom Playlist queries while rendering bulk movie and series sources
         ->toHaveCount(8)
         ->and(array_filter(array_keys($seriesOptions), fn (string $key): bool => str_starts_with($key, 'custom_playlist:')))
         ->toHaveCount(8)
-        ->and($movieQueryCount)->toBeLessThanOrEqual(6)
-        ->and($seriesQueryCount)->toBeLessThanOrEqual(7);
+        ->and($movieQueryCount)->toBeLessThanOrEqual(7)
+        ->and($seriesQueryCount)->toBeLessThanOrEqual(8);
 });
 
 it('keeps an existing all-items publication disabled in the create modal', function () {
@@ -1844,4 +1870,138 @@ it('caps the number of items rendered in the Preview modal without affecting the
         return $renderedItemCount === 50
             && str_contains($modalHtml, $fullPlan['revision']);
     }, $mapping);
+});
+
+it('creates typed mappings for dynamic group sources and rejects a mismatched type', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $movies = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod', 'name' => 'Dynamic Movies', 'last_synced_at' => now(),
+    ]);
+    $shows = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'series', 'name' => 'Dynamic Shows', 'last_synced_at' => now(),
+    ]);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby', 'host' => 'emby.test', 'port' => 8096, 'ssl' => true, 'api_key' => 'test-key',
+        'emby_managed_setup_root' => '/srv/emby/managed',
+        'emby_publisher_writable_paths' => ['/srv/emby/managed'],
+        'available_libraries' => [
+            ['id' => 'movies', 'name' => 'Movies', 'type' => 'movies', 'paths' => ['/srv/emby/managed/movies']],
+            ['id' => 'shows', 'name' => 'Shows', 'type' => 'tvshows', 'paths' => ['/srv/emby/managed/shows']],
+        ],
+    ]);
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1, 'IntegrationId' => $integration->id, 'ConfirmedRoot' => '/srv/emby/managed', 'Ready' => true, 'Result' => 'Ready',
+        ]),
+    ]);
+
+    foreach (['movies' => $movies, 'tvshows' => $shows] as $publicationType => $dynamicGroup) {
+        Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+            'ownerRecord' => $integration, 'pageClass' => EditMediaServerIntegration::class,
+        ])->callAction(TestAction::make('create')->table(), [
+            'publication_type' => $publicationType,
+            'sources' => ['dynamic_group:'.$dynamicGroup->id],
+            'destination' => $publicationType === 'movies' ? 'movies' : 'shows',
+        ])->assertHasNoActionErrors()->assertNotified();
+    }
+
+    $created = EmbyLibraryMapping::query()->orderBy('collection_type')->get();
+    expect($created)->toHaveCount(2)
+        ->and($created->pluck('source_kind')->all())->toBe(['dynamic_group', 'dynamic_group'])
+        ->and($created->pluck('source_identifier')->all())->toBe([(string) $movies->id, (string) $shows->id])
+        ->and($created->pluck('collection_type')->all())->toBe(['movies', 'tvshows']);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration, 'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies', 'sources' => ['dynamic_group:'.$shows->id], 'destination' => 'movies',
+    ])->assertHasActionErrors();
+
+    expect(EmbyLibraryMapping::query()->count())->toBe(2);
+});
+
+it('resolves and saves dynamic group sources in the edit form', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly(['name' => 'Provider']);
+    $movies = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod', 'name' => 'Trending Movies', 'last_synced_at' => now(),
+    ]);
+    $shows = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'series', 'name' => 'Trending Shows', 'last_synced_at' => now(),
+    ]);
+    DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod', 'name' => 'Unmaterialized Movies', 'last_synced_at' => null,
+    ]);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'emby_publisher_writable_paths' => ['/srv/emby/managed/movies'],
+    ]);
+    $mapping = EmbyLibraryMapping::factory()->for($user)->for($integration, 'integration')->create([
+        'source_kind' => 'dynamic_group',
+        'source_identifier' => (string) $movies->id,
+        'source_label' => $movies->name,
+        'target_library_id' => null,
+        'target_library_name' => 'Managed Movies',
+        'collection_type' => 'movies',
+        'output_path' => '/srv/emby/managed/movies',
+    ]);
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ]);
+
+    expect(embySourceSearchOptions($component, 'dynamic_group', '', (string) $movies->id))
+        ->toBe([(string) $movies->id => 'Trending Movies (Provider)'])
+        ->and(embySourceSearchOptions($component, 'dynamic_group', '', collectionType: 'movies'))
+        ->toBe([(string) $movies->id => 'Trending Movies (Provider)'])
+        ->and(embySourceSearchOptions($component, 'dynamic_group', '', collectionType: 'tvshows'))
+        ->toBe([(string) $shows->id => 'Trending Shows (Provider)'])
+        ->and(embyMappedGroupOptions($component, 'dynamic_group', (string) $movies->id, 'movies'))
+        ->toBe(['Trending Movies' => 'Trending Movies']);
+
+    $component->callAction(TestAction::make('edit')->table($mapping), [
+        'enabled' => true,
+        'source_kind' => 'dynamic_group',
+        'source_identifier' => (string) $movies->id,
+        'source_label' => 'Trending Movies',
+        'target_library_name' => 'Renamed Movies',
+        'collection_type' => 'movies',
+        'output_path' => '/srv/emby/managed/movies',
+    ])->assertHasNoActionErrors();
+
+    expect($mapping->refresh())
+        ->source_kind->toBe('dynamic_group')
+        ->target_library_name->toBe('Renamed Movies');
+});
+
+it('hides dynamic group sources from the create flow when the feature is disabled', function () {
+    config(['feature.playlist_tmdb_dynamic_groups' => false]);
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $movies = DynamicGroup::factory()->for($user)->for($playlist)->create([
+        'type' => 'vod', 'name' => 'Trending Movies', 'last_synced_at' => now(),
+    ]);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'available_libraries' => [
+            ['id' => 'movies', 'name' => 'Movies', 'type' => 'movies', 'paths' => ['/srv/emby/managed/movies']],
+        ],
+    ]);
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ]);
+
+    expect(embyBulkSourceOptions($component, 'movies'))->not->toHaveKey('dynamic_group:'.$movies->id);
+
+    $component->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies', 'sources' => ['dynamic_group:'.$movies->id], 'destination' => 'movies',
+    ])->assertHasActionErrors();
+
+    expect(EmbyLibraryMapping::query()->count())->toBe(0);
 });
