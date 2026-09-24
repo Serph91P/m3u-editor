@@ -125,6 +125,110 @@ it('enriches a VOD title from TMDB on first view when tmdb_auto_enrich_on_fetch 
     $second->assertJsonPath('cast_list.0.name', 'Keanu Reeves');
 });
 
+it('refreshes a media-server VOD title with an id-less cast_list placeholder', function () {
+    mockOnDemandTmdbSettings(autoEnrichOnFetch: true);
+
+    Http::fake([
+        'https://api.themoviedb.org/3/movie/603*' => Http::response([
+            'id' => 603,
+            'title' => 'The Matrix',
+            'overview' => 'A computer hacker learns about the true nature of reality.',
+            'poster_path' => '/matrix.jpg',
+            'credits' => [
+                'cast' => [
+                    ['id' => 6384, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'profile_path' => '/keanu.jpg'],
+                ],
+            ],
+        ], 200),
+    ]);
+
+    $group = Group::factory()->for($this->user)->create();
+    $channel = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'The Matrix',
+        'year' => 1999,
+        'tmdb_id' => 603,
+        'last_metadata_fetch' => now(),
+        'info' => [
+            'media_server_id' => 'plex-abc123',
+            'plot' => 'A computer hacker learns about the true nature of reality.',
+            'cover_big' => 'https://plex.local/matrix.jpg',
+            // Media-server sync placeholder: real cast names but no TMDB person ids.
+            'cast_list' => [
+                ['id' => null, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'photo' => null],
+            ],
+        ],
+    ]);
+
+    $response = $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_vod_info', ['vod_id' => $channel->id]));
+
+    $response->assertOk();
+    $response->assertJsonPath('cast_list.0.id', 6384);
+
+    $channel->refresh();
+    expect($channel->info['cast_list'][0]['id'] ?? null)->toBe(6384);
+});
+
+it('searches TMDB for a media-server VOD title with no tmdb_id, despite a sync-stamped last_metadata_fetch', function () {
+    // SyncMediaServer stamps last_metadata_fetch at sync time for Plex/Emby channels
+    // (unrelated to any TMDB attempt - see SyncMediaServer::syncVodItem()). Before the
+    // fix, processVodChannel() misread that stamp as "TMDB already searched, no match"
+    // and skipped every media-server title lacking a tmdb_id, permanently.
+    mockOnDemandTmdbSettings(autoEnrichOnFetch: true);
+
+    Http::fake([
+        'https://api.themoviedb.org/3/search/movie*' => Http::response([
+            'results' => [
+                [
+                    'id' => 603,
+                    'title' => 'The Matrix',
+                    'release_date' => '1999-03-30',
+                    'popularity' => 85.5,
+                ],
+            ],
+        ], 200),
+        'https://api.themoviedb.org/3/movie/603/external_ids*' => Http::response([
+            'imdb_id' => 'tt0133093',
+        ], 200),
+        'https://api.themoviedb.org/3/movie/603*' => Http::response([
+            'id' => 603,
+            'title' => 'The Matrix',
+            'overview' => 'A computer hacker learns about the true nature of reality.',
+            'poster_path' => '/matrix.jpg',
+            'credits' => [
+                'cast' => [
+                    ['id' => 6384, 'name' => 'Keanu Reeves', 'character' => 'Neo', 'profile_path' => '/keanu.jpg'],
+                ],
+            ],
+        ], 200),
+    ]);
+
+    $group = Group::factory()->for($this->user)->create();
+    $channel = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'The Matrix',
+        'year' => 1999,
+        'tmdb_id' => null,
+        // Sync-time stamp, not a real TMDB attempt.
+        'last_metadata_fetch' => now(),
+        'info' => [
+            'media_server_id' => 'plex-abc123',
+            'plot' => 'A computer hacker learns about the true nature of reality.',
+            'cover_big' => 'https://plex.local/matrix.jpg',
+        ],
+    ]);
+
+    $response = $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_vod_info', ['vod_id' => $channel->id]));
+
+    $response->assertOk();
+    $response->assertJsonPath('cast_list.0.name', 'Keanu Reeves');
+
+    $channel->refresh();
+    expect($channel->tmdb_id)->toBe(603);
+});
+
 it('does not call TMDB from get_series_info when tmdb_auto_enrich_on_fetch is disabled', function () {
     mockOnDemandTmdbSettings(autoEnrichOnFetch: false);
     Http::preventStrayRequests();
@@ -182,4 +286,47 @@ it('enriches a series from TMDB on first view when tmdb_auto_enrich_on_fetch is 
 
     $series->refresh();
     expect($series->plot)->toBe('A chemistry teacher turns to manufacturing drugs.');
+});
+
+it('refreshes a media-server series with an id-less cast_list placeholder', function () {
+    mockOnDemandTmdbSettings(autoEnrichOnFetch: true);
+
+    Http::fake([
+        'https://api.themoviedb.org/3/tv/1396*' => Http::response([
+            'id' => 1396,
+            'name' => 'Breaking Bad',
+            'overview' => 'A chemistry teacher turns to manufacturing drugs.',
+            'poster_path' => '/bb.jpg',
+            'credits' => [
+                'cast' => [
+                    ['id' => 17419, 'name' => 'Bryan Cranston', 'character' => 'Walter White', 'profile_path' => '/bc.jpg'],
+                ],
+            ],
+        ], 200),
+    ]);
+
+    $series = Series::factory()->for($this->playlist)->create([
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'name' => 'Breaking Bad',
+        'cover' => 'https://plex.local/bb.jpg',
+        'plot' => 'A chemistry teacher turns to manufacturing drugs.',
+        'tmdb_id' => 1396,
+        // Media-server sync placeholder: real cast names but no TMDB person ids.
+        'metadata' => [
+            'media_server_id' => 'plex-xyz789',
+            'cast_list' => [
+                ['id' => null, 'name' => 'Bryan Cranston', 'character' => 'Walter White', 'photo' => null],
+            ],
+        ],
+        'last_modified' => now(),
+    ]);
+
+    $response = $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_series_info', ['series_id' => $series->id]));
+
+    $response->assertOk();
+    $response->assertJsonPath('info.cast_list.0.id', 17419);
+
+    $series->refresh();
+    expect($series->metadata['cast_list'][0]['id'] ?? null)->toBe(17419);
 });
