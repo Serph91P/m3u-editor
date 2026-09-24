@@ -317,9 +317,12 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                         Grid::make(2)->schema([
                             Select::make('source_kind')
                                 ->label(__('Source type'))
-                                ->options([
+                                ->options(fn (?EmbyLibraryMapping $record): array => [
                                     'vod_group' => __('VOD group'),
                                     'series_category' => __('Series category'),
+                                    ...($this->dynamicGroupsAreAvailable() || $record?->source_kind === 'dynamic_group'
+                                        ? ['dynamic_group' => __('Dynamic Group')]
+                                        : []),
                                     'custom_playlist_group' => __('Custom playlist group'),
                                     'all' => __('All eligible items'),
                                 ])
@@ -361,7 +364,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                 // name is still what gets written to source_label below, since
                                 // that's matched verbatim against channels.group/categories.name by
                                 // EmbyPublicationCatalogService.
-                                ->getSearchResultsUsing(fn (Get $get, string $search): array => $this->sourceSearchOptions($get('source_kind'), $search))
+                                ->getSearchResultsUsing(fn (Get $get, string $search): array => $this->sourceSearchOptions($get('source_kind'), $search, collectionType: $get('collection_type')))
                                 ->getOptionLabelUsing(fn (Get $get, ?string $state): ?string => $state === null
                                     ? null
                                     : $this->sourceSearchOptions($get('source_kind'), '', $state)[$state] ?? null)
@@ -379,6 +382,15 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                     }
 
                                     $set('source_label', $this->sourceOptions($get('source_kind'))[$state] ?? null);
+
+                                    if ($get('source_kind') === 'dynamic_group' && $get('destination_mode') !== 'existing') {
+                                        $dynamicGroupType = DynamicGroup::query()->whereKey($state)->value('type');
+                                        $set('collection_type', match ($dynamicGroupType) {
+                                            'vod' => 'movies',
+                                            'series' => 'tvshows',
+                                            default => null,
+                                        });
+                                    }
                                 }),
                             Select::make('source_label')
                                 ->label(__('Mapped group'))
@@ -766,14 +778,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             'custom_playlist' => CustomPlaylist::query()
                 ->where('user_id', $this->ownerRecord->user_id)
                 ->find($identifier),
-            'dynamic_group' => DynamicGroup::query()
-                ->where('user_id', $this->ownerRecord->user_id)
-                ->where('enabled', true)
-                ->whereNotNull('last_synced_at')
-                ->whereHas('playlist', fn ($playlistQuery) => $playlistQuery->where('user_id', $this->ownerRecord->user_id))
-                ->when(($data['publication_type'] ?? null) === 'movies', fn ($query) => $query->where('type', 'vod'))
-                ->when(($data['publication_type'] ?? null) === 'tvshows', fn ($query) => $query->where('type', 'series'))
-                ->find($identifier),
+            'dynamic_group' => $this->findDynamicGroupSource($identifier, $data),
             default => null,
         };
         if ($record === null) {
@@ -962,13 +967,13 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 : $record->name;
         }
 
-        foreach (DynamicGroup::query()->where('user_id', $this->ownerRecord->user_id)
-            ->where('enabled', true)->whereNotNull('last_synced_at')
-            ->where('type', $collectionType === 'movies' ? 'vod' : 'series')
-            ->whereHas('playlist', fn ($playlistQuery) => $playlistQuery->where('user_id', $this->ownerRecord->user_id))
-            ->with('playlist:id,name')->orderBy('name')->get() as $dynamicGroup) {
-            $options[$this->encodeSimpleSourceKey('dynamic_group', (string) $dynamicGroup->id)] = $dynamicGroup->playlist?->name
-                ? "{$dynamicGroup->name} ({$dynamicGroup->playlist->name})" : $dynamicGroup->name;
+        if ($this->dynamicGroupsAreAvailable()) {
+            foreach (DynamicGroup::query()->publishableBy($this->ownerRecord->user_id)
+                ->where('type', $collectionType === 'movies' ? 'vod' : 'series')
+                ->with('playlist:id,name')->orderBy('name')->get() as $dynamicGroup) {
+                $options[$this->encodeSimpleSourceKey('dynamic_group', (string) $dynamicGroup->id)] = $dynamicGroup->playlist?->name
+                    ? "{$dynamicGroup->name} ({$dynamicGroup->playlist->name})" : $dynamicGroup->name;
+            }
         }
 
         $customPlaylistRelations = $collectionType === 'movies'
@@ -1073,6 +1078,31 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             ->all();
     }
 
+    /**
+     * Gates offering Dynamic Groups as new sources. Existing dynamic_group mappings keep
+     * publishing when the flag is off, matching the Xtream API which also ignores it.
+     */
+    private function dynamicGroupsAreAvailable(): bool
+    {
+        return (bool) config('feature.playlist_tmdb_dynamic_groups');
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function findDynamicGroupSource(?string $identifier, array $data): ?DynamicGroup
+    {
+        if (! $this->dynamicGroupsAreAvailable()) {
+            return null;
+        }
+
+        return DynamicGroup::query()
+            ->publishableBy($this->ownerRecord->user_id)
+            ->when(($data['publication_type'] ?? null) === 'movies', fn ($query) => $query->where('type', 'vod'))
+            ->when(($data['publication_type'] ?? null) === 'tvshows', fn ($query) => $query->where('type', 'series'))
+            ->find($identifier);
+    }
+
     /** @return array<string, string> */
     private function sourceOptions(?string $sourceKind): array
     {
@@ -1090,6 +1120,9 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 ->select(['id', 'name']),
             'custom_playlist_group' => CustomPlaylist::query()
                 ->where('user_id', $this->ownerRecord->user_id)
+                ->select(['id', 'name']),
+            'dynamic_group' => DynamicGroup::query()
+                ->publishableBy($this->ownerRecord->user_id)
                 ->select(['id', 'name']),
             default => null,
         };
@@ -1119,7 +1152,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
      *
      * @return array<string, string>
      */
-    private function sourceSearchOptions(?string $sourceKind, string $search, ?string $onlyIdentifier = null): array
+    private function sourceSearchOptions(?string $sourceKind, string $search, ?string $onlyIdentifier = null, ?string $collectionType = null): array
     {
         if ($sourceKind === 'all') {
             return ['*' => __('All eligible items')];
@@ -1145,6 +1178,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         $model = match ($sourceKind) {
             'vod_group' => Group::class,
             'series_category' => Category::class,
+            'dynamic_group' => DynamicGroup::class,
             default => null,
         };
 
@@ -1155,7 +1189,11 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         $query = $model::query()
             ->where('user_id', $this->ownerRecord->user_id)
             ->with('playlist:id,name')
-            ->when($sourceKind === 'vod_group', fn ($q) => $q->where('type', 'vod'));
+            ->when($sourceKind === 'vod_group', fn ($q) => $q->where('type', 'vod'))
+            ->when($sourceKind === 'dynamic_group', fn ($q) => $q
+                ->publishableBy($this->ownerRecord->user_id)
+                ->when($collectionType === 'movies', fn ($typed) => $typed->where('type', 'vod'))
+                ->when($collectionType === 'tvshows', fn ($typed) => $typed->where('type', 'series')));
 
         if ($onlyIdentifier !== null) {
             $query->whereKey($onlyIdentifier);

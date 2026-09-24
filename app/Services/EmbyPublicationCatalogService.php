@@ -149,13 +149,9 @@ class EmbyPublicationCatalogService
                 });
         } elseif ($mapping->source_kind === 'dynamic_group') {
             $dynamicGroup = DynamicGroup::query()
-                ->whereKey($mapping->source_identifier)
-                ->where('user_id', $mapping->user_id)
+                ->publishableBy($mapping->user_id)
                 ->where('type', 'vod')
-                ->where('enabled', true)
-                ->whereNotNull('last_synced_at')
-                ->whereHas('playlist', fn ($playlistQuery) => $playlistQuery->where('user_id', $mapping->user_id))
-                ->first();
+                ->find($mapping->source_identifier);
             if ($dynamicGroup === null) {
                 return [];
             }
@@ -276,13 +272,9 @@ class EmbyPublicationCatalogService
                 });
         } elseif ($mapping->source_kind === 'dynamic_group') {
             $dynamicGroup = DynamicGroup::query()
-                ->whereKey($mapping->source_identifier)
-                ->where('user_id', $mapping->user_id)
+                ->publishableBy($mapping->user_id)
                 ->where('type', 'series')
-                ->where('enabled', true)
-                ->whereNotNull('last_synced_at')
-                ->whereHas('playlist', fn ($playlistQuery) => $playlistQuery->where('user_id', $mapping->user_id))
-                ->first();
+                ->find($mapping->source_identifier);
             if ($dynamicGroup === null) {
                 return [];
             }
