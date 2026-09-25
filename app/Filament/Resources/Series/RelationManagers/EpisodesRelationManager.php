@@ -46,7 +46,9 @@ class EpisodesRelationManager extends RelationManager
         return $table
             ->recordTitleAttribute('title')
             ->modifyQueryUsing(function (Builder $query) {
-                $query->with(['season', 'series', 'playlist']);
+                // Drop the relationship's default episode_num ordering so the
+                // season grouping order is applied first (otherwise seasons interleave)
+                $query->reorder()->with(['season', 'series', 'playlist']);
             })
             ->defaultGroup('season')
             ->defaultSort('episode_num', 'asc')
