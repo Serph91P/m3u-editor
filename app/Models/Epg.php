@@ -311,16 +311,14 @@ class Epg extends Model
      */
     public function scopeWithHasDvr(Builder $query, ?array $dvrOwners = null): Builder
     {
-        $channelsQuery = static::dvrEnabledChannelsQuery($dvrOwners ?? static::resolveDvrEnabledOwners())
-            ->whereColumn('epg_channels.epg_id', $query->qualifyColumn('id'))
-            ->toBase();
+        $dvrOwners ??= static::resolveDvrEnabledOwners();
 
-        // Unlike withCount(), selectRaw() does not default the base columns
-        if ($query->getQuery()->columns === null) {
-            $query->select($query->qualifyColumn('*'));
-        }
-
-        return $query->selectRaw("exists({$channelsQuery->toSql()}) as has_dvr", $channelsQuery->getBindings());
+        return $query->withExists([
+            'channels as has_dvr' => fn (Builder $epgChannels) => $epgChannels->whereHas(
+                'channels',
+                fn (Builder $channels) => static::constrainToDvrOwners($channels, $dvrOwners)
+            ),
+        ]);
     }
 
     /**
@@ -330,18 +328,27 @@ class Epg extends Model
      */
     protected static function dvrEnabledChannelsQuery(array $dvrOwners): Builder
     {
+        return static::constrainToDvrOwners(
+            Channel::join('epg_channels', 'epg_channels.id', '=', 'channels.epg_channel_id'),
+            $dvrOwners
+        );
+    }
+
+    /**
+     * Limit a channels query to channels belonging to one of the DVR-enabled owners.
+     *
+     * @param  array{playlist_ids: list<int>, custom_playlist_ids: list<int>}  $dvrOwners
+     */
+    protected static function constrainToDvrOwners(Builder $channels, array $dvrOwners): Builder
+    {
         $playlistIds = $dvrOwners['playlist_ids'];
         $customPlaylistIds = $dvrOwners['custom_playlist_ids'];
 
-        $query = Channel::query()
-            ->select('channels.id')
-            ->join('epg_channels', 'epg_channels.id', '=', 'channels.epg_channel_id');
-
         if (empty($playlistIds) && empty($customPlaylistIds)) {
-            return $query->whereRaw('1 = 0');
+            return $channels->whereRaw('1 = 0');
         }
 
-        return $query->where(function (Builder $query) use ($playlistIds, $customPlaylistIds): void {
+        return $channels->where(function (Builder $query) use ($playlistIds, $customPlaylistIds): void {
             if (! empty($playlistIds)) {
                 $query->orWhereIn('channels.playlist_id', $playlistIds);
             }
