@@ -33,6 +33,20 @@ class TmdbEnrichment
      */
     public const PREFERRED_SERIES_COLUMNS = ['backdrop_path', 'cast', 'director', 'youtube_trailer', 'rating', 'rating_5based'];
 
+    /**
+     * Media server syncs (Plex/Emby/Jellyfin) write their own value for every field
+     * TMDB enrichment replaces (including clearlogo/cast_list, and cover/plot from a
+     * manual TMDB match), so on a TMDB-checked row these keep their persisted value -
+     * otherwise each auto-sync would roll a TMDB fetch back to the server's defaults.
+     */
+    public const MEDIA_SERVER_PREFERRED_VOD_INFO_KEYS = [...self::PREFERRED_VOD_INFO_KEYS, 'cast_list', 'clearlogo', 'cover_big', 'plot'];
+
+    /** Series `metadata` keys a TMDB-checked series keeps over a media server sync. */
+    public const MEDIA_SERVER_PREFERRED_SERIES_METADATA_KEYS = [...self::PREFERRED_SERIES_METADATA_KEYS, 'cast_list', 'clearlogo'];
+
+    /** Series columns a TMDB-checked series keeps over a media server sync. */
+    public const MEDIA_SERVER_PREFERRED_SERIES_COLUMNS = [...self::PREFERRED_SERIES_COLUMNS, 'cover', 'plot'];
+
     public static function isEnriched(mixed $existing): bool
     {
         $existing = self::toArray($existing);
@@ -44,6 +58,16 @@ class TmdbEnrichment
         }
 
         return false;
+    }
+
+    /**
+     * Whether TMDB enrichment has actually run on this row. Unlike isEnriched(), this
+     * ignores cast_list/clearlogo, which media server syncs write on their own - only
+     * TMDB ever sets the related_tmdb sentinel.
+     */
+    public static function isTmdbChecked(mixed $existing): bool
+    {
+        return array_key_exists('related_tmdb', self::toArray($existing));
     }
 
     /**
