@@ -843,6 +843,8 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
         'new_library_name' => 'Managed Movies',
     ])->assertNotified();
 
+    $component->assertMountedActionModalSee('Emby could not create the managed library. Retry after checking the companion version and administrator credential.');
+
     expect($component->instance()->getErrorBag()->keys())->toBe([
         'mountedActions.0.data.destination',
     ]);
