@@ -137,7 +137,7 @@ class CategoryResource extends Resource implements CopilotResource
         return $table->persistFiltersInSession()
             ->persistSortInSession()
             ->modifyQueryUsing(function (Builder $query) {
-                $query->with('parent')
+                $query->with(['parent', 'playlist'])
                     ->withCount('series')
                     ->withCount('enabled_series')
                     ->withCount('children')
@@ -179,7 +179,9 @@ class CategoryResource extends Resource implements CopilotResource
                 ToggleColumn::make('enabled')
                     ->label(__('Auto Enable'))
                     ->toggleable()
-                    ->tooltip(__('Auto enable newly added category series'))
+                    ->tooltip(fn ($record) => $record->playlist?->enable_series ? __('Playlist "Enable new series" is on, so all new series added to this category will be enabled on sync.') : __('Auto enable newly added category series'))
+                    ->disabled(fn ($record) => (bool) $record->playlist?->enable_series)
+                    ->getStateUsing(fn ($record) => $record->playlist?->enable_series ? true : $record->enabled)
                     ->sortable(),
                 TextColumn::make('name_internal')
                     ->label(__('Default name'))
