@@ -28,6 +28,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Enumerable;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -1049,7 +1050,7 @@ class ProcessM3uImport implements ShouldQueue
                                     continue;
                                 }
 
-                                // Set the source key — hashing and collision detection happen in ProcessM3uImportChunk
+                                // Set the source key - hashing and collision detection happen in assignCollisionSourceIds()
                                 $channel['source_key'] = $channel['title'].$channel['name'].$chGroup;
 
                                 // Update group name to the singular name and return the channel
@@ -1088,7 +1089,7 @@ class ProcessM3uImport implements ShouldQueue
                                 continue;
                             }
 
-                            // Set the source key — hashing and collision detection happen in ProcessM3uImportChunk
+                            // Set the source key - hashing and collision detection happen in assignCollisionSourceIds()
                             $channel['source_key'] = $channel['title'].$channel['name'].$channel['group'];
 
                             // Set channel number, if auto sort is enabled
@@ -1790,6 +1791,34 @@ class ProcessM3uImport implements ShouldQueue
     }
 
     /**
+     * Assign source_id via collision-relative hashing.
+     *
+     * M3U channels carry a raw `source_key` (title + name + group). The first occurrence
+     * keeps the base md5 hash (backwards-compatible), each subsequent duplicate gets a
+     * :dup:N suffix so all entries survive as distinct channel records. Because the key
+     * includes the group, duplicates can only occur within one group, so the counter map
+     * only needs to span the group being chunked. Channels without a `source_key`
+     * (Xtream) pass through with their existing source_id.
+     */
+    public static function assignCollisionSourceIds(Enumerable $channels): Enumerable
+    {
+        $seen = [];
+
+        return $channels->map(function (array $item) use (&$seen) {
+            if (! empty($item['source_key'])) {
+                $count = $seen[$item['source_key']] ?? 0;
+                $item['source_id'] = $count === 0
+                    ? md5($item['source_key'])
+                    : md5($item['source_key'].':dup:'.$count);
+                $seen[$item['source_key']] = $count + 1;
+            }
+            unset($item['source_key']);
+
+            return $item;
+        });
+    }
+
+    /**
      * Process the channel collection
      */
     private function processChannelCollection(
@@ -1857,6 +1886,9 @@ class ProcessM3uImport implements ShouldQueue
                         }
                         $group->update($data);
                     }
+                    // Hash before chunking so duplicate counters span the whole group,
+                    // not just a single 50-item Job payload.
+                    $channels = self::assignCollisionSourceIds($channels);
                     $channels->chunk(50)->each(function ($chunk) use ($playlistId, $batchNo, $group, $autoSort) {
                         Job::create([
                             'title' => "Processing channel import for group: {$group->name}",
