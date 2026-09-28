@@ -61,17 +61,19 @@ View more in our [getting started](https://sparkison.github.io/m3u-editor-docs/d
 
 ## 📸 Screenshots
 
-![Channel editor](./screenshots/channel-editing.png)
+![Dashboard](./screenshots/v0.12.59/m3ue-home.png)
 
-![Series management](./screenshots/series-mgmt.png)
+![Series detail](./screenshots/v0.12.59/m3ue-series-detail.png)
 
-![Playlist EPG preview](./screenshots/in-app-playlist-epg-preview.png)
+![Series editor](./screenshots/v0.12.59/m3ue-series-editor.png)
 
-![EPG preview with playpack](./screenshots/in-app-playlist-epg-playback.png)
+![Playlist output options](./screenshots/v0.12.59/m3ue-output-options.png)
 
-![Proxy stats](./screenshots/proxy-monitor.png)
+![Media servers](./screenshots/v0.12.59/m3ue-servers.png)
 
-![API](./screenshots/api.png)
+![Proxy stream monitor](./screenshots/v0.12.59/m3ue-proxy-monitor.png)
+
+![API](./screenshots/v0.12.59/m3ue-api.png)
 
 ---
 
