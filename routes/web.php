@@ -553,21 +553,24 @@ Route::get('/webdav-media/{integration}/stream/{item}', [
  *    used by the m3u-tv Flutter client) there's no durable row yet, so the
  *    resolved URL is cached server-side under a short-lived random token —
  *    see MediaServerProxyController::generateAioStreamsLiveProxyUrls().
+ *
+ * The signature check ignores `proxy` (appended by m3u-tv) and `client_id`
+ * (appended by the in-app floating/popout players) so those clients don't 403.
  */
 Route::get('/aiostreams-media/{integration}/channel/{channel}/stream', [
     MediaServerProxyController::class,
     'streamAioStreamsChannel',
-])->middleware(ValidateSignature::relative('proxy'))->name('aiostreams-media.channel.stream');
+])->middleware(ValidateSignature::relative(['proxy', 'client_id']))->name('aiostreams-media.channel.stream');
 
 Route::get('/aiostreams-media/{integration}/episode/{episode}/stream', [
     MediaServerProxyController::class,
     'streamAioStreamsEpisode',
-])->middleware(ValidateSignature::relative('proxy'))->name('aiostreams-media.episode.stream');
+])->middleware(ValidateSignature::relative(['proxy', 'client_id']))->name('aiostreams-media.episode.stream');
 
 Route::get('/aiostreams-media/{integration}/live/{item}/stream', [
     MediaServerProxyController::class,
     'streamAioStreamsLive',
-])->middleware(ValidateSignature::relative('proxy'))->name('aiostreams-media.live.stream');
+])->middleware(ValidateSignature::relative(['proxy', 'client_id']))->name('aiostreams-media.live.stream');
 
 // NOTE: The DVR file streaming routes (dvr.recording.*) were relocated earlier in
 // this file, ahead of the /{uuid}/hdhr/... catch-all, so the HDHR pattern no
