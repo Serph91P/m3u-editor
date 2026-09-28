@@ -605,7 +605,7 @@ class SchedulesDirectService
             return $response->json();
         } catch (Exception $e) {
             match ($e->getCode()) {
-                self::LINEUP_ALREADY_IN_ACCOUNT_CODE => null, // idempotent — already added
+                self::LINEUP_ALREADY_IN_ACCOUNT_CODE => null, // idempotent - already added
                 self::MAX_LINEUPS_CODE => throw new Exception(
                     'Your SchedulesDirect account has reached the maximum number of allowed lineups. Remove an existing lineup before adding a new one.',
                     self::MAX_LINEUPS_CODE,
@@ -634,7 +634,7 @@ class SchedulesDirectService
             return $response->json();
         } catch (Exception $e) {
             match ($e->getCode()) {
-                self::LINEUP_NOT_IN_ACCOUNT_CODE => null, // idempotent — already removed
+                self::LINEUP_NOT_IN_ACCOUNT_CODE => null, // idempotent - already removed
                 self::TOO_MANY_LINEUP_CHANGES_CODE => throw new Exception(
                     'You have exceeded the daily limit of 6 lineup changes on your SchedulesDirect account. Please try again tomorrow.',
                     self::TOO_MANY_LINEUP_CHANGES_CODE,
@@ -663,7 +663,7 @@ class SchedulesDirectService
         $userLineups = $this->getUserLineups($epg->sd_token);
 
         return collect($userLineups['lineups'] ?? [])
-            ->mapWithKeys(fn ($lineup) => [$lineup['lineup'] => "{$lineup['name']} — {$lineup['lineup']} ({$lineup['transport']})"])
+            ->mapWithKeys(fn ($lineup) => [$lineup['lineup'] => "{$lineup['name']} - {$lineup['lineup']} ({$lineup['transport']})"])
             ->all();
     }
 
@@ -681,16 +681,44 @@ class SchedulesDirectService
     }
 
     /**
-     * Remove the lineup that is currently configured on the EPG from the SD account.
-     * No-op if no lineup is configured.
+     * Remove the lineups configured on the EPG from the SD account, skipping any
+     * lineup another EPG on the same SD account still uses.
      */
-    public function removeConfiguredLineup(Epg $epg): void
+    public function removeConfiguredLineups(Epg $epg): void
     {
-        if (! $epg->hasSchedulesDirectLineup()) {
-            return;
-        }
+        $lineupsInUse = Epg::query()
+            ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
+            ->whereKeyNot($epg->getKey())
+            ->pluck('sd_lineup_ids')
+            ->flatten()
+            ->all();
 
-        $this->removeLineupFromEpg($epg, $epg->sd_lineup_id);
+        foreach (array_diff($epg->sd_lineup_ids ?? [], $lineupsInUse) as $lineupId) {
+            $this->removeLineupFromEpg($epg, $lineupId);
+        }
+    }
+
+    /**
+     * Get a lineup's stations, adding the lineup to the SD account first if it isn't subscribed yet.
+     */
+    private function getOrAddLineup(Epg $epg, string $lineupId): array
+    {
+        try {
+            return $this->getLineup($epg->sd_token, $lineupId);
+        } catch (Exception $e) {
+            // 4003/4004 = lineup not found/not subscribed
+            if ($e->getCode() !== self::LINEUP_NOT_IN_ACCOUNT_CODE
+                && ! str_contains($e->getMessage(), 'not in account')
+                && ! str_contains($e->getMessage(), 'not subscribed')
+            ) {
+                throw $e;
+            }
+
+            Log::debug("Adding lineup {$lineupId} to SchedulesDirect account", ['epg_id' => $epg->id]);
+            $this->addLineup($epg->sd_token, $lineupId);
+
+            return $this->getLineup($epg->sd_token, $lineupId);
+        }
     }
 
     /**
@@ -1145,24 +1173,44 @@ class SchedulesDirectService
                 'sd_progress' => 0,
             ]);
 
-            // Check if lineup is already in account; add it if not
-            try {
-                $lineupData = $this->getLineup($epg->sd_token, $epg->sd_lineup_id);
-            } catch (Exception $e) {
-                // 4003/4004 = lineup not found/not subscribed
-                if ($e->getCode() === self::LINEUP_NOT_IN_ACCOUNT_CODE
-                    || str_contains($e->getMessage(), 'not in account')
-                    || str_contains($e->getMessage(), 'not subscribed')
-                ) {
-                    Log::debug("Adding lineup {$epg->sd_lineup_id} to SchedulesDirect account", ['epg_id' => $epg->id]);
-                    $this->addLineup($epg->sd_token, $epg->sd_lineup_id);
-                    $lineupData = $this->getLineup($epg->sd_token, $epg->sd_lineup_id);
-                } else {
-                    throw $e;
+            // Merge every selected lineup; a station carried by more than one lineup is kept once.
+            // A lineup that can't be added to the account (slot or daily change limit) is recorded
+            // and skipped so the others still import. It was never imported, so skipping it loses
+            // no channel mappings. Any other failure fails the sync, because an import missing a
+            // previously imported lineup would delete its EPG channels and their mappings.
+            $map = $stations = $lineupErrors = [];
+            foreach ($epg->sd_lineup_ids as $lineupId) {
+                try {
+                    $lineup = $this->getOrAddLineup($epg, $lineupId);
+                } catch (Exception $e) {
+                    if (! in_array($e->getCode(), [self::MAX_LINEUPS_CODE, self::TOO_MANY_LINEUP_CHANGES_CODE], true)) {
+                        throw $e;
+                    }
+                    $lineupErrors[] = [
+                        'timestamp' => now()->toISOString(),
+                        'message' => "Lineup {$lineupId}: {$e->getMessage()}",
+                    ];
+                    Log::warning('Skipping SchedulesDirect lineup that could not be added to the account', [
+                        'epg_id' => $epg->id,
+                        'lineup_id' => $lineupId,
+                        'error' => $e->getMessage(),
+                    ]);
+
+                    continue;
+                }
+                foreach ($lineup['map'] ?? [] as $mapping) {
+                    $map[$mapping['stationID']] ??= $mapping;
+                }
+                foreach ($lineup['stations'] ?? [] as $station) {
+                    $stations[$station['stationID']] ??= $station;
                 }
             }
+            if (count($lineupErrors) === count($epg->sd_lineup_ids)) {
+                throw new Exception(implode(' ', array_column($lineupErrors, 'message')));
+            }
+            $lineupData = ['map' => array_values($map), 'stations' => array_values($stations)];
 
-            // Refresh station IDs from the current lineup on every sync so stations
+            // Refresh station IDs from the current lineups on every sync so stations
             // Schedules Direct removes/remaps server-side don't linger and get
             // requested after they're no longer valid (causes SD to block the app).
             $stationIds = array_column($lineupData['map'], 'stationID');
@@ -1191,7 +1239,7 @@ class SchedulesDirectService
             // Update EPG record
             $epg->update([
                 'sd_last_sync' => now(),
-                'sd_errors' => null,
+                'sd_errors' => $lineupErrors ?: null,
                 'sd_progress' => 100,
             ]);
             Log::debug('Successfully completed SchedulesDirect sync', [
@@ -1713,7 +1761,9 @@ class SchedulesDirectService
 
         $request = Http::withHeaders($headers)
             ->timeout($timeout)
-            ->retry(2, 1000) // Basic retry with 1 second delay
+            // Basic retry with 1 second delay. A failed response is returned (not thrown) so the
+            // SD error code in its body reaches the error handling below instead of being lost.
+            ->retry(2, 1000, throw: false)
             ->withOptions([
                 'verify' => true,
                 'stream' => false, // Disable streaming to prevent memory issues
@@ -1775,7 +1825,7 @@ class SchedulesDirectService
             $headers = $this->buildHeaders($token);
             $request = Http::withHeaders($headers)
                 ->timeout($timeout)
-                ->retry(2, 1000)
+                ->retry(2, 1000, throw: false)
                 ->withOptions([
                     'verify' => true,
                     'stream' => false,
