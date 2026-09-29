@@ -1963,7 +1963,7 @@ class VodResource extends Resource implements CopilotResource
                     TextInput::make('info.age')
                         ->label(__('Age Rating'))
                         ->helperText(__('Age rating or classification.'))
-                        ->placeholder(__('PG-13, R, etc.'))
+                        ->placeholder(__('12+, 16+, 18+'))
                         ->rules(['nullable', 'string', 'max:10']),
                     TextInput::make('info.mpaa_rating')
                         ->label(__('MPAA Rating'))

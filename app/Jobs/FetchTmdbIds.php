@@ -516,9 +516,9 @@ class FetchTmdbIds implements ShouldQueue
      * so repeat calls after the first successful enrichment are cheap no-ops.
      *
      * $backfillEnrichment (on-demand Xtream path) also requires the related_tmdb
-     * sentinel, so a title whose provider already supplied tmdb_id/plot/cover -
-     * or one enriched before cast_list/clearlogo/related_tmdb existed - still
-     * gets those fields filled once.
+     * and tmdb_certification/studios sentinels, so a title whose provider already supplied
+     * tmdb_id/plot/cover - or one enriched before cast_list/clearlogo/related_tmdb/
+     * mpaa_rating/studios existed - still gets those fields filled once.
      */
     public function processVodChannel(TmdbService $tmdb, Channel $channel, bool $backfillEnrichment = false): void
     {
@@ -533,6 +533,14 @@ class FetchTmdbIds implements ShouldQueue
         // enriched before related_tmdb existed keep their cheap no-op there.
         if ($hasMetadata && ($backfillEnrichment || ! empty($info['media_server_id']))) {
             $hasMetadata = array_key_exists('related_tmdb', $info);
+        }
+
+        // The on-demand path also backfills the US certification and studios once on
+        // titles enriched before they existed. mpaa_rating can't be the sentinel (providers
+        // send it, often blank), so the TMDB-only tmdb_certification/studios pair is.
+        if ($hasMetadata && $backfillEnrichment) {
+            $hasMetadata = array_key_exists('tmdb_certification', $info)
+                && array_key_exists('studios', $info);
         }
 
         // Determine the best existing TMDB ID we have
@@ -760,6 +768,21 @@ class FetchTmdbIds implements ShouldQueue
                     $info['youtube_trailer'] = $details['youtube_trailer'];
                 }
 
+                // Populate US certification (PG-13, R, ...) if not already set, or refresh it when overwriting
+                if (! empty($details['certification']) && (empty($info['mpaa_rating']) || $this->overwriteExisting)) {
+                    $info['mpaa_rating'] = $details['certification'];
+                }
+
+                // Always set, even to null: TMDB's own certification doubles as the
+                // "certification checked" sentinel for the on-demand backfill gate.
+                $info['tmdb_certification'] = $details['certification'] ?? null;
+
+                // Populate production companies (id/name/logo) - written to the movie .nfo
+                // as <studio>. Always set, even to [], alongside tmdb_certification: the
+                // pair is the on-demand backfill sentinel. When TMDB has none, a media
+                // server's studios are kept.
+                $info['studios'] = ($details['studios'] ?? []) ?: ($info['studios'] ?? []);
+
                 // Populate duration from TMDB runtime (in minutes)
                 if (! empty($details['runtime']) && (empty($info['duration_secs']) || ($info['duration_secs'] ?? 0) === 0)) {
                     $runtimeMinutes = (int) $details['runtime'];
@@ -873,6 +896,14 @@ class FetchTmdbIds implements ShouldQueue
         // bar, so provider-supplied plot/cover/tmdb_id still get cast_list/clearlogo filled.
         if ($hasMetadata && ($backfillEnrichment || ! empty($seriesMetadataArr['media_server_id']))) {
             $hasMetadata = array_key_exists('related_tmdb', $seriesMetadataArr);
+        }
+
+        // The on-demand path also backfills the US rating and networks once on series
+        // enriched before they existed - both keys are always written, so their presence
+        // marks the series as checked even when TMDB has neither.
+        if ($hasMetadata && $backfillEnrichment) {
+            $hasMetadata = array_key_exists('content_rating', $seriesMetadataArr)
+                && array_key_exists('networks', $seriesMetadataArr);
         }
 
         if (($existingTvdbId || $existingTmdbId) && $hasMetadata && ! $this->overwriteExisting) {
@@ -1115,6 +1146,15 @@ class FetchTmdbIds implements ShouldQueue
                     $metadata['cast_list'] = $details['cast_list'];
                     $updateData['metadata'] = $metadata;
                 }
+
+                // Populate US TV rating (TV-MA, TV-14, ...). Only TMDB writes it, so it's
+                // always refreshed. Always set, even to null/[], alongside networks: the
+                // pair doubles as the on-demand backfill sentinel.
+                $metadata['content_rating'] = $details['certification'] ?? null;
+
+                // Populate networks (id/name/logo) - written to tvshow.nfo as <studio>.
+                // When TMDB has none, a media server's networks are kept.
+                $metadata['networks'] = ($details['networks'] ?? []) ?: ($metadata['networks'] ?? []);
 
                 // Populate "more like this" candidates (Xtream get_series_info resolves
                 // these against the playlist's own library at request time). Always

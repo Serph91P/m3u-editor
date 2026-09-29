@@ -52,6 +52,52 @@ beforeEach(function () {
     mockTmdbSettings();
 });
 
+it('does not re-fetch an already enriched title for the new certification sentinels in the bulk job', function () {
+    $tmdbCalls = 0;
+    Http::fake(function () use (&$tmdbCalls) {
+        $tmdbCalls++;
+
+        return Http::response([], 500);
+    });
+
+    // Enriched before tmdb_certification / content_rating / networks existed.
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'is_vod' => true,
+        'title' => 'The Matrix',
+        'tmdb_id' => 603,
+        'info' => [
+            'tmdb_id' => 603,
+            'plot' => 'TMDB plot.',
+            'cover_big' => 'https://image.tmdb.org/t/p/w500/matrix.jpg',
+            'genre' => 'Action, Science Fiction',
+            'related_tmdb' => [],
+        ],
+    ]);
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Breaking Bad',
+        'plot' => 'TMDB plot.',
+        'cover' => 'https://image.tmdb.org/t/p/w500/bb.jpg',
+        'genre' => 'Drama, Crime',
+        'tmdb_id' => 1396,
+        'metadata' => ['tmdb_id' => 1396, 'related_tmdb' => []],
+    ]);
+
+    (new TestableFetchTmdbIds(
+        vodChannelIds: [$channel->id],
+        seriesIds: [$series->id],
+        overwriteExisting: false,
+        user: $this->user,
+    ))->handle(app(TmdbService::class));
+
+    expect($tmdbCalls)->toBe(0)
+        ->and($channel->refresh()->info)->not->toHaveKey('tmdb_certification')
+        ->and($series->refresh()->metadata)->not->toHaveKey('networks');
+});
+
 it('can fetch TMDB ID for a VOD channel', function () {
     Http::fake([
         'https://api.themoviedb.org/3/search/movie*' => Http::response([

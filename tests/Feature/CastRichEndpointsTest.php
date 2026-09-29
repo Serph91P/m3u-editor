@@ -322,3 +322,61 @@ it('emits clearlogo in get_series_info from series metadata', function () {
     $response->assertOk();
     $response->assertJsonPath('info.clearlogo', 'https://image.tmdb.org/t/p/w500/bb-logo.png');
 });
+
+// ---- get_series_info mpaa_rating ----
+
+it('emits the series content rating in get_series_info', function (array $metadata, string $expected) {
+    $series = Series::factory()->for($this->playlist)->create([
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'name' => 'Breaking Bad',
+        'tmdb_id' => 1396,
+        'metadata' => $metadata,
+        'last_modified' => now(),
+    ]);
+
+    Season::factory()->create([
+        'series_id' => $series->id,
+        'season_number' => 1,
+        'episode_count' => 1,
+    ]);
+
+    $this->getJson(xtreamCastUrl($this->username, $this->password, 'get_series_info', ['series_id' => $series->id]))
+        ->assertOk()
+        ->assertJsonPath('info.mpaa_rating', $expected);
+})->with([
+    'TMDB rating wins' => [['content_rating' => 'TV-MA', 'official_rating' => 'TV-14'], 'TV-MA'],
+    'media server fallback' => [['official_rating' => 'TV-14'], 'TV-14'],
+    'no rating' => [[], ''],
+]);
+
+it('falls back to the TMDB certification in get_vod_info when the provider rating is blank', function () {
+    $group = Group::factory()->for($this->user)->create();
+    $channel = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'The Matrix',
+        'last_metadata_fetch' => now(),
+        'info' => ['plot' => 'Plot', 'mpaa_rating' => '', 'age' => '', 'tmdb_certification' => 'R'],
+    ]);
+
+    $this->getJson(xtreamCastUrl($this->username, $this->password, 'get_vod_info', ['vod_id' => $channel->id]))
+        ->assertOk()
+        ->assertJsonPath('info.mpaa_rating', 'R')
+        ->assertJsonPath('info.age', 'R');
+});
+
+it('keeps a provider-sent age in get_vod_info over the TMDB certification', function () {
+    $group = Group::factory()->for($this->user)->create();
+    $channel = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'The Matrix',
+        'last_metadata_fetch' => now(),
+        'info' => ['plot' => 'Plot', 'age' => '16+', 'tmdb_certification' => 'R'],
+    ]);
+
+    $this->getJson(xtreamCastUrl($this->username, $this->password, 'get_vod_info', ['vod_id' => $channel->id]))
+        ->assertOk()
+        ->assertJsonPath('info.age', '16+');
+});

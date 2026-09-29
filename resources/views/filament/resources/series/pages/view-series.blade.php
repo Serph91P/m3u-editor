@@ -23,6 +23,8 @@
         $seriesRatingSuppressed = \App\Support\TmdbRating::isVoteCountBelowThreshold($record->metadata['vote_count'] ?? null);
         $clearLogo = $record->metadata['clearlogo'] ?? null;
         $castList = $record->metadata['cast_list'] ?? [];
+        $contentRating = $record->getContentRating();
+        $networkNames = collect($record->metadata['networks'] ?? [])->pluck('name')->filter()->values();
     @endphp
 
     @if ($backdropUrl)
@@ -96,6 +98,9 @@
                             {{ $record->enabled ? 'Enabled' : 'Disabled' }}
                         </span>
                     </div>
+
+                    {{-- Content rating (TMDB's, else the media server's) and networks --}}
+                    <x-content-rating-badges :rating="$contentRating" :names="$networkNames" icon="heroicon-m-tv" />
 
                     {{-- Plot --}}
                     @if ($record->plot)
@@ -211,6 +216,9 @@
                             {{ $record->enabled ? 'Enabled' : 'Disabled' }}
                         </span>
                     </div>
+
+                    {{-- Content rating (TMDB's, else the media server's) and networks --}}
+                    <x-content-rating-badges :rating="$contentRating" :names="$networkNames" icon="heroicon-m-tv" />
 
                     @if ($record->plot)
                         <p class="text-gray-600 dark:text-gray-300">{{ Str::limit($record->plot, 300) }}</p>

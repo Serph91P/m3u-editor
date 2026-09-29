@@ -425,3 +425,100 @@ it('backfills TMDB enrichment for a series whose provider already supplied tmdb_
 
     expect($series->refresh()->metadata)->toHaveKey('related_tmdb');
 });
+
+it('backfills the US certification once for a VOD title enriched before it existed', function () {
+    mockOnDemandTmdbSettings(autoEnrichOnFetch: true);
+
+    Http::fake([
+        'https://api.themoviedb.org/3/movie/603*' => Http::response([
+            'id' => 603,
+            'title' => 'The Matrix',
+            'release_dates' => ['results' => [
+                ['iso_3166_1' => 'US', 'release_dates' => [['certification' => 'R', 'type' => 3]]],
+            ]],
+        ], 200),
+    ]);
+
+    $group = Group::factory()->for($this->user)->create();
+    $channel = Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'The Matrix',
+        'year' => 1999,
+        'tmdb_id' => 603,
+        'last_metadata_fetch' => now(),
+        // Fully TMDB-enriched under the previous sentinel (related_tmdb), but
+        // from before the certification was fetched.
+        'info' => [
+            'tmdb_id' => 603,
+            'plot' => 'TMDB plot.',
+            'cover_big' => 'https://image.tmdb.org/t/p/w500/matrix.jpg',
+            'genre' => 'Action, Science Fiction',
+            'mpaa_rating' => '',
+            'related_tmdb' => [],
+        ],
+    ]);
+
+    $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_vod_info', ['vod_id' => $channel->id]))
+        ->assertOk()
+        ->assertJsonPath('info.mpaa_rating', 'R');
+
+    expect($channel->refresh()->info['tmdb_certification'])->toBe('R');
+
+    $tmdbCalls = 0;
+    Http::fake(function () use (&$tmdbCalls) {
+        $tmdbCalls++;
+
+        return Http::response([], 500);
+    });
+
+    $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_vod_info', ['vod_id' => $channel->id]))
+        ->assertOk()
+        ->assertJsonPath('info.mpaa_rating', 'R');
+
+    expect($tmdbCalls)->toBe(0);
+});
+
+it('backfills the rating and networks once for a series enriched before they existed, even when TMDB has neither', function () {
+    mockOnDemandTmdbSettings(autoEnrichOnFetch: true);
+
+    Http::fake([
+        'https://api.themoviedb.org/3/tv/1396*' => Http::response([
+            'id' => 1396,
+            'name' => 'Breaking Bad',
+        ], 200),
+    ]);
+
+    $series = Series::factory()->for($this->playlist)->create([
+        'user_id' => $this->user->id,
+        'enabled' => true,
+        'name' => 'Breaking Bad',
+        'cover' => 'https://image.tmdb.org/t/p/w500/bb.jpg',
+        'plot' => 'TMDB plot.',
+        'genre' => 'Drama, Crime',
+        'tmdb_id' => 1396,
+        'metadata' => ['tmdb_id' => 1396, 'related_tmdb' => []],
+        'last_modified' => now(),
+    ]);
+
+    $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_series_info', ['series_id' => $series->id]))
+        ->assertOk();
+
+    $metadata = $series->refresh()->metadata;
+    expect($metadata)->toHaveKey('content_rating')
+        ->and($metadata['content_rating'])->toBeNull()
+        ->and($metadata['networks'])->toBe([]);
+
+    // A series TMDB has no rating or networks for must not be re-fetched on every view.
+    $tmdbCalls = 0;
+    Http::fake(function () use (&$tmdbCalls) {
+        $tmdbCalls++;
+
+        return Http::response([], 500);
+    });
+
+    $this->getJson(onDemandXtreamUrl($this->username, $this->password, 'get_series_info', ['series_id' => $series->id]))
+        ->assertOk();
+
+    expect($tmdbCalls)->toBe(0);
+});

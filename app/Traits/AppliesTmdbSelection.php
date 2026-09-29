@@ -205,6 +205,14 @@ trait AppliesTmdbSelection
                 $info['youtube_trailer'] = $details['youtube_trailer'];
             }
 
+            if (! empty($details['certification'])) {
+                $info['mpaa_rating'] = $details['certification'];
+            }
+
+            // Always set, even to null: the on-demand backfill sentinel.
+            $info['tmdb_certification'] = $details['certification'] ?? null;
+            $info['studios'] = ($details['studios'] ?? []) ?: ($info['studios'] ?? []);
+
             if (! empty($details['runtime']) && (empty($info['duration_secs']) || ($info['duration_secs'] ?? 0) === 0)) {
                 $runtimeMinutes = (int) $details['runtime'];
                 $runtimeSeconds = $runtimeMinutes * 60;
@@ -360,6 +368,10 @@ trait AppliesTmdbSelection
             if (! empty($details['cast_list'])) {
                 $seriesMetadata['cast_list'] = $details['cast_list'];
             }
+
+            // Always set, even to null/[]: together they're the on-demand backfill sentinel.
+            $seriesMetadata['content_rating'] = $details['certification'] ?? null;
+            $seriesMetadata['networks'] = ($details['networks'] ?? []) ?: ($seriesMetadata['networks'] ?? []);
 
             // Always set, even to an empty array: it doubles as the "TMDB has been
             // checked" sentinel FetchTmdbIds' on-demand backfill gate relies on.

@@ -58,6 +58,8 @@ class NfoService
                 $xml .= $this->xmlElement('status', $metadata['status']);
             }
 
+            $this->appendXml($xml, 'mpaa', $series->getContentRating());
+
             $this->appendGenres($xml, $metadata['genres'] ?? null);
             $this->appendNamedList($xml, 'studio', $metadata['networks'] ?? null);
 
@@ -239,6 +241,9 @@ class NfoService
                 }
                 $xml .= $this->xmlElement('runtime', $runtime);
             }
+
+            $this->appendXml($xml, 'mpaa', $channel->getContentRating());
+            $this->appendNamedList($xml, 'studio', $info['studios'] ?? null);
 
             $this->appendGenres($xml, $info['genres'] ?? $movieData['genre'] ?? null);
             $this->appendXml($xml, 'director', $info['director'] ?? $movieData['director'] ?? null);

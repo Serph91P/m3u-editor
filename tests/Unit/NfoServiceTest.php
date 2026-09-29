@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Channel;
 use App\Models\Episode;
 use App\Models\Series;
 use App\Services\NfoService;
@@ -312,5 +313,122 @@ describe('NfoService applyNameFilter', function () {
         $result = $method->invokeArgs($service, [$name, true, ['[4K]']]);
 
         expect($result)->toBe('Test  Movie  Name');
+    });
+});
+
+describe('NfoService content ratings and networks', function () {
+    it('writes the TMDB content rating and networks to tvshow.nfo', function () {
+        $path = sys_get_temp_dir().'/nfo-service-'.bin2hex(random_bytes(6));
+        $series = (new Series)->forceFill([
+            'name' => 'Breaking Bad',
+            'metadata' => [
+                'content_rating' => 'TV-MA',
+                'official_rating' => 'TV-14',
+                'networks' => [['id' => 174, 'name' => 'AMC', 'logo' => null]],
+            ],
+        ]);
+
+        expect((new NfoService)->generateSeriesNfo($series, $path))->toBeTrue();
+
+        $xml = file_get_contents($path.'/tvshow.nfo');
+        expect($xml)
+            ->toContain('<mpaa>TV-MA</mpaa>')
+            ->not->toContain('TV-14')
+            ->toContain('<studio>AMC</studio>');
+
+        unlink($path.'/tvshow.nfo');
+        rmdir($path);
+    });
+
+    it('falls back to the media server rating in tvshow.nfo', function () {
+        $path = sys_get_temp_dir().'/nfo-service-'.bin2hex(random_bytes(6));
+        $series = (new Series)->forceFill([
+            'name' => 'Local Show',
+            'metadata' => ['official_rating' => 'TV-14'],
+        ]);
+
+        expect((new NfoService)->generateSeriesNfo($series, $path))->toBeTrue();
+
+        expect(file_get_contents($path.'/tvshow.nfo'))->toContain('<mpaa>TV-14</mpaa>');
+
+        unlink($path.'/tvshow.nfo');
+        rmdir($path);
+    });
+
+    it('writes the movie certification to the movie nfo', function () {
+        $path = sys_get_temp_dir().'/nfo-service-'.bin2hex(random_bytes(6));
+        mkdir($path);
+        $strmPath = $path.'/movie.strm';
+
+        $channel = (new Channel)->forceFill([
+            'title' => 'The Matrix',
+            'info' => ['mpaa_rating' => 'R'],
+        ]);
+
+        expect((new NfoService)->generateMovieNfo($channel, $strmPath))->toBeTrue();
+
+        expect(file_get_contents($path.'/movie.nfo'))->toContain('<mpaa>R</mpaa>');
+
+        unlink($path.'/movie.nfo');
+        rmdir($path);
+    });
+
+    it('writes TMDB studios to the movie nfo', function () {
+        $path = sys_get_temp_dir().'/nfo-service-'.bin2hex(random_bytes(6));
+        mkdir($path);
+        $strmPath = $path.'/movie.strm';
+
+        $channel = (new Channel)->forceFill([
+            'title' => 'The Matrix',
+            'info' => ['studios' => [
+                ['id' => 79, 'name' => 'Village Roadshow Pictures', 'logo' => null],
+                ['id' => 372, 'name' => 'Groucho II Film Partnership', 'logo' => null],
+            ]],
+        ]);
+
+        expect((new NfoService)->generateMovieNfo($channel, $strmPath))->toBeTrue();
+
+        expect(file_get_contents($path.'/movie.nfo'))
+            ->toContain('<studio>Village Roadshow Pictures</studio>')
+            ->toContain('<studio>Groucho II Film Partnership</studio>');
+
+        unlink($path.'/movie.nfo');
+        rmdir($path);
+    });
+
+    it('falls back to the TMDB certification when the provider rating is blank', function () {
+        $path = sys_get_temp_dir().'/nfo-service-'.bin2hex(random_bytes(6));
+        mkdir($path);
+        $strmPath = $path.'/movie.strm';
+
+        $channel = (new Channel)->forceFill([
+            'title' => 'The Matrix',
+            'info' => ['mpaa_rating' => '', 'tmdb_certification' => 'R'],
+        ]);
+
+        expect((new NfoService)->generateMovieNfo($channel, $strmPath))->toBeTrue();
+
+        expect(file_get_contents($path.'/movie.nfo'))->toContain('<mpaa>R</mpaa>');
+
+        unlink($path.'/movie.nfo');
+        rmdir($path);
+    });
+
+    it('omits mpaa from the movie nfo when the rating is blank', function () {
+        $path = sys_get_temp_dir().'/nfo-service-'.bin2hex(random_bytes(6));
+        mkdir($path);
+        $strmPath = $path.'/movie.strm';
+
+        $channel = (new Channel)->forceFill([
+            'title' => 'The Matrix',
+            'info' => ['mpaa_rating' => ''],
+        ]);
+
+        expect((new NfoService)->generateMovieNfo($channel, $strmPath))->toBeTrue();
+
+        expect(file_get_contents($path.'/movie.nfo'))->not->toContain('<mpaa>');
+
+        unlink($path.'/movie.nfo');
+        rmdir($path);
     });
 });

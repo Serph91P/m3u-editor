@@ -892,7 +892,7 @@ class TmdbService
                 [
                     'api_key' => $this->apiKey,
                     'language' => $this->language,
-                    'append_to_response' => 'external_ids,credits,videos,images,recommendations',
+                    'append_to_response' => 'external_ids,credits,videos,images,recommendations,content_ratings',
                     'include_image_language' => substr($this->language, 0, 2).',en,null',
                 ]
             );
@@ -992,6 +992,8 @@ class TmdbService
                 'cast_list' => $castList,
                 'director' => $director,
                 'youtube_trailer' => $youtubeTrailer,
+                'certification' => $this->pickUsContentRating($data['content_ratings']['results'] ?? []),
+                'networks' => $this->reshapeCompanies($data['networks'] ?? []),
                 'recommendations' => $this->reshapeRecommendations($data['recommendations']['results'] ?? [], 'tv'),
             ];
         } catch (\Exception $e) {
@@ -1021,7 +1023,7 @@ class TmdbService
                 [
                     'api_key' => $this->apiKey,
                     'language' => $this->language,
-                    'append_to_response' => 'external_ids,credits,videos,images,recommendations',
+                    'append_to_response' => 'external_ids,credits,videos,images,recommendations,release_dates',
                     'include_image_language' => substr($this->language, 0, 2).',en,null',
                 ]
             );
@@ -1110,6 +1112,8 @@ class TmdbService
                 'cast_list' => $castList,
                 'director' => $directors,
                 'youtube_trailer' => $youtubeTrailer,
+                'certification' => $this->pickUsCertification($data['release_dates']['results'] ?? []),
+                'studios' => $this->reshapeCompanies($data['production_companies'] ?? []),
                 'recommendations' => $this->reshapeRecommendations($data['recommendations']['results'] ?? [], 'movie'),
             ];
         } catch (\Exception $e) {
@@ -1120,6 +1124,64 @@ class TmdbService
 
             return null;
         }
+    }
+
+    /**
+     * Pick the US certification (e.g. "PG-13", "R") from a TMDB movie
+     * `release_dates.results` array.
+     *
+     * TMDB lists one entry per release (premiere, theatrical, digital, ...) and many
+     * carry a blank certification, so blanks are skipped and theatrical releases are
+     * preferred, then limited theatrical, digital, physical, TV and premiere.
+     *
+     * @param  array<int, array{iso_3166_1?: string, release_dates?: array<int, array{certification?: string, type?: int}>}>  $countries
+     */
+    private function pickUsCertification(array $countries): ?string
+    {
+        $usReleases = collect($countries)->firstWhere('iso_3166_1', 'US')['release_dates'] ?? [];
+
+        $typePriority = [3 => 0, 2 => 1, 4 => 2, 5 => 3, 6 => 4, 1 => 5];
+
+        $certification = collect($usReleases)
+            ->filter(fn (array $release): bool => trim($release['certification'] ?? '') !== '')
+            ->sortBy(fn (array $release): int => $typePriority[$release['type'] ?? 0] ?? 99)
+            ->first()['certification'] ?? null;
+
+        return $certification !== null ? trim($certification) : null;
+    }
+
+    /**
+     * Pick the US TV rating (e.g. "TV-MA", "TV-14") from a TMDB series
+     * `content_ratings.results` array.
+     *
+     * @param  array<int, array{iso_3166_1?: string, rating?: string}>  $ratings
+     */
+    private function pickUsContentRating(array $ratings): ?string
+    {
+        $rating = trim(collect($ratings)->firstWhere('iso_3166_1', 'US')['rating'] ?? '');
+
+        return $rating !== '' ? $rating : null;
+    }
+
+    /**
+     * Reshape a TMDB series `networks` or movie `production_companies` array to
+     * id/name/logo - both share the same shape. Network ids match TV_NETWORKS /
+     * `with_networks`, and `name` is what NfoService writes as <studio>.
+     *
+     * @param  array<int, array{id?: int, name?: string, logo_path?: string|null}>  $companies
+     * @return list<array{id: int, name: string, logo: string|null}>
+     */
+    private function reshapeCompanies(array $companies): array
+    {
+        return collect($companies)
+            ->filter(fn (array $company): bool => ! empty($company['id']) && ! empty($company['name']))
+            ->map(fn (array $company): array => [
+                'id' => (int) $company['id'],
+                'name' => $company['name'],
+                'logo' => ! empty($company['logo_path']) ? 'https://image.tmdb.org/t/p/w300'.$company['logo_path'] : null,
+            ])
+            ->values()
+            ->all();
     }
 
     /**

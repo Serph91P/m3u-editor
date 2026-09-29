@@ -121,6 +121,85 @@ it('keeps TMDB enrichment on a series when the provider metadata is refreshed', 
         ->and($metadata['related_tmdb'])->toEqual(tmdbEnrichmentFixture()['related_tmdb']);
 });
 
+it('keeps the TMDB series rating and networks when the provider metadata is refreshed', function () {
+    $playlist = xtreamPlaylistForEnrichment($this->user);
+    $networks = [['id' => 174, 'name' => 'AMC', 'logo' => 'https://image.tmdb.org/t/p/w300/amc.png']];
+    $series = Series::factory()->for($playlist)->for($this->user)->create([
+        'source_series_id' => '999',
+        'is_custom' => false,
+        'metadata' => ['plot' => 'Old plot', 'content_rating' => 'TV-MA', 'networks' => $networks],
+    ]);
+
+    Http::preventStrayRequests();
+    Http::fake([
+        '*action=get_series_info*' => Http::response([
+            'info' => ['name' => $series->name, 'plot' => 'Provider plot'],
+            'seasons' => [],
+            'episodes' => [],
+        ]),
+    ]);
+
+    expect($series->fetchMetadata(refresh: true, sync: false, dispatchTmdb: false))->toBeTrue();
+
+    $metadata = $series->refresh()->metadata;
+    expect($metadata['plot'])->toBe('Provider plot')
+        ->and($metadata['content_rating'])->toBe('TV-MA')
+        ->and($metadata['networks'])->toEqual($networks);
+});
+
+it('keeps null TMDB sentinels on a VOD channel through a provider refresh and serves the TMDB certification', function () {
+    $playlist = xtreamPlaylistForEnrichment($this->user);
+    $channel = Channel::factory()->for($playlist)->for($this->user)->create([
+        'is_vod' => true,
+        'source_id' => 'vod-1',
+        'last_metadata_fetch' => now(),
+        'info' => [
+            'mpaa_rating' => 'R',
+            'tmdb_certification' => 'R',
+            'studios' => [['id' => 79, 'name' => 'Village Roadshow Pictures', 'logo' => null]],
+            'related_tmdb' => [],
+        ],
+    ]);
+    $unrated = Channel::factory()->for($playlist)->for($this->user)->create([
+        'is_vod' => true,
+        'source_id' => 'vod-2',
+        'last_metadata_fetch' => now(),
+        'info' => ['tmdb_certification' => null, 'studios' => [], 'related_tmdb' => []],
+    ]);
+
+    $channel->fetchMetadata(providerVodInfoXtream(), refresh: true, skipTmdb: true);
+    $unrated->fetchMetadata(providerVodInfoXtream(), refresh: true, skipTmdb: true);
+
+    // The provider's blank mpaa_rating wins the raw key, but TMDB's value is kept alongside it.
+    expect($channel->refresh()->info['mpaa_rating'])->toBe('')
+        ->and($channel->info['tmdb_certification'])->toBe('R')
+        ->and($channel->info['studios'])->toEqual([['id' => 79, 'name' => 'Village Roadshow Pictures', 'logo' => null]])
+        ->and($unrated->refresh()->info)->toHaveKeys(['tmdb_certification', 'studios']);
+});
+
+it('keeps null/empty TMDB series sentinels through a provider refresh', function () {
+    $playlist = xtreamPlaylistForEnrichment($this->user);
+    $series = Series::factory()->for($playlist)->for($this->user)->create([
+        'source_series_id' => '999',
+        'is_custom' => false,
+        'metadata' => ['plot' => 'Old plot', 'content_rating' => null, 'networks' => [], 'related_tmdb' => []],
+    ]);
+
+    Http::preventStrayRequests();
+    Http::fake([
+        '*action=get_series_info*' => Http::response([
+            'info' => ['name' => $series->name, 'plot' => 'Provider plot'],
+            'seasons' => [],
+            'episodes' => [],
+        ]),
+    ]);
+
+    expect($series->fetchMetadata(refresh: true, sync: false, dispatchTmdb: false))->toBeTrue();
+
+    expect($series->refresh()->metadata)->toHaveKey('content_rating')
+        ->toHaveKey('networks');
+});
+
 it('returns cast_list and clearlogo from get_vod_info when auto_fetch_vod_metadata is off', function () {
     $playlist = xtreamPlaylistForEnrichment($this->user, [
         'auto_fetch_vod_metadata' => false,
@@ -179,6 +258,7 @@ function providerVodInfoXtream(): object
                 'info' => [
                     'plot' => 'Provider plot',
                     'rating' => '5.1',
+                    'mpaa_rating' => '',
                     'cast' => 'Provider Cast',
                     'backdrop_path' => ['http://xtream.test/backdrop.jpg'],
                 ],
@@ -197,6 +277,8 @@ it('keeps TMDB-owned VOD fields over the provider refresh when TMDB is preferred
             'plot' => 'Old plot',
             'rating' => 8.7,
             'vote_count' => 25000,
+            'mpaa_rating' => 'R',
+            'tmdb_certification' => 'R',
             'cast' => 'Keanu Reeves',
             'backdrop_path' => ['https://image.tmdb.org/t/p/original/backdrop.jpg'],
         ], tmdbEnrichmentFixture()),
@@ -207,6 +289,10 @@ it('keeps TMDB-owned VOD fields over the provider refresh when TMDB is preferred
     $info = $channel->refresh()->info;
     expect($info['rating'])->toBe(8.7)
         ->and($info['vote_count'])->toBe(25000)
+        // mpaa_rating stays provider-owned (TMDB only fills it when blank), so the provider's
+        // value wins; TMDB's certification survives in tmdb_certification for the read fallback.
+        ->and($info['mpaa_rating'])->toBe('')
+        ->and($info['tmdb_certification'])->toBe('R')
         ->and($info['cast'])->toBe('Keanu Reeves')
         ->and($info['backdrop_path'])->toBe(['https://image.tmdb.org/t/p/original/backdrop.jpg'])
         // Fields TMDB only fills when empty stay provider-owned.
@@ -219,13 +305,14 @@ it('lets the provider refresh win on TMDB-owned VOD fields when TMDB is not pref
         'is_vod' => true,
         'source_id' => 'vod-1',
         'last_metadata_fetch' => now(),
-        'info' => array_merge(['rating' => 8.7, 'cast' => 'Keanu Reeves'], tmdbEnrichmentFixture()),
+        'info' => array_merge(['rating' => 8.7, 'mpaa_rating' => 'R', 'cast' => 'Keanu Reeves'], tmdbEnrichmentFixture()),
     ]);
 
     $channel->fetchMetadata(providerVodInfoXtream(), refresh: true, skipTmdb: true);
 
     $info = $channel->refresh()->info;
     expect($info['rating'])->toBe('5.1')
+        ->and($info['mpaa_rating'])->toBe('')
         ->and($info['cast'])->toBe('Provider Cast')
         ->and($info['clearlogo'])->toBe(tmdbEnrichmentFixture()['clearlogo']);
 });
