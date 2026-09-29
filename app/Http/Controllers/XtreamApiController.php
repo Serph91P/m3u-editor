@@ -888,7 +888,11 @@ class XtreamApiController extends Controller
 
             // Keyset pagination: compound (sort, id) cursor avoids the O(n²) offset
             // degradation of lazy() while still delivering correct sort order.
-            $seriesIterable = PlaylistGenerateController::seriesKeysetLazy($seriesQuery, 500);
+            // Dynamic groups are ordered by TMDB rank instead (a subquery the
+            // keyset cursor can't page on), and are small enough for lazy().
+            $seriesIterable = $dynamicGroupId !== null
+                ? $seriesQuery->lazy(500)
+                : PlaylistGenerateController::seriesKeysetLazy($seriesQuery, 500);
 
             // Custom playlists need tag-based ordering — materialise to sort, then stream.
             if ($isCustomPlaylist) {
