@@ -187,3 +187,68 @@ it('handles missing artwork gracefully', function () {
     // Verify no icon tags are present when no artwork available
     expect($xmlContent)->not->toContain('<icon');
 });
+
+/**
+ * One SchedulesDirect /metadata/programs/ image entry.
+ *
+ * @return array<string, mixed>
+ */
+function sdImage(string $uri, string $category, string $aspect, int $width, int $height, string $tier = 'Series'): array
+{
+    return compact('uri', 'category', 'aspect', 'width', 'height', 'tier');
+}
+
+it('falls back to series artwork on the root programID when an episode has none of its own', function () {
+    $requests = [];
+    Http::fake(function ($request) use (&$requests) {
+        $requests[] = $request->data();
+
+        return Http::response(collect($request->data())->map(fn (string $programId) => match ($programId) {
+            'EP017053304391' => ['programID' => $programId, 'data' => ['response' => 'INVALID_PROGRAMID', 'code' => 6000]],
+            'EP01705330' => ['programID' => $programId, 'data' => [sdImage('series-wide.jpg', 'Iconic', '16x9', 960, 540)]],
+            'EP000000010002' => ['programID' => $programId, 'data' => [sdImage('episode-wide.jpg', 'Iconic', '16x9', 960, 540, 'Episode')]],
+        })->values()->all());
+    });
+
+    $artwork = (new SchedulesDirectService)->getProgramArtwork('token', ['EP017053304391', 'EP000000010002']);
+
+    expect($requests)->toBe([['EP017053304391', 'EP000000010002'], ['EP01705330']])
+        ->and($artwork['EP017053304391'][0]['url'])->toEndWith('/image/series-wide.jpg')
+        ->and($artwork['EP000000010002'][0]['url'])->toEndWith('/image/episode-wide.jpg');
+});
+
+it('keeps the best 16:9 image alongside the higher resolution square and portrait picks', function () {
+    Http::fake(fn ($request) => Http::response([[
+        'programID' => 'SH012345670000',
+        'data' => [
+            sdImage('square-large.jpg', 'Iconic', '1x1', 2000, 2000),
+            sdImage('square.jpg', 'Iconic', '1x1', 1400, 1400),
+            sdImage('portrait.jpg', 'Iconic', '2x3', 480, 720),
+            sdImage('wide-small.jpg', 'Iconic', '16x9', 480, 270),
+            sdImage('wide.jpg', 'Iconic', '16x9', 960, 540),
+            sdImage('banner-square.jpg', 'Banner-L1', '1x1', 2000, 2000),
+            sdImage('banner-wide.jpg', 'Banner-L1', '16x9', 960, 540),
+        ],
+    ]]));
+
+    $artwork = (new SchedulesDirectService)->getProgramArtwork('token', ['SH012345670000']);
+    $urls = collect($artwork['SH012345670000'])->map(fn (array $image) => basename($image['url']))->all();
+
+    expect($urls)->toBe(['square-large.jpg', 'square.jpg', 'banner-square.jpg', 'wide.jpg'])
+        ->and($artwork['SH012345670000'][3])->toMatchArray(['type' => 'poster', 'width' => 960, 'height' => 540, 'orient' => 'L']);
+});
+
+it('adds no extra image when a 16:9 one is already among the picks', function () {
+    Http::fake(fn ($request) => Http::response([[
+        'programID' => 'SH012345670000',
+        'data' => [
+            sdImage('wide.jpg', 'Iconic', '16x9', 1920, 1080),
+            sdImage('square.jpg', 'Iconic', '1x1', 1400, 1400),
+        ],
+    ]]));
+
+    $artwork = (new SchedulesDirectService)->getProgramArtwork('token', ['SH012345670000']);
+
+    expect(collect($artwork['SH012345670000'])->map(fn (array $image) => basename($image['url']))->all())
+        ->toBe(['wide.jpg', 'square.jpg']);
+});

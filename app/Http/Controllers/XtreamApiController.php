@@ -2529,7 +2529,8 @@ class XtreamApiController extends Controller
     {
         $details = [];
 
-        $icon = trim((string) ($programme['icon'] ?? ''));
+        $icon = $this->epgWideProgrammeImage($programme['images'] ?? null)
+            ?? trim((string) ($programme['icon'] ?? ''));
         if ($icon !== '' && filter_var($icon, FILTER_VALIDATE_URL)) {
             $details['icon'] = $playlist->enable_logo_proxy && ! str_starts_with($icon, url('/'))
                 ? LogoProxyController::generateProxyUrl($icon)
@@ -2562,6 +2563,45 @@ class XtreamApiController extends Controller
         }
 
         return $details;
+    }
+
+    /**
+     * The guide frames programme art at 16:9, so when the source carries
+     * alternative images (Schedules Direct sends several aspect ratios, and
+     * the cache keeps every <icon> after the first under `images`), pick the
+     * landscape one closest to 16:9, largest first on ties. Null when there
+     * is none, leaving the primary icon in place.
+     */
+    private function epgWideProgrammeImage(mixed $images): ?string
+    {
+        if (! is_array($images)) {
+            return null;
+        }
+
+        $bestUrl = null;
+        $bestDistance = null;
+        $bestWidth = 0;
+        foreach ($images as $image) {
+            if (! is_array($image)) {
+                continue;
+            }
+
+            $url = trim((string) ($image['url'] ?? ''));
+            $width = (int) ($image['width'] ?? 0);
+            $height = (int) ($image['height'] ?? 0);
+            if ($url === '' || $height <= 0 || $width <= $height || ! filter_var($url, FILTER_VALIDATE_URL)) {
+                continue;
+            }
+
+            $distance = round(abs($width / $height - 16 / 9), 2);
+            if ($bestDistance === null || $distance < $bestDistance || ($distance === $bestDistance && $width > $bestWidth)) {
+                $bestUrl = $url;
+                $bestDistance = $distance;
+                $bestWidth = $width;
+            }
+        }
+
+        return $bestUrl;
     }
 
     /**

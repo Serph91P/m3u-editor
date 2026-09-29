@@ -762,16 +762,16 @@ class SchedulesDirectService
     }
 
     /**
-     * Get artwork for programs
+     * Get artwork for programs, keyed by the requested 14 character programID.
      *
-     * Based on testing, the /metadata/programs endpoint returns error 1008 "INCORRECT_REQUEST"
-     * for all tested formats. The regular /programs endpoint shows hasImageArtwork=true,
-     * indicating artwork is available, but accessed differently.
+     * The full programID only returns artwork made for that exact episode, and
+     * SchedulesDirect answers INVALID_PROGRAMID (code 6000) when there is none,
+     * which is the norm for daily shows like news. Series artwork is keyed on
+     * the 10 character root programID, so anything still missing after the
+     * first pass is retried against its root.
      *
-     * For now, this returns empty array but could be enhanced to:
-     * 1. Check for artwork URLs embedded in program responses
-     * 2. Try alternative API endpoints for metadata
-     * 3. Use program flags to determine if artwork exists
+     * @param  array<int, string>  $programIds
+     * @return array<string, array<int, array<string, mixed>>>
      */
     public function getProgramArtwork(string $token, array $programIds, ?string $epgUuid = null): array
     {
@@ -779,72 +779,33 @@ class SchedulesDirectService
             return [];
         }
 
-        // SchedulesDirect has a limit of 500 program IDs per request
-        $maxBatchSize = 500;
-        $allArtwork = [];
-
         try {
             Log::debug('Fetching program artwork from SchedulesDirect', [
                 'program_count' => count($programIds),
-                'batches_needed' => ceil(count($programIds) / $maxBatchSize),
             ]);
 
-            // Process in batches of 500 or fewer
-            $batches = array_chunk($programIds, $maxBatchSize);
+            $allArtwork = $this->fetchArtworkBatches($token, $programIds, $epgUuid);
 
-            foreach ($batches as $batchIndex => $batch) {
-                Log::debug('Processing artwork batch', [
-                    'batch' => $batchIndex + 1,
-                    'batch_size' => count($batch),
-                ]);
-
-                // The correct endpoint requires a trailing slash: /metadata/programs/
-                $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
-
-                $artworkData = $response->json();
-
-                // Handle code 2055: debug not enabled - disable sd_debug and retry without debug header
-                if (isset($artworkData['code']) && $artworkData['code'] === self::DEBUG_NOT_ENABLED_CODE) {
-                    $this->handleDebugNotEnabledError();
-
-                    // Retry the request without the debug header
-                    Log::debug('Retrying artwork request without debug header');
-                    $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
-                    $artworkData = $response->json();
+            $missingByRootId = [];
+            foreach ($programIds as $programId) {
+                if (! isset($allArtwork[$programId]) && strlen($programId) > 10) {
+                    $missingByRootId[substr($programId, 0, 10)][] = $programId;
                 }
+            }
 
-                if ($response->successful()) {
-                    foreach ($artworkData as $programArtwork) {
-                        $programId = $programArtwork['programID'] ?? null;
-                        $artworkItems = $programArtwork['data'] ?? [];
-
-                        if ($programId && ! empty($artworkItems)) {
-                            // Group and process all artwork types, not just the "best" one
-                            $processedArtwork = $this->selectBestArtwork($artworkItems, $epgUuid);
-
-                            if (! empty($processedArtwork)) {
-                                $allArtwork[$programId] = $processedArtwork;
-                            }
-                        }
+            if (! empty($missingByRootId)) {
+                $rootArtwork = $this->fetchArtworkBatches($token, array_keys($missingByRootId), $epgUuid);
+                foreach ($rootArtwork as $rootId => $artwork) {
+                    foreach ($missingByRootId[$rootId] ?? [] as $programId) {
+                        $allArtwork[$programId] = $artwork;
                     }
-                } else {
-                    Log::error('Failed to fetch program artwork batch', [
-                        'batch' => $batchIndex + 1,
-                        'status' => $response->status(),
-                        'response' => $response->body(),
-                    ]);
-                }
-
-                // Add small delay between batches to be respectful to the API
-                if ($batchIndex < count($batches) - 1) {
-                    usleep(100000); // 100ms delay
                 }
             }
 
             Log::debug('Successfully fetched program artwork', [
                 'programs_with_artwork' => count($allArtwork),
                 'total_programs' => count($programIds),
-                'batches_processed' => count($batches),
+                'root_ids_requested' => count($missingByRootId),
             ]);
 
             return $allArtwork;
@@ -859,7 +820,77 @@ class SchedulesDirectService
     }
 
     /**
-     * Select only the best 1-2 images per type to avoid XMLTV bloat
+     * POST programIDs to /metadata/programs/ in batches of 500 (the API limit)
+     * and return the selected artwork keyed by the programID SchedulesDirect
+     * echoes back. IDs without artwork come back as an error object instead of
+     * an image list and are left out.
+     *
+     * @param  array<int, string>  $programIds
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function fetchArtworkBatches(string $token, array $programIds, ?string $epgUuid): array
+    {
+        $artwork = [];
+        $batches = array_chunk($programIds, 500);
+
+        foreach ($batches as $batchIndex => $batch) {
+            Log::debug('Processing artwork batch', [
+                'batch' => $batchIndex + 1,
+                'batch_size' => count($batch),
+            ]);
+
+            // The correct endpoint requires a trailing slash: /metadata/programs/
+            $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
+
+            $artworkData = $response->json();
+
+            // Handle code 2055: debug not enabled - disable sd_debug and retry without debug header
+            if (isset($artworkData['code']) && $artworkData['code'] === self::DEBUG_NOT_ENABLED_CODE) {
+                $this->handleDebugNotEnabledError();
+
+                // Retry the request without the debug header
+                Log::debug('Retrying artwork request without debug header');
+                $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
+                $artworkData = $response->json();
+            }
+
+            if ($response->successful() && is_array($artworkData)) {
+                foreach ($artworkData as $programArtwork) {
+                    $programId = $programArtwork['programID'] ?? null;
+                    $artworkItems = $programArtwork['data'] ?? [];
+
+                    if ($programId && is_array($artworkItems) && array_is_list($artworkItems) && ! empty($artworkItems)) {
+                        // Group and process all artwork types, not just the "best" one
+                        $processedArtwork = $this->selectBestArtwork($artworkItems, $epgUuid);
+
+                        if (! empty($processedArtwork)) {
+                            $artwork[$programId] = $processedArtwork;
+                        }
+                    }
+                }
+            } else {
+                Log::error('Failed to fetch program artwork batch', [
+                    'batch' => $batchIndex + 1,
+                    'status' => $response->status(),
+                    'response' => $response->body(),
+                ]);
+            }
+
+            // Add small delay between batches to be respectful to the API
+            if ($batchIndex < count($batches) - 1) {
+                usleep(100000); // 100ms delay
+            }
+        }
+
+        return $artwork;
+    }
+
+    /**
+     * Select only the best 1-2 images per type to avoid XMLTV bloat, plus the
+     * best 16:9 image when none of those picks is one. Resolution scoring
+     * favours the large square and portrait renditions, but guides frame
+     * programme art as 16:9 and SchedulesDirect offers it for nearly every
+     * program.
      */
     private function selectBestArtwork(array $artworkItems, ?string $epgUuid = null): array
     {
@@ -895,20 +926,26 @@ class SchedulesDirectService
             $selectedFromType = array_slice($artworks, 0, $limit);
 
             foreach ($selectedFromType as $artwork) {
-                $imageUrl = $this->buildImageUrl($artwork['uri'], $epgUuid);
+                $selectedArtwork[] = $this->buildArtworkInfo($artwork, $type, $epgUuid);
+            }
+        }
 
-                $artworkInfo = [
-                    'url' => $imageUrl,
-                    'type' => $type,
-                    'width' => $artwork['width'] ?? 0,
-                    'height' => $artwork['height'] ?? 0,
-                    'orient' => $this->determineOrientation($artwork['width'] ?? 0, $artwork['height'] ?? 0),
-                    'size' => $this->mapImageSize($artwork['width'] ?? 0, $artwork['height'] ?? 0),
-                    'category' => $artwork['category'] ?? '',
-                    'tier' => $artwork['tier'] ?? '',
-                ];
+        $hasWideArtwork = collect($selectedArtwork)->contains(
+            fn (array $artwork): bool => $this->isWideArtwork($artwork)
+        );
+        if (! $hasWideArtwork) {
+            $bestWide = null;
+            foreach ($typeGroups as $type => $artworks) {
+                foreach ($artworks as $artwork) {
+                    if ($this->isWideArtwork($artwork)
+                        && ($bestWide === null || $this->calculateArtworkScore($artwork) > $this->calculateArtworkScore($bestWide['artwork']))) {
+                        $bestWide = ['type' => $type, 'artwork' => $artwork];
+                    }
+                }
+            }
 
-                $selectedArtwork[] = $artworkInfo;
+            if ($bestWide !== null) {
+                $selectedArtwork[] = $this->buildArtworkInfo($bestWide['artwork'], $bestWide['type'], $epgUuid);
             }
         }
 
@@ -919,6 +956,44 @@ class SchedulesDirectService
         ]);
 
         return $selectedArtwork;
+    }
+
+    /**
+     * The XMLTV icon attributes for one SchedulesDirect image.
+     *
+     * @param  array<string, mixed>  $artwork
+     * @return array{url: string, type: string, width: int, height: int, orient: string, size: string, category: string, tier: string}
+     */
+    private function buildArtworkInfo(array $artwork, string $type, ?string $epgUuid): array
+    {
+        return [
+            'url' => $this->buildImageUrl($artwork['uri'], $epgUuid),
+            'type' => $type,
+            'width' => $artwork['width'] ?? 0,
+            'height' => $artwork['height'] ?? 0,
+            'orient' => $this->determineOrientation($artwork['width'] ?? 0, $artwork['height'] ?? 0),
+            'size' => $this->mapImageSize($artwork['width'] ?? 0, $artwork['height'] ?? 0),
+            'category' => $artwork['category'] ?? '',
+            'tier' => $artwork['tier'] ?? '',
+        ];
+    }
+
+    /**
+     * Whether an image is a 16:9 rendition, from the SchedulesDirect `aspect`
+     * field or, for already-selected artwork, its dimensions.
+     *
+     * @param  array<string, mixed>  $artwork
+     */
+    private function isWideArtwork(array $artwork): bool
+    {
+        if (isset($artwork['aspect'])) {
+            return $artwork['aspect'] === '16x9';
+        }
+
+        $width = (int) ($artwork['width'] ?? 0);
+        $height = (int) ($artwork['height'] ?? 0);
+
+        return $height > 0 && abs($width / $height - 16 / 9) < 0.05;
     }
 
     /**

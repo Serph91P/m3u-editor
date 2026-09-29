@@ -443,3 +443,40 @@ it('routes extended programme icons through the logo proxy when the playlist ena
 
     expect($listing['icon'])->toBe(LogoProxyController::generateProxyUrl('https://images.example/proxied.jpg'));
 });
+
+it('prefers the alternative image closest to 16:9 for the guide artwork', function () {
+    $this->playlist->update(['enable_logo_proxy' => false]);
+    $ctx = makeBatchChannel($this->user, $this->playlist, 'channel.art');
+
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.art', [
+        'id' => 'wide-1', 'title' => 'Wide Art', 'desc' => '',
+        'start' => Carbon::now()->addMinutes(5)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHour()->format('Y-m-d H:i:s'),
+        'icon' => 'https://images.example/square.jpg',
+        'images' => [
+            ['url' => 'https://images.example/poster.jpg', 'type' => 'poster', 'width' => 480, 'height' => 720, 'orient' => 'P', 'size' => 2],
+            ['url' => 'https://images.example/four-three.jpg', 'type' => 'poster', 'width' => 720, 'height' => 540, 'orient' => 'L', 'size' => 2],
+            ['url' => 'https://images.example/wide-small.jpg', 'type' => 'backdrop', 'width' => 480, 'height' => 270, 'orient' => 'L', 'size' => 1],
+            ['url' => 'https://images.example/wide.jpg', 'type' => 'poster', 'width' => 960, 'height' => 540, 'orient' => 'L', 'size' => 2],
+        ],
+    ]);
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.art', [
+        'id' => 'tall-1', 'title' => 'Tall Art', 'desc' => '',
+        'start' => Carbon::now()->addHours(2)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHours(3)->format('Y-m-d H:i:s'),
+        'icon' => 'https://images.example/primary.jpg',
+        'images' => [
+            ['url' => 'https://images.example/poster.jpg', 'type' => 'poster', 'width' => 480, 'height' => 720, 'orient' => 'P', 'size' => 2],
+        ],
+    ]);
+
+    $response = $this->getJson(batchUrl($this->username, $this->password, [
+        'stream_ids' => (string) $ctx['channel']->id,
+        'details' => 1,
+    ]))->assertOk();
+
+    $listings = collect($response->json((string) $ctx['channel']->id.'.epg_listings'))->keyBy('id');
+
+    expect($listings['wide-1']['icon'])->toBe('https://images.example/wide.jpg')
+        ->and($listings['tall-1']['icon'])->toBe('https://images.example/primary.jpg');
+});
