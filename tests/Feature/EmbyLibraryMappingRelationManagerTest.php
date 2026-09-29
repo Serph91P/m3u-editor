@@ -1715,7 +1715,7 @@ it('does not silently replace a missing saved path when editing an existing targ
         'is_managed' => false,
     ]);
 
-    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
         'pageClass' => EditMediaServerIntegration::class,
     ])->callAction(TestAction::make('edit')->table($mapping), [
@@ -1727,9 +1727,13 @@ it('does not silently replace a missing saved path when editing an existing targ
         'target_library_id' => 'library-1',
         'output_path' => '/srv/emby/managed/old-path',
         'options' => $mapping->options,
-    ])->assertHasActionErrors();
+    ])->assertHasActionErrors(['output_path'])
+        // The single compatible path hides the picker, so the notification is the visible feedback.
+        ->assertNotified('Choose an available compatible library path.');
 
-    expect($mapping->refresh()->output_path)->toBe('/srv/emby/managed/old-path');
+    expect($component->instance()->getErrorBag()->keys())->toBe([
+        'mountedActions.0.data.output_path',
+    ])->and($mapping->refresh()->output_path)->toBe('/srv/emby/managed/old-path');
 });
 
 it('returns no Mapped group options for a live-only custom playlist, for either library type', function () {
