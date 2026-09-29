@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\LogoProxyController;
 use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
@@ -354,4 +355,91 @@ it('rejects batch EPG for network playlists', function () {
     $this->getJson(batchUrl($auth->username, $auth->password, ['stream_ids' => '1']))
         ->assertStatus(400)
         ->assertJsonPath('error', 'Batch EPG not supported for network playlists');
+});
+
+it('omits extended programme details unless the client asks for them', function () {
+    $ctx = makeBatchChannel($this->user, $this->playlist, 'channel.plain');
+
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.plain', [
+        'id' => 'plain-1', 'title' => 'Plain Show', 'desc' => '',
+        'start' => Carbon::now()->addMinutes(5)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHour()->format('Y-m-d H:i:s'),
+        'category' => 'Drama',
+        'icon' => 'https://images.example/plain.jpg',
+    ]);
+
+    $response = $this->getJson(batchUrl($this->username, $this->password, [
+        'stream_ids' => (string) $ctx['channel']->id,
+    ]))->assertOk();
+
+    $listing = collect($response->json((string) $ctx['channel']->id.'.epg_listings'))
+        ->first(fn ($p) => $p['id'] === 'plain-1');
+
+    expect($listing)->not->toHaveKeys(['category', 'icon']);
+});
+
+it('includes extended programme details when details=1', function () {
+    $this->playlist->update(['enable_logo_proxy' => false]);
+    $ctx = makeBatchChannel($this->user, $this->playlist, 'channel.rich');
+
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.rich', [
+        'id' => 'rich-1', 'title' => 'Rich Show', 'desc' => 'Plenty going on.',
+        'start' => Carbon::now()->addMinutes(5)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHour()->format('Y-m-d H:i:s'),
+        'category' => 'Drama',
+        'rating' => 'TV-14',
+        'icon' => 'https://images.example/rich.jpg',
+        'episode_num' => '1.4.',
+        'episode_nums' => [['system' => 'xmltv_ns', 'value' => '1.4.']],
+        'new' => true,
+        'premiere' => false,
+        'previously_shown' => false,
+        'production_year' => 2024,
+    ]);
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.rich', [
+        'id' => 'bare-1', 'title' => 'Bare Show', 'desc' => '',
+        'start' => Carbon::now()->addHours(2)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHours(3)->format('Y-m-d H:i:s'),
+    ]);
+
+    $response = $this->getJson(batchUrl($this->username, $this->password, [
+        'stream_ids' => (string) $ctx['channel']->id,
+        'details' => 1,
+    ]))->assertOk();
+
+    $listings = collect($response->json((string) $ctx['channel']->id.'.epg_listings'))->keyBy('id');
+
+    expect($listings['rich-1'])->toMatchArray([
+        'category' => 'Drama',
+        'rating' => 'TV-14',
+        'icon' => 'https://images.example/rich.jpg',
+        'season' => 2,
+        'episode' => 5,
+        'is_new' => 1,
+        'year' => 2024,
+    ])
+        ->and($listings['rich-1'])->not->toHaveKeys(['premiere', 'previously_shown'])
+        ->and($listings['bare-1'])->not->toHaveKeys(['category', 'rating', 'icon', 'season', 'episode', 'is_new', 'year']);
+});
+
+it('routes extended programme icons through the logo proxy when the playlist enables it', function () {
+    $this->playlist->update(['enable_logo_proxy' => true]);
+    $ctx = makeBatchChannel($this->user, $this->playlist, 'channel.proxied');
+
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.proxied', [
+        'id' => 'proxied-1', 'title' => 'Proxied Show', 'desc' => '',
+        'start' => Carbon::now()->addMinutes(5)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHour()->format('Y-m-d H:i:s'),
+        'icon' => 'https://images.example/proxied.jpg',
+    ]);
+
+    $response = $this->getJson(batchUrl($this->username, $this->password, [
+        'stream_ids' => (string) $ctx['channel']->id,
+        'details' => 1,
+    ]))->assertOk();
+
+    $listing = collect($response->json((string) $ctx['channel']->id.'.epg_listings'))
+        ->first(fn ($p) => $p['id'] === 'proxied-1');
+
+    expect($listing['icon'])->toBe(LogoProxyController::generateProxyUrl('https://images.example/proxied.jpg'));
 });

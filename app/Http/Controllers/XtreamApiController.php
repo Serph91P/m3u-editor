@@ -53,6 +53,7 @@ use App\Services\VodFileNameService;
 use App\Services\WatchProgressLinker;
 use App\Services\XtreamCategoryService;
 use App\Settings\GeneralSettings;
+use App\Support\EpisodeNumberParser;
 use App\Support\SeriesKey;
 use App\Support\TmdbRating;
 use Carbon\Carbon;
@@ -2000,6 +2001,7 @@ class XtreamApiController extends Controller
 
             $date = $request->input('date', Carbon::now()->format('Y-m-d'));
             $proxyEnabled = $playlist->enable_proxy;
+            $includeDetails = $request->boolean('details');
 
             // Load all requested channels in one query
             $channels = $playlist->channels()
@@ -2143,7 +2145,7 @@ class XtreamApiController extends Controller
                         $endTime = Carbon::parse($programme['stop']);
                         $isCurrentProgramme = $startTime->lte($now) && $endTime->gt($now);
 
-                        $epgListings[] = [
+                        $listing = [
                             'id' => (string) ($programme['id'] ?? $index),
                             'epg_id' => (string) $epg->id,
                             'title' => base64_encode($programme['title'] ?? ''),
@@ -2158,6 +2160,10 @@ class XtreamApiController extends Controller
                             'now_playing' => ($isCurrentProgramme && $isNowPlaying) ? 1 : 0,
                             'has_archive' => (! $disableCatchup && $channel->catchup && $endTime->lt($now)) ? 1 : 0,
                         ];
+                        if ($includeDetails) {
+                            $listing += $this->epgProgrammeDetails($programme, $playlist);
+                        }
+                        $epgListings[] = $listing;
                     }
                     $result[(string) $streamId] = ['epg_listings' => $epgListings];
                 }
@@ -2497,6 +2503,54 @@ class XtreamApiController extends Controller
             'now_playing' => $isCurrentProgramme ? 1 : 0,
             'has_archive' => 0,
         ];
+    }
+
+    /**
+     * Extended programme metadata for `get_epg_batch` when the client passes
+     * `details=1` (m3u-tv's guide preview). Values the source doesn't carry
+     * are omitted rather than sent empty, keeping the batch payload small.
+     *
+     * @param  array<string, mixed>  $programme
+     * @param  Playlist|CustomPlaylist|MergedPlaylist|PlaylistAlias  $playlist
+     * @return array{icon?: string, category?: string, rating?: string, season?: int, episode?: int, is_new?: int, premiere?: int, previously_shown?: int, year?: int}
+     */
+    private function epgProgrammeDetails(array $programme, $playlist): array
+    {
+        $details = [];
+
+        $icon = trim((string) ($programme['icon'] ?? ''));
+        if ($icon !== '' && filter_var($icon, FILTER_VALIDATE_URL)) {
+            $details['icon'] = $playlist->enable_logo_proxy && ! str_starts_with($icon, url('/'))
+                ? LogoProxyController::generateProxyUrl($icon)
+                : $icon;
+        }
+
+        foreach (['category', 'rating'] as $key) {
+            $value = trim((string) ($programme[$key] ?? ''));
+            if ($value !== '') {
+                $details[$key] = $value;
+            }
+        }
+
+        [$season, $episode] = EpisodeNumberParser::fromProgramme($programme);
+        if ($season !== null) {
+            $details['season'] = $season;
+        }
+        if ($episode !== null) {
+            $details['episode'] = $episode;
+        }
+
+        foreach (['new' => 'is_new', 'premiere' => 'premiere', 'previously_shown' => 'previously_shown'] as $source => $key) {
+            if (! empty($programme[$source])) {
+                $details[$key] = 1;
+            }
+        }
+
+        if (! empty($programme['production_year'])) {
+            $details['year'] = (int) $programme['production_year'];
+        }
+
+        return $details;
     }
 
     /**
