@@ -11,6 +11,7 @@ use App\Models\CustomPlaylist;
 use App\Models\Network;
 use App\Models\Playlist;
 use App\Models\PlaylistAlias;
+use App\Services\ChannelNumberSequence;
 use App\Services\PlaylistUrlService;
 use Illuminate\Http\Request;
 use Illuminate\Support\LazyCollection;
@@ -128,7 +129,7 @@ class PlaylistGenerateController extends Controller
                 // Output the enabled channels
                 $epgUrl = route('epg.generate', ['uuid' => $playlist->uuid]);
                 echo "#EXTM3U x-tvg-url=\"$epgUrl\" \n";
-                $channelNumber = ($playlist->auto_channel_increment || $playlist->force_channel_numbering) ? $playlist->channel_start - 1 : 0;
+                $numberSequence = new ChannelNumberSequence($playlist);
                 $idChannelBy = $playlist->id_channel_by;
                 // Memoized by playlist_id so a batch of channels sharing the same source
                 // playlist (the common case) only resolves it once rather than per row.
@@ -163,9 +164,7 @@ class PlaylistGenerateController extends Controller
                     if (! $isCustomContext && ! empty($channel->merged_group_name)) {
                         $group = $channel->merged_group_name;
                     }
-                    if ($playlist->force_channel_numbering || (! $channelNo && ($playlist->auto_channel_increment || $idChannelBy === PlaylistChannelId::Number))) {
-                        $channelNo = ++$channelNumber;
-                    }
+                    $channelNo = $numberSequence->next($channelNo);
                     if ($isCustomContext) {
                         // We selected the custom tag name as `custom_group_name` when building the query
                         // It's a JSON field with translations, so decode and extract the 'en' locale
@@ -329,7 +328,7 @@ class PlaylistGenerateController extends Controller
                         // Append the episodes
                         foreach ($s->episodes as $episode) {
                             // Set channel variables
-                            $channelNo = ++$channelNumber;
+                            $channelNo = $numberSequence->advance();
                             $group = $s->category->effective_name ?? 'Seasons';
                             $name = $s->name;
                             $url = PlaylistUrlService::getEpisodeUrl($episode, $playlist);
@@ -571,9 +570,7 @@ class PlaylistGenerateController extends Controller
 
         // Check if proxy enabled
         $idChannelBy = $playlist->id_channel_by;
-        $channelNumber = ($playlist->auto_channel_increment || $playlist->force_channel_numbering)
-            ? $playlist->channel_start - 1
-            : 0;
+        $numberSequence = new ChannelNumberSequence($playlist);
         $isCustomContext = ($playlist instanceof CustomPlaylist) ||
             ($playlist instanceof PlaylistAlias && ! empty($playlist->custom_playlist_id));
 
@@ -600,7 +597,7 @@ class PlaylistGenerateController extends Controller
         $baseUrl = ProxyFacade::getBaseUrl();
         $useInternalXtreamFormat = ! ((config('app.disable_m3u_xtream_format') ?? false) || $playlist->disable_m3u_xtream_format);
 
-        return response()->stream(function () use ($cursor, $baseUrl, $username, $password, $playlist, $idChannelBy, $proxyEnabled, $mediaFlowRewriteStreamUrls, $isCustomContext, $useInternalXtreamFormat, &$channelNumber) {
+        return response()->stream(function () use ($cursor, $baseUrl, $username, $password, $playlist, $idChannelBy, $proxyEnabled, $mediaFlowRewriteStreamUrls, $isCustomContext, $useInternalXtreamFormat, $numberSequence) {
             $first = true;
             echo '[';
             // Memoized by playlist_id so a batch of channels sharing the same source
@@ -621,9 +618,7 @@ class PlaylistGenerateController extends Controller
                         ? (int) $channel->pivot->channel_number
                         : $channel->channel;
 
-                if ($playlist->force_channel_numbering || (! $channelNo && ($playlist->auto_channel_increment || $idChannelBy === PlaylistChannelId::Number))) {
-                    $channelNo = ++$channelNumber;
-                }
+                $channelNo = $numberSequence->next($channelNo);
 
                 // Get the TVG ID
                 $tvgId = $channel->resolveTvgId($idChannelBy, $channelNo);
@@ -867,6 +862,22 @@ class PlaylistGenerateController extends Controller
         // rows for channels that belong to more than one tag in this playlist.
         $isCustomContext = $playlist instanceof CustomPlaylist
             || ($playlist instanceof PlaylistAlias && ! empty($playlist->custom_playlist_id));
+
+        // Optional flat channel number ordering, ahead of any group ordering. Channels
+        // without a number (NULL or 0, matching the output's "no number" check) go last
+        // on every driver, then fall through to the standard ordering below. A custom
+        // playlist's pivot number wins when set, as it does for tvg-chno. 0 is folded
+        // into NULL so unnumbered channels tie here regardless of driver NULL ordering.
+        if ($playlist->sort_by_channel_number) {
+            if ($isCustomContext) {
+                $query->orderByRaw('CASE WHEN COALESCE(NULLIF(channel_custom_playlist.channel_number, 0), NULLIF(channels.channel, 0)) IS NULL THEN 1 ELSE 0 END')
+                    ->orderByRaw('COALESCE(NULLIF(channel_custom_playlist.channel_number, 0), NULLIF(channels.channel, 0))');
+            } else {
+                $query->orderByRaw('CASE WHEN NULLIF(channels.channel, 0) IS NULL THEN 1 ELSE 0 END')
+                    ->orderByRaw('NULLIF(channels.channel, 0)');
+            }
+        }
+
         if ($isCustomContext) {
             $orderSubquery = '(SELECT MIN(t.order_column) FROM taggables tb INNER JOIN tags t ON t.id = tb.tag_id WHERE tb.taggable_id = channels.id AND tb.taggable_type = ? AND t.type = ?)';
 
