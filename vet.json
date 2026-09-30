@@ -90,8 +90,8 @@
             "hash": "tree-v2:7621e009898aea85dfa2ad91d25a3441db9ef5bf90a1b55e9b8396b3a43830f9"
         },
         "eslam-reda-div/filament-copilot": {
-            "version": "v1.1.3",
-            "hash": "tree-v2:704376bc0d228791d02ff935af299e689ae8ba9a36bf08252af92c4fb9daa0d2"
+            "version": "v1.8.0",
+            "hash": "tree-v2:cbf8a118d9af9aa96ce058a003e1ad9a220be7473c2957ed940dc5177ce89e8d"
         },
         "evenement/evenement": {
             "version": "v3.0.2",
@@ -202,8 +202,8 @@
             "hash": "tree-v2:5a3fd9c02f97551fd55e310dc0251d8779e537f8bef80c887446bbf7e5ccfc86"
         },
         "laravel/ai": {
-            "version": "v0.4.5",
-            "hash": "tree-v2:4f7e7cd4c94bbf3d64edf7c0674de01cf142aabd315cc8e0f8bf77833c462e8a"
+            "version": "v0.11.2",
+            "hash": "tree-v2:0a26ef0d0502ddbe57b37e7af3a65ddf1d3b9d2684741c75f3fdd8f6305864cd"
         },
         "laravel/framework": {
             "version": "v13.34.0",
@@ -364,10 +364,6 @@
         "predis/predis": {
             "version": "v2.4.1",
             "hash": "tree-v2:2b88716e817c41adb8ee717d0b3e3fa347d255ab3c291521b1d44d8f46eeffe7"
-        },
-        "prism-php/prism": {
-            "version": "v0.99.22",
-            "hash": "tree-v2:9ed09d25c8ae53022db13e9ed66785e54fabe60f9b746dc27ed2f6d6ec001105"
         },
         "psr/cache": {
             "version": "3.0.0",
