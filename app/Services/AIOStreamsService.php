@@ -318,6 +318,19 @@ class AIOStreamsService implements MediaServer
             if (! empty($shaped)) {
                 $meta['seasons'] = $shaped;
             }
+
+            // TMDB seasons carry no per-episode list, so without `videos` a
+            // series opened from a `tmdb:` catalog (AIOStreams' own TMDB
+            // trending/top/search catalogs emit these) shows seasons but no
+            // episodes. Borrow the episode list from the Stremio meta for the
+            // IMDb id instead - its `tt...:season:episode` video ids go
+            // straight to the stream route with no tmdb -> imdb remap.
+            $videos = ! empty($meta['imdb_id'])
+                ? ($this->fetchMetaRaw($type, $meta['imdb_id'])['meta']['videos'] ?? null)
+                : null;
+            if (is_array($videos) && ! empty($videos)) {
+                $meta['videos'] = $videos;
+            }
         }
 
         if (! empty($details['recommendations'])) {

@@ -230,6 +230,36 @@ it('resolves a related tmdb: id directly from TMDB when the manifest cannot prox
     Http::assertNotSent(fn ($request) => str_contains($request->url(), 'aiostreams.test'));
 });
 
+it('borrows the episode list from the imdb meta for a series resolved directly from TMDB', function () {
+    $this->integration->update(['aiostreams_meta_id_prefixes' => ['tt']]);
+
+    Http::fake([
+        'api.themoviedb.org/3/tv/1399*' => Http::response(fakeTmdbSeries(), 200),
+        'aiostreams.test/abc/meta/series/tt0944947.json*' => Http::response([
+            'meta' => [
+                'id' => 'tt0944947',
+                'type' => 'series',
+                'name' => 'Game of Thrones',
+                'videos' => [
+                    ['id' => 'tt0944947:1:1', 'title' => 'Winter Is Coming', 'season' => 1, 'episode' => 1],
+                    ['id' => 'tt0944947:1:2', 'title' => 'The Kingsroad', 'season' => 1, 'episode' => 2],
+                ],
+            ],
+        ], 200),
+    ]);
+
+    $meta = AIOStreamsService::make($this->integration)->fetchMeta('series', 'tmdb:1399')['meta'];
+
+    expect($meta['id'])->toBe('tmdb:1399');
+    expect($meta['seasons'])->toHaveCount(2);
+    expect($meta['videos'])->toHaveCount(2);
+    expect($meta['videos'][0])->toMatchArray([
+        'id' => 'tt0944947:1:1',
+        'season' => 1,
+        'episode' => 1,
+    ]);
+});
+
 it('does not resolve a related tmdb: id from TMDB when enrichment is disabled', function () {
     $this->integration->update([
         'aiostreams_meta_id_prefixes' => ['tt'],
