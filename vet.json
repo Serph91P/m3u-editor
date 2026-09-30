@@ -246,8 +246,8 @@
             "hash": "tree-v2:7374370ed18d7728465afcdcdbede894a4916ff0aea1fac63d2ae85859f74d66"
         },
         "league/commonmark": {
-            "version": "2.10.0",
-            "hash": "tree-v2:71086e809dadc7ebb87d5d7153de0eee93f23b5ce6330f00e1b91b8f356fdc32"
+            "version": "2.10.3",
+            "hash": "tree-v2:ee619e9faf2cbab26a72cb89c809211c91e772fecf8c1a3cbc5e98f8a1233db2"
         },
         "league/config": {
             "version": "v1.2.0",
@@ -614,8 +614,8 @@
             "hash": "tree-v2:a9c8cb96ff984032b9ba2c4ad692eba9376cfe8ad9aa95b238bd3edfde57d9b9"
         },
         "symfony/polyfill-php80": {
-            "version": "v1.37.0",
-            "hash": "tree-v2:db9811052bb9f7cd15e09bd54128f33f64516627d90efa9747b8cb0862188aa8"
+            "version": "v1.43.0",
+            "hash": "tree-v2:dac9a7018f6de962c077a8a96a80deaf4da282d85250f36c90e293fde4804664"
         },
         "symfony/polyfill-php83": {
             "version": "v1.41.0",
