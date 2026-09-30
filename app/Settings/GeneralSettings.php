@@ -215,7 +215,7 @@ class GeneralSettings extends Settings
 
     public ?int $invalidate_import_series_threshold = 100;
 
-    public ?string $invalidate_import_retry_backoff = 'balanced';
+    public ?int $failed_retry_cooldown_minutes = 15;
 
     // Backup options
     public ?bool $auto_backup_database = false;
@@ -341,6 +341,15 @@ class GeneralSettings extends Settings
      * Shape: ['groups' => ['order' => [...], 'hidden' => [...]], 'items' => ['<group_key>' => ['order' => [...], 'hidden' => [...]]]].
      */
     public ?array $admin_nav_layout = null;
+
+    /**
+     * Minutes a failed playlist or EPG sync waits before it is retried. The
+     * FAILED_RETRY_COOLDOWN_MINUTES environment variable overrides the saved setting.
+     */
+    public function failedRetryCooldownMinutes(): int
+    {
+        return (int) (config('dev.failed_retry_cooldown_minutes') ?: ($this->failed_retry_cooldown_minutes ?: 15));
+    }
 
     public static function group(): string
     {
