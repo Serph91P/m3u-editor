@@ -21,6 +21,7 @@ use App\Models\Epg;
 use App\Models\Group;
 use App\Models\Playlist;
 use App\Models\User;
+use App\Services\AlertService;
 use App\Services\SyncPipelineService;
 use App\Settings\GeneralSettings;
 use Carbon\Carbon;
@@ -250,6 +251,50 @@ describe('ProcessM3uImportComplete', function () {
 
         $this->artisan('app:refresh-playlist')->assertSuccessful();
         Queue::assertNotPushed(ProcessM3uImport::class);
+    });
+
+    it('sends an alert when a sync is invalidated and invalidation alerts are enabled', function () {
+        config([
+            'dev.invalidate_import' => true,
+            'dev.invalidate_import_threshold' => 2,
+        ]);
+        $settings = app(GeneralSettings::class);
+        $settings->alerts_on_sync_invalidated = true;
+        $settings->save();
+
+        $alertMessage = null;
+        $this->mock(AlertService::class, function ($mock) use (&$alertMessage) {
+            $mock->shouldReceive('isEnabled')->andReturnTrue();
+            $mock->shouldReceive('send')->once()->andReturnUsing(function (string $message) use (&$alertMessage) {
+                $alertMessage = $message;
+            });
+        });
+
+        seedAutoResyncInvalidatingBatch($this->playlist, $this->user, 'batch-invalid');
+        runAutoResyncImportComplete($this->playlist, $this->user, 'batch-invalid');
+
+        expect($alertMessage)
+            ->toStartWith("[SYNC INVALIDATED] Playlist \"{$this->playlist->name}\"")
+            ->toContain('The channel count would have been 1')
+            ->not->toContain('Playlist Sync Invalidated:')
+            ->and($this->playlist->fresh()->errors)->toStartWith('Playlist Sync Invalidated: The channel count');
+    });
+
+    it('does not send an alert when invalidation alerts are disabled', function () {
+        config([
+            'dev.invalidate_import' => true,
+            'dev.invalidate_import_threshold' => 2,
+        ]);
+
+        $this->mock(AlertService::class, function ($mock) {
+            $mock->shouldReceive('isEnabled')->andReturnTrue();
+            $mock->shouldNotReceive('send');
+        });
+
+        seedAutoResyncInvalidatingBatch($this->playlist, $this->user, 'batch-invalid');
+        runAutoResyncImportComplete($this->playlist, $this->user, 'batch-invalid');
+
+        expect($this->playlist->fresh()->status)->toBe(Status::Failed);
     });
 
     it('resets the attempt counter after a successful sync', function () {

@@ -322,6 +322,9 @@ class GeneralSettings extends Settings
     /** Forward playlist import failures to enabled alert channels */
     public ?bool $alerts_on_import_failed = false;
 
+    /** Forward invalidated playlist syncs to enabled alert channels */
+    public ?bool $alerts_on_sync_invalidated = false;
+
     /**
      * TV App notification channels available for subscription.
      * Each entry: ['name' => 'channel_slug', 'label' => 'Optional display label'].
