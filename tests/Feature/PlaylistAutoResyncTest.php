@@ -11,6 +11,8 @@
 
 use App\Enums\Status;
 use App\Filament\Clusters\Settings\Pages\ManageSyncSettings;
+use App\Filament\Resources\Playlists\Pages\EditPlaylist;
+use App\Filament\Resources\Playlists\Pages\ListPlaylists;
 use App\Jobs\ProcessEpgImport;
 use App\Jobs\ProcessM3uImport;
 use App\Jobs\ProcessM3uImportComplete;
@@ -22,6 +24,7 @@ use App\Models\User;
 use App\Services\SyncPipelineService;
 use App\Settings\GeneralSettings;
 use Carbon\Carbon;
+use Filament\Actions\Testing\TestAction;
 use Filament\Notifications\DatabaseNotification;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -259,6 +262,31 @@ describe('ProcessM3uImportComplete', function () {
         $playlist = $this->playlist->fresh();
         expect($playlist->status)->toBe(Status::Completed)
             ->and($playlist->resync_attempt)->toBe(0);
+    });
+});
+
+describe('Manual sync', function () {
+    beforeEach(function () {
+        Queue::fake();
+        $this->playlist->update(['resync_attempt' => 3]);
+        $this->actingAs($this->user);
+    });
+
+    it('resets the attempt counter from the playlist page action', function () {
+        Livewire::test(EditPlaylist::class, ['record' => $this->playlist->id])
+            ->callAction('process');
+
+        expect($this->playlist->fresh()->resync_attempt)->toBe(0);
+        Queue::assertPushed(ProcessM3uImport::class);
+    });
+
+    it('resets the attempt counter from the bulk action', function () {
+        Livewire::test(ListPlaylists::class)
+            ->selectTableRecords([$this->playlist])
+            ->callAction(TestAction::make('process')->table()->bulk());
+
+        expect($this->playlist->fresh()->resync_attempt)->toBe(0);
+        Queue::assertPushed(ProcessM3uImport::class);
     });
 });
 
