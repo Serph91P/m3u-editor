@@ -6,13 +6,14 @@ use App\Services\LogoCacheService;
 use App\Settings\GeneralSettings;
 use App\Support\PrivateNetworkGuard;
 use Carbon\Carbon;
-use Illuminate\Http\Client\Response as HttpClientResponse;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Image;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class LogoProxyController extends Controller
@@ -133,16 +134,13 @@ class LogoProxyController extends Controller
      */
     private function fetchRemoteLogo(string $url): ?array
     {
-        if ($this->isPrivateUrl($url)) {
-            return null;
-        }
-
         try {
-            /** @var HttpClientResponse $response */
-            $response = Http::timeout(10)
+            // Every redirect hop is checked, not just $url: a public host
+            // could otherwise 302 the proxy onto a private address.
+            $response = PrivateNetworkGuard::get($url, fn (): PendingRequest => Http::timeout(10)
                 ->withHeaders([
                     'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-                ])->get($url);
+                ]));
 
             if (! $response->successful()) {
                 return null;
@@ -180,6 +178,10 @@ class LogoProxyController extends Controller
                 'content' => $content,
                 'content_type' => $contentType,
             ];
+        } catch (InvalidArgumentException) {
+            // Private, reserved, or non-http(s) destination: placeholder,
+            // without a warning per request for a logo that is never cached.
+            return null;
         } catch (\Exception $e) {
             Log::warning('Failed to fetch remote logo', [
                 'url' => $url,
@@ -339,21 +341,6 @@ class LogoProxyController extends Controller
             'Content-Type' => 'image/png',
             'Cache-Control' => 'public, max-age=86400', // 1 day
         ]);
-    }
-
-    /**
-     * Check if the given URL resolves to a private/reserved IP address.
-     */
-    private function isPrivateUrl(string $url): bool
-    {
-        $host = parse_url($url, PHP_URL_HOST);
-        if (! $host) {
-            return true;
-        }
-
-        $ip = gethostbyname($host);
-
-        return PrivateNetworkGuard::ipIsPrivate($ip);
     }
 
     /**

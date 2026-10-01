@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\LogoProxyController;
 use App\Services\LogoCacheService;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
@@ -112,6 +113,39 @@ it('falls back to the placeholder when the body is not an image', function () {
     // bytes rather than the HTML payload.
     $response->assertOk();
     $response->assertDontSee('not an image');
+});
+
+it('does not follow a redirect from a public host to a private address', function () {
+    // GHSA-jmr6-rmrq-f4wg / GHSA-cf47-h3fh-m4pq: the first URL passes the
+    // private network guard, so the redirect target must be checked too.
+    // IP literals (TEST-NET-2 is public per PHP's filter flags) avoid DNS.
+    Http::preventStrayRequests();
+    Http::fake([
+        'http://198.51.100.1/*' => Http::response('', 302, ['Location' => 'http://127.0.0.1/internal.png']),
+        'http://127.0.0.1/*' => Http::response(pngBytes(), 200, ['Content-Type' => 'image/png']),
+    ]);
+
+    $response = $this->get(proxyPathFor('http://198.51.100.1/logo.png'));
+
+    // Placeholder (1 day cache) rather than a proxied logo (30 days).
+    $response->assertOk();
+    expect($response->headers->get('Cache-Control'))->toContain('max-age=86400')
+        ->and(Storage::disk('local')->files(LogoCacheService::CACHE_DIRECTORY))->toBeEmpty();
+
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '127.0.0.1'));
+});
+
+it('follows a redirect between public hosts', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'http://198.51.100.1/*' => Http::response('', 302, ['Location' => 'http://198.51.100.2/logo.png']),
+        'http://198.51.100.2/*' => Http::response(pngBytes(), 200, ['Content-Type' => 'image/png']),
+    ]);
+
+    $response = $this->get(proxyPathFor('http://198.51.100.1/logo.png'));
+
+    $response->assertOk();
+    expect($response->headers->get('Cache-Control'))->toContain('max-age=2592000');
 });
 
 function bigJpegBytes(int $width = 1200, int $height = 800): string
