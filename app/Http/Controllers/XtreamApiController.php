@@ -781,7 +781,8 @@ class XtreamApiController extends Controller
                         $streamIcon = filter_var($logo, FILTER_VALIDATE_URL) ? $logo : $baseUrl."/$logo";
                     }
                     if ($playlist->enable_logo_proxy && filter_var($streamIcon, FILTER_VALIDATE_URL) && ! str_starts_with($streamIcon, url('/'))) {
-                        $streamIcon = LogoProxyController::generateProxyUrl($streamIcon);
+                        // VOD stream_icon is a poster: downscale it like series covers.
+                        $streamIcon = LogoProxyController::generateProxyUrl($streamIcon, width: self::posterProxyWidth());
                     }
 
                     $channelCategoryId = 'all';
