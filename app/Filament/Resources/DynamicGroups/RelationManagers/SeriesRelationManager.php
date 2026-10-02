@@ -13,10 +13,12 @@ use Illuminate\Database\Eloquent\Model;
  * `type` is `'series'` - DynamicGroups are single-type by construction, so a
  * vod-type parent has zero series to show and the tab is hidden.
  *
- * Strictly read-only - no `recordActions()`, no `toolbarActions()`. Membership
- * is computed by `SyncDynamicGroups` from the parent playlist's
- * `dynamic_groups_config`; this manager is a transparency window, not an edit
- * surface.
+ * Membership is read-only: it is computed by `SyncDynamicGroups` from the
+ * parent playlist's `dynamic_groups_config`. Row actions are the canonical
+ * `SeriesResource` ones, since they act on the series itself rather than its
+ * group membership. The bulk slot is limited to Cache all episodes, because
+ * the canonical bulk menu includes membership-style actions (move to category,
+ * add to playlist) that make no sense on a computed group.
  */
 class SeriesRelationManager extends RelationManager
 {
@@ -46,12 +48,13 @@ class SeriesRelationManager extends RelationManager
         // Reuse SeriesResource's full table setup - see the parallel comment on
         // `ChannelsRelationManager::table()` for why (drift prevention, matches
         // `Categories\RelationManagers\SeriesRelationManager`'s convention) and why
-        // record/bulk actions are stripped back out afterward (this manager stays
-        // strictly read-only, see class docblock).
+        // the bulk menu is swapped for Cache all episodes only (see class
+        // docblock). The canonical row actions are kept as-is.
         return SeriesResource::setupTable($table, $this->ownerRecord->id)
             ->recordTitleAttribute('name')
             ->defaultSort('dynamic_group_items.position')
-            ->recordActions([])
-            ->toolbarActions([]);
+            ->toolbarActions([
+                SeriesResource::getCacheAllEpisodesBulkAction(),
+            ]);
     }
 }

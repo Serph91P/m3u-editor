@@ -132,7 +132,7 @@ class CachedContentDispatchService
      */
     public function dispatchSeries(Series $series): array
     {
-        $counts = array_fill_keys(array_map(fn (CacheDispatchResult $r): string => $r->value, CacheDispatchResult::cases()), 0);
+        $counts = $this->emptyCounts();
 
         if (! $this->isEnabled()) {
             $counts[CacheDispatchResult::Disabled->value] = 1;
@@ -154,6 +154,52 @@ class CachedContentDispatchService
         }
 
         return $counts;
+    }
+
+    /**
+     * Queue every cacheable channel or episode in `$items` and aggregate the
+     * result counts (bulk Cache Now entry point).
+     *
+     * @param  iterable<Channel|Episode>  $items
+     * @return array<string, int> keyed by CacheDispatchResult value
+     */
+    public function dispatchMany(iterable $items): array
+    {
+        $counts = $this->emptyCounts();
+
+        foreach ($items as $item) {
+            $counts[$this->dispatch($item)->value]++;
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Run `dispatchSeries()` for every series in `$series` and merge the
+     * counts into one summary (bulk Cache all episodes entry point).
+     *
+     * @param  iterable<Series>  $series
+     * @return array<string, int> keyed by CacheDispatchResult value
+     */
+    public function dispatchManySeries(iterable $series): array
+    {
+        $counts = $this->emptyCounts();
+
+        foreach ($series as $item) {
+            foreach ($this->dispatchSeries($item) as $bucket => $count) {
+                $counts[$bucket] += $count;
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @return array<string, int> keyed by CacheDispatchResult value, all zero
+     */
+    private function emptyCounts(): array
+    {
+        return array_fill_keys(array_map(fn (CacheDispatchResult $r): string => $r->value, CacheDispatchResult::cases()), 0);
     }
 
     /**
@@ -234,11 +280,12 @@ class CachedContentDispatchService
     }
 
     /**
-     * Filament notification summarizing a series "Cache all episodes" run.
+     * Filament notification summarizing a multi-item cache run: a series
+     * "Cache all episodes" (`$episodes` true) or a bulk VOD Cache Now.
      *
      * @param  array<string, int>  $counts
      */
-    public static function seriesNotification(array $counts): Notification
+    public static function summaryNotification(array $counts, bool $episodes = true): Notification
     {
         if (($counts[CacheDispatchResult::Disabled->value] ?? 0) > 0) {
             return Notification::make()
@@ -255,12 +302,20 @@ class CachedContentDispatchService
         $notification = Notification::make();
         $queued > 0 ? $notification->success() : $notification->info();
 
-        return $notification
-            ->title(match (true) {
+        $title = $episodes
+            ? match (true) {
                 $queued === 0 => __('No episodes queued'),
                 $queued === 1 => __('Queued 1 episode for caching'),
                 default => __('Queued :count episodes for caching', ['count' => $queued]),
-            })
+            }
+        : match (true) {
+            $queued === 0 => __('No VODs queued'),
+            $queued === 1 => __('Queued 1 VOD for caching'),
+            default => __('Queued :count VODs for caching', ['count' => $queued]),
+        };
+
+        return $notification
+            ->title($title)
             ->body(__(':skipped already cached or queued, :unavailable without a cacheable source.', [
                 'skipped' => $skipped,
                 'unavailable' => $unavailable,

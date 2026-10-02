@@ -14,10 +14,12 @@ use Illuminate\Database\Eloquent\Model;
  * (matching their `dynamic_groups_config` rule row), so a series-type parent
  * has zero channels to show and the tab is hidden.
  *
- * Strictly read-only - no `recordActions()`, no `toolbarActions()`. Membership
- * is computed by `SyncDynamicGroups` from the parent playlist's
- * `dynamic_groups_config`; this manager is a transparency window, not an edit
- * surface.
+ * Membership is read-only: it is computed by `SyncDynamicGroups` from the
+ * parent playlist's `dynamic_groups_config`. Row actions are the canonical
+ * `VodResource` ones, since they act on the channel itself rather than its
+ * group membership. The bulk slot is limited to Cache Now, because the
+ * canonical bulk menu includes membership-style actions (move to group, add to
+ * playlist) that make no sense on a computed group.
  */
 class ChannelsRelationManager extends RelationManager
 {
@@ -52,15 +54,14 @@ class ChannelsRelationManager extends RelationManager
         // showPlaylist: false` before), not to scope the query - Filament's relation
         // manager machinery already scopes via the `channels` relationship.
         //
-        // setupTable() also wires up VodResource's full record/bulk actions
-        // (edit, delete, fetch metadata, sync, ...), which would break this
-        // manager's "strictly read-only" contract (see class docblock) - strip
-        // them back out rather than exposing mutation actions on a computed,
-        // read-only membership view.
+        // setupTable() also wires up VodResource's record and bulk actions. The
+        // row actions are kept as-is; the bulk menu is swapped for Cache Now
+        // only (see class docblock).
         return VodResource::setupTable($table, $this->ownerRecord->id)
             ->recordTitleAttribute('title')
             ->defaultSort('dynamic_group_items.position')
-            ->recordActions([])
-            ->toolbarActions([]);
+            ->toolbarActions([
+                VodResource::getCacheNowBulkAction(),
+            ]);
     }
 }
