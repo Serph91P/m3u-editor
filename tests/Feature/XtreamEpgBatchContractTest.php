@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\LogoProxyController;
+use App\Http\Controllers\XtreamApiController;
 use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
@@ -509,6 +510,33 @@ it('preserves validated role-specific artwork in short simple and detailed batch
     }
 
     expect($batch['icon'])->toBe('https://images.example/backdrop.jpg');
+});
+
+it('selects canonical artwork independently of source order and rejects same-url conflicts', function () {
+    $this->playlist->update(['enable_logo_proxy' => false]);
+    $controller = app(XtreamApiController::class);
+    $method = new ReflectionMethod($controller, 'epgProgrammeArtwork');
+    $small = ['url' => 'https://images.example/small.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P'];
+    $large = ['url' => 'https://images.example/large.jpg', 'type' => 'poster', 'width' => 800, 'height' => 1200, 'orient' => 'P'];
+    $duplicate = ['url' => 'https://images.example/duplicate.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P'];
+
+    $forward = $method->invoke($controller, ['images' => [$small, $large]], $this->playlist);
+    $reverse = $method->invoke($controller, ['images' => [$large, $small]], $this->playlist);
+    $duplicates = $method->invoke($controller, ['images' => [$duplicate, $duplicate]], $this->playlist);
+    $geometryConflict = $method->invoke($controller, ['images' => [
+        ['url' => 'https://images.example/conflict.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P'],
+        ['url' => 'https://images.example/conflict.jpg', 'type' => 'poster', 'width' => 1280, 'height' => 720, 'orient' => 'L'],
+    ]], $this->playlist);
+    $roleConflict = $method->invoke($controller, ['images' => [
+        ['url' => 'https://images.example/role-conflict.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P'],
+        ['url' => 'https://images.example/role-conflict.jpg', 'type' => 'backdrop', 'width' => 1280, 'height' => 720, 'orient' => 'L'],
+    ]], $this->playlist);
+
+    expect($forward)->toMatchArray(['poster_url' => $large['url'], 'poster_width' => 800, 'poster_height' => 1200])
+        ->and($reverse)->toBe($forward)
+        ->and($duplicates)->toMatchArray(['poster_url' => $duplicate['url'], 'poster_width' => 500, 'poster_height' => 750])
+        ->and($geometryConflict)->toBe([])
+        ->and($roleConflict)->toBe([]);
 });
 
 it('omits unproven or unsafe artwork and retains detailed batch opt in semantics', function () {

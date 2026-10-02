@@ -739,6 +739,57 @@ test('cached programme artwork is emitted as standard xmltv images with dimensio
                 ['url' => 'https://example.com/square.jpg', 'type' => 'poster', 'width' => 500, 'height' => 500, 'orient' => 'P', 'size' => 3],
             ],
         ]],
+        ['source.standard-artwork', [
+            'start' => now()->startOfDay()->addHours(5)->toISOString(),
+            'stop' => now()->startOfDay()->addHours(6)->toISOString(),
+            'title' => 'Canonical Posters Forward',
+            'subtitle' => '',
+            'desc' => '',
+            'category' => '',
+            'episode_nums' => [],
+            'rating' => '',
+            'new' => false,
+            'icon' => '',
+            'images' => [
+                ['url' => 'https://example.com/small-poster.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P', 'size' => 3],
+                ['url' => 'https://example.com/large-poster.jpg', 'type' => 'poster', 'width' => 800, 'height' => 1200, 'orient' => 'P', 'size' => 3],
+                ['url' => 'https://example.com/large-poster.jpg', 'type' => 'poster', 'width' => 800, 'height' => 1200, 'orient' => 'P', 'size' => 3],
+            ],
+        ]],
+        ['source.standard-artwork', [
+            'start' => now()->startOfDay()->addHours(7)->toISOString(),
+            'stop' => now()->startOfDay()->addHours(8)->toISOString(),
+            'title' => 'Canonical Posters Reverse',
+            'subtitle' => '',
+            'desc' => '',
+            'category' => '',
+            'episode_nums' => [],
+            'rating' => '',
+            'new' => false,
+            'icon' => '',
+            'images' => [
+                ['url' => 'https://example.com/large-poster.jpg', 'type' => 'poster', 'width' => 800, 'height' => 1200, 'orient' => 'P', 'size' => 3],
+                ['url' => 'https://example.com/small-poster.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P', 'size' => 3],
+            ],
+        ]],
+        ['source.standard-artwork', [
+            'start' => now()->startOfDay()->addHours(9)->toISOString(),
+            'stop' => now()->startOfDay()->addHours(10)->toISOString(),
+            'title' => 'Conflicting Posters',
+            'subtitle' => '',
+            'desc' => '',
+            'category' => '',
+            'episode_nums' => [],
+            'rating' => '',
+            'new' => false,
+            'icon' => '',
+            'images' => [
+                ['url' => 'https://example.com/geometry-conflict.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P', 'size' => 3],
+                ['url' => 'https://example.com/geometry-conflict.jpg', 'type' => 'poster', 'width' => 1280, 'height' => 720, 'orient' => 'L', 'size' => 3],
+                ['url' => 'https://example.com/role-conflict.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750, 'orient' => 'P', 'size' => 3],
+                ['url' => 'https://example.com/role-conflict.jpg', 'type' => 'backdrop', 'width' => 1280, 'height' => 720, 'orient' => 'L', 'size' => 3],
+            ],
+        ]],
     ]);
 
     $response = $this->get("/{$playlist->uuid}/epg.xml.gz");
@@ -777,7 +828,15 @@ test('cached programme artwork is emitted as standard xmltv images with dimensio
         ->and($children)->toBe(['title', 'category', 'icon', 'icon', 'icon', 'icon', 'icon', 'episode-num', 'new', 'rating', 'image', 'image', 'image', 'image', 'image', 'image'])
         ->and($xpath->query('//programme[title="Poster Only"]/icon'))->toHaveCount(1)
         ->and($xpath->query('//programme[title="Poster Only"]/icon[@src="https://example.com/poster-only.jpg"][@width="500"][@height="750"]'))->toHaveCount(1)
-        ->and($xpath->query('//programme[title="Poster Only"]/icon[contains(@src, "square.jpg")]'))->toHaveCount(0);
+        ->and($xpath->query('//programme[title="Poster Only"]/icon[contains(@src, "square.jpg")]'))->toHaveCount(0)
+        ->and($xpath->query('//programme[title="Canonical Posters Forward"]/image[@type="poster"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Canonical Posters Forward"]/image[@type="poster"][text()="https://example.com/large-poster.jpg"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Canonical Posters Forward"]/icon[@src="https://example.com/small-poster.jpg"][@width="500"][@height="750"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Canonical Posters Forward"]/icon[@src="https://example.com/large-poster.jpg"][@width="800"][@height="1200"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Canonical Posters Reverse"]/image[@type="poster"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Canonical Posters Reverse"]/image[@type="poster"][text()="https://example.com/large-poster.jpg"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Conflicting Posters"]/image'))->toHaveCount(0)
+        ->and($xpath->query('//programme[title="Conflicting Posters"]/icon'))->toHaveCount(0);
 });
 
 test('cache import converts standard images and legacy typed icons without losing verified landscape geometry', function () {
@@ -848,7 +907,7 @@ XML;
         ->and($xpath->query('//programme[title="Mixed Artwork"]/icon[@type or @orient or @size]'))->toHaveCount(0)
         ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="backdrop"][@orient="L"][text()="https://example.com/landscape.jpg"]'))->toHaveCount(1)
         ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="poster"][@orient="P"][text()="https://example.com/legacy-poster.jpg"]'))->toHaveCount(1)
-        ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="poster"][@orient="P"][text()="https://example.com/standard-poster.jpg"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="poster"][@orient="P"][text()="https://example.com/standard-poster.jpg"]'))->toHaveCount(0)
         ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="person"][@orient="P"][text()="https://example.com/person-imported.jpg"]'))->toHaveCount(1)
         ->and($xpath->query('//programme[title="Legacy Icons Only"]/icon'))->toHaveCount(4)
         ->and($xpath->query('//programme[title="Legacy Icons Only"]/icon[@src="https://example.com/legacy-square.jpg"]'))->toHaveCount(2)

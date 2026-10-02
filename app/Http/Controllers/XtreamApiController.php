@@ -2578,8 +2578,28 @@ class XtreamApiController extends Controller
             return [];
         }
 
+        $candidates = $this->validatedProgrammeArtworkCandidates($programme['images']);
         $artwork = [];
-        foreach ($programme['images'] as $image) {
+        if ($poster = $candidates['poster'][0] ?? null) {
+            $artwork['poster_url'] = $this->proxyEpgProgrammeArtworkUrl($poster['url'], $playlist);
+            $artwork['poster_width'] = $poster['width'];
+            $artwork['poster_height'] = $poster['height'];
+        }
+        if ($backdrop = $candidates['backdrop'][0] ?? null) {
+            $artwork['backdrop_url'] = $this->proxyEpgProgrammeArtworkUrl($backdrop['url'], $playlist);
+        }
+
+        return $artwork;
+    }
+
+    /**
+     * @param  array<mixed>  $images
+     * @return array{poster: list<array{url: string, width: int, height: int}>, backdrop: list<array{url: string, width: int, height: int}>}
+     */
+    private function validatedProgrammeArtworkCandidates(array $images): array
+    {
+        $evidence = [];
+        foreach ($images as $image) {
             if (! is_array($image)) {
                 continue;
             }
@@ -2591,29 +2611,65 @@ class XtreamApiController extends Controller
             }
 
             $type = strtolower(trim((string) ($image['type'] ?? '')));
+            $declaredOrientation = strtoupper(trim((string) ($image['orient'] ?? '')));
             $width = filter_var($image['width'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
             $height = filter_var($image['height'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $hasGeometry = $width !== false && $height !== false;
+            $geometryOrientation = $hasGeometry ? ($height > $width ? 'P' : ($width > $height ? 'L' : null)) : null;
 
-            if ($type === 'poster'
-                && ! isset($artwork['poster_url'])
-                && $width !== false
-                && $height !== false
-                && $height > $width) {
-                $artwork['poster_url'] = $this->proxyEpgProgrammeArtworkUrl($url, $playlist);
-                $artwork['poster_width'] = $width;
-                $artwork['poster_height'] = $height;
+            $evidence[$url]['images'][] = compact('url', 'type', 'declaredOrientation', 'width', 'height', 'hasGeometry', 'geometryOrientation');
+            if ($type !== '') {
+                $evidence[$url]['types'][$type] = true;
             }
-
-            if ($type === 'backdrop'
-                && ! isset($artwork['backdrop_url'])
-                && $width !== false
-                && $height !== false
-                && $width > $height) {
-                $artwork['backdrop_url'] = $this->proxyEpgProgrammeArtworkUrl($url, $playlist);
+            if ($declaredOrientation !== '') {
+                $evidence[$url]['orientations'][$declaredOrientation] = true;
+            }
+            if ($hasGeometry) {
+                $evidence[$url]['dimensions'][$width.'x'.$height] = true;
             }
         }
 
-        return $artwork;
+        $candidates = ['poster' => [], 'backdrop' => []];
+        foreach ($evidence as $url => $urlEvidence) {
+            $types = array_keys($urlEvidence['types'] ?? []);
+            $orientations = array_keys($urlEvidence['orientations'] ?? []);
+            $dimensions = array_keys($urlEvidence['dimensions'] ?? []);
+            if (count($types) > 1 || count($orientations) > 1 || count($dimensions) > 1) {
+                continue;
+            }
+
+            foreach ($urlEvidence['images'] as $image) {
+                if (! in_array($image['type'], ['poster', 'backdrop'], true)
+                    || ! $image['hasGeometry']
+                    || $image['geometryOrientation'] === null
+                    || ($image['declaredOrientation'] !== '' && $image['declaredOrientation'] !== $image['geometryOrientation'])
+                    || ($image['type'] === 'poster' && $image['geometryOrientation'] !== 'P')
+                    || ($image['type'] === 'backdrop' && $image['geometryOrientation'] !== 'L')) {
+                    continue 2;
+                }
+            }
+
+            $image = $urlEvidence['images'][0];
+            if (in_array($image['type'], ['poster', 'backdrop'], true)) {
+                $candidates[$image['type']][] = [
+                    'url' => $url,
+                    'width' => $image['width'],
+                    'height' => $image['height'],
+                ];
+            }
+        }
+
+        foreach ($candidates as &$roleCandidates) {
+            usort($roleCandidates, static function (array $left, array $right): int {
+                return ($right['width'] * $right['height']) <=> ($left['width'] * $left['height'])
+                    ?: $right['height'] <=> $left['height']
+                    ?: $right['width'] <=> $left['width']
+                    ?: strcmp($left['url'], $right['url']);
+            });
+        }
+        unset($roleCandidates);
+
+        return $candidates;
     }
 
     private function isInternalEpgArtworkUrl(string $url): bool

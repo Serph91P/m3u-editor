@@ -386,6 +386,7 @@ class EpgGenerateController extends Controller
                                     $progXml .= '    <category>'.$this->escapeXml($programme['category']).'</category>'.PHP_EOL;
                                 }
                                 $images = $this->normalizeProgrammeImages($programme['images'] ?? [], $epg, $logoProxyEnabled);
+                                $standardImages = $this->canonicalProgrammeImages($images);
                                 foreach ($this->programmeLegacyIcons($programme, $images, $epg, $logoProxyEnabled) as $legacyIcon) {
                                     $dimensionAttributes = isset($legacyIcon['width'], $legacyIcon['height'])
                                         ? ' width="'.$legacyIcon['width'].'" height="'.$legacyIcon['height'].'"'
@@ -404,7 +405,7 @@ class EpgGenerateController extends Controller
                                 if ($programme['rating']) {
                                     $progXml .= '    <rating><value>'.$this->escapeXml($programme['rating']).'</value></rating>'.PHP_EOL;
                                 }
-                                foreach ($images as $image) {
+                                foreach ($standardImages as $image) {
                                     $attributes = ' type="'.$this->escapeXml($image['type']).'"';
                                     if ($image['size'] !== null) {
                                         $attributes .= ' size="'.$image['size'].'"';
@@ -908,10 +909,48 @@ class EpgGenerateController extends Controller
      * Normalize programme artwork to attributes supported by the XMLTV DTD.
      *
      * @param  array<mixed>  $images
-     * @return list<array{url: string, type: string, width: int|null, height: int|null, orient: string|null, size: int|null, system: string|null}>
+     * @return list<array{url: string, source_url: string, type: string, width: int|null, height: int|null, orient: string|null, size: int|null, system: string|null}>
      */
     private function normalizeProgrammeImages(array $images, Epg $epg, bool $logoProxyEnabled): array
     {
+        $evidenceByUrl = [];
+        foreach ($images as $image) {
+            if (! is_array($image)) {
+                continue;
+            }
+
+            $url = trim((string) ($image['url'] ?? ''));
+            $scheme = mb_strtolower((string) parse_url($url, PHP_URL_SCHEME));
+            if (! filter_var($url, FILTER_VALIDATE_URL)
+                || ! in_array($scheme, ['http', 'https'], true)
+                || $this->containsDotPathSegment($url)) {
+                continue;
+            }
+
+            $type = mb_strtolower(trim((string) ($image['type'] ?? '')));
+            $declaredOrientation = strtoupper(trim((string) ($image['orient'] ?? '')));
+            $width = filter_var($image['width'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $height = filter_var($image['height'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($type !== '') {
+                $evidenceByUrl[$url]['types'][$type] = true;
+            }
+            if ($declaredOrientation !== '') {
+                $evidenceByUrl[$url]['orientations'][$declaredOrientation] = true;
+            }
+            if ($width !== false && $height !== false) {
+                $evidenceByUrl[$url]['dimensions'][$width.'x'.$height] = true;
+            }
+        }
+
+        $conflictingUrls = [];
+        foreach ($evidenceByUrl as $url => $evidence) {
+            if (count($evidence['types'] ?? []) > 1
+                || count($evidence['orientations'] ?? []) > 1
+                || count($evidence['dimensions'] ?? []) > 1) {
+                $conflictingUrls[$url] = true;
+            }
+        }
+
         $normalized = [];
 
         foreach ($images as $image) {
@@ -929,6 +968,7 @@ class EpgGenerateController extends Controller
             if (! filter_var($url, FILTER_VALIDATE_URL)
                 || ! in_array($scheme, ['http', 'https'], true)
                 || $this->containsDotPathSegment($url)
+                || isset($conflictingUrls[$url])
                 || ! in_array($type, ['poster', 'backdrop', 'still', 'person', 'character'], true)) {
                 continue;
             }
@@ -942,14 +982,19 @@ class EpgGenerateController extends Controller
             }
 
             $declaredOrientation = strtoupper(trim((string) ($image['orient'] ?? '')));
-            $orientation = $hasGeometry
-                ? match (true) {
-                    $width > $height => 'L',
-                    $height > $width => 'P',
-                    default => null,
-                }
-            : (in_array($declaredOrientation, ['P', 'L'], true) ? $declaredOrientation : null);
-            if (($type === 'poster' && $orientation !== 'P')
+            $geometryOrientation = $hasGeometry ? match (true) {
+                $width > $height => 'L',
+                $height > $width => 'P',
+                default => null,
+            } : null;
+            if ($declaredOrientation !== ''
+                && (! in_array($declaredOrientation, ['P', 'L'], true)
+                    || ($geometryOrientation !== null && $declaredOrientation !== $geometryOrientation))) {
+                continue;
+            }
+            $orientation = $geometryOrientation ?? ($declaredOrientation !== '' ? $declaredOrientation : null);
+            if (($hasGeometry && $geometryOrientation === null && in_array($type, ['poster', 'backdrop'], true))
+                || ($type === 'poster' && $orientation !== 'P')
                 || ($type === 'backdrop' && $orientation !== 'L')) {
                 continue;
             }
@@ -957,8 +1002,10 @@ class EpgGenerateController extends Controller
             $declaredSize = filter_var($image['size'] ?? null, FILTER_VALIDATE_INT);
             $size = in_array($declaredSize, [1, 2, 3], true) ? $declaredSize : null;
 
-            $normalized[] = [
+            $key = $url.'|'.$type;
+            $candidate = [
                 'url' => $this->proxyProgrammeArtworkUrl($url, $epg, $logoProxyEnabled),
+                'source_url' => $url,
                 'type' => $type,
                 'width' => $width,
                 'height' => $height,
@@ -970,9 +1017,47 @@ class EpgGenerateController extends Controller
                 } : $size,
                 'system' => $system,
             ];
+            if (! isset($normalized[$key])
+                || ($normalized[$key]['width'] === null && $candidate['width'] !== null)) {
+                $normalized[$key] = $candidate;
+            }
         }
 
-        return $normalized;
+        return array_values($normalized);
+    }
+
+    /**
+     * Emit one deterministic validated portrait while retaining alternatives as legacy icons.
+     *
+     * @param  list<array{url: string, source_url: string, type: string, width: int|null, height: int|null, orient: string|null, size: int|null, system: string|null}>  $images
+     * @return list<array{url: string, source_url: string, type: string, width: int|null, height: int|null, orient: string|null, size: int|null, system: string|null}>
+     */
+    private function canonicalProgrammeImages(array $images): array
+    {
+        $posters = array_values(array_filter(
+            $images,
+            static fn (array $image): bool => $image['type'] === 'poster'
+                && $image['orient'] === 'P'
+                && $image['width'] !== null
+                && $image['height'] !== null
+                && $image['height'] > $image['width'],
+        ));
+        if ($posters === []) {
+            return $images;
+        }
+
+        usort($posters, static function (array $left, array $right): int {
+            return ($right['width'] * $right['height']) <=> ($left['width'] * $left['height'])
+                ?: $right['height'] <=> $left['height']
+                ?: $right['width'] <=> $left['width']
+                ?: strcmp($left['source_url'], $right['source_url']);
+        });
+        $canonicalUrl = $posters[0]['source_url'];
+
+        return array_values(array_filter(
+            $images,
+            static fn (array $image): bool => $image['type'] !== 'poster' || $image['source_url'] === $canonicalUrl,
+        ));
     }
 
     /**
