@@ -11,6 +11,7 @@ use App\Models\Playlist;
 use App\Models\PlaylistProfile;
 use App\Models\StreamProfile;
 use App\Services\M3uProxyService;
+use App\Services\MediaSourcePreferenceService;
 use App\Services\NetworkBroadcastService;
 use App\Services\ProfileService;
 use App\Services\StreamProfileRuleEvaluator;
@@ -39,6 +40,8 @@ class M3uProxyApiController extends Controller
             'customPlaylist',
             'streamProfile',
         ])->findOrFail($id);
+
+        [$channel, $uuid] = $this->preferMediaServerSource($channel, $uuid);
 
         $username = $request->input('username', $request->header('X-Username'));
         $playlistAuthId = $request->input('playlist_auth_id') ? (int) $request->input('playlist_auth_id') : null;
@@ -108,6 +111,8 @@ class M3uProxyApiController extends Controller
             'playlist',
         ])->findOrFail($id);
 
+        [$episode, $uuid] = $this->preferMediaServerSource($episode, $uuid);
+
         $username = $request->input('username', $request->header('X-Username'));
         $playlistAuthId = $request->input('playlist_auth_id') ? (int) $request->input('playlist_auth_id') : null;
 
@@ -170,6 +175,8 @@ class M3uProxyApiController extends Controller
             'streamProfile',
         ])->findOrFail($id);
 
+        [$channel, $uuid] = $this->preferMediaServerSource($channel, $uuid);
+
         if ($uuid) {
             $playlist = PlaylistFacade::resolvePlaylistByUuid($uuid);
         } else {
@@ -216,6 +223,8 @@ class M3uProxyApiController extends Controller
         $episode = Episode::query()->with([
             'playlist',
         ])->findOrFail($id);
+
+        [$episode, $uuid] = $this->preferMediaServerSource($episode, $uuid);
 
         if ($uuid) {
             $playlist = PlaylistFacade::resolvePlaylistByUuid($uuid);
@@ -880,5 +889,29 @@ class M3uProxyApiController extends Controller
         }
 
         return response()->noContent();
+    }
+
+    /**
+     * Media-server source preference: swap a provider VOD movie / episode for
+     * its matched media-server item, streamed with its own playlist context.
+     * The swap must happen before anything reaches M3uProxyService so no
+     * provider connection slot is consumed; the request uuid is dropped
+     * because alias/merged-playlist transforms don't apply to the media item.
+     *
+     * @return array{0: Channel|Episode, 1: string|null}
+     */
+    private function preferMediaServerSource(Channel|Episode $item, ?string $uuid): array
+    {
+        $media = app(MediaSourcePreferenceService::class)->resolveForStreaming($item);
+
+        if ($media === $item) {
+            return [$item, $uuid];
+        }
+
+        if ($media instanceof Channel) {
+            $media->loadMissing(['customPlaylist', 'streamProfile']);
+        }
+
+        return [$media, null];
     }
 }
