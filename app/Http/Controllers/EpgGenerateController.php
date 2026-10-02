@@ -16,6 +16,7 @@ use App\Services\ChannelNumberSequence;
 use App\Services\EpgCacheService;
 use App\Services\EpisodeNumberNormalizer;
 use App\Services\NetworkEpgService;
+use App\Support\EpgProgrammeIdentity;
 use Carbon\Carbon;
 use DOMDocument;
 use DOMElement;
@@ -393,11 +394,20 @@ class EpgGenerateController extends Controller
                                         : '';
                                     $progXml .= '    <icon src="'.$this->escapeXml($legacyIcon['url']).'"'.$dimensionAttributes.'/>'.PHP_EOL;
                                 }
+                                $identity = EpgProgrammeIdentity::fromProgramme($programme);
                                 foreach (EpisodeNumberNormalizer::forProgramme($programme) as $episodeNumber) {
+                                    $system = mb_strtolower(trim((string) ($episodeNumber['system'] ?? '')));
+                                    if (in_array($system, ['m3u-editor:content-id', 'm3u-editor:series-id'], true)) {
+                                        continue;
+                                    }
                                     $systemAttribute = ($episodeNumber['system'] !== null && $episodeNumber['system'] !== '')
                                         ? ' system="'.$this->escapeXml($episodeNumber['system']).'"'
                                         : '';
                                     $progXml .= '    <episode-num'.$systemAttribute.'>'.$this->escapeXml($episodeNumber['value']).'</episode-num>'.PHP_EOL;
+                                }
+                                foreach ($identity as $identityKey => $identityValue) {
+                                    $identitySystem = $identityKey === 'content_id' ? 'm3u-editor:content-id' : 'm3u-editor:series-id';
+                                    $progXml .= '    <episode-num system="'.$this->escapeXml($identitySystem).'">'.$this->escapeXml($identityValue).'</episode-num>'.PHP_EOL;
                                 }
                                 if (! empty($programme['new']) && $programme['new']) {
                                     $progXml .= '    <new />'.PHP_EOL;

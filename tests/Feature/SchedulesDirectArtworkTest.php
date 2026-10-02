@@ -263,7 +263,8 @@ it('serializes schedules direct artwork in xmltv dtd order with dimensioned lega
     $method = new ReflectionMethod($service, 'writeProgramToXMLTV');
     $file = fopen('php://memory', 'w+');
     $programData = json_decode(json_encode([
-        'programID' => 'EP123',
+        'programID' => 'EP012345670089',
+        'entityType' => 'Episode',
         'titles' => [['title120' => 'Programme Art']],
         'descriptions' => ['description1000' => [['description' => 'Description']]],
         'genres' => ['Drama'],
@@ -281,7 +282,7 @@ it('serializes schedules direct artwork in xmltv dtd order with dimensioned lega
             'new' => true,
         ],
         $programData,
-        ['programs' => ['EP123' => [
+        ['programs' => ['EP012345670089' => [
             ['url' => 'https://example.com/poster.jpg', 'type' => 'poster', 'width' => 500, 'height' => 750],
             ['url' => 'https://example.com/backdrop.jpg', 'type' => 'backdrop', 'width' => 1280, 'height' => 720],
             ['url' => 'https://example.com/banner.jpg', 'type' => 'banner', 'width' => 1280, 'height' => 300],
@@ -311,6 +312,8 @@ it('serializes schedules direct artwork in xmltv dtd order with dimensioned lega
         ->and($xpath->query('//programme/icon[@src="https://example.com/poster.jpg"][@width="500"][@height="750"]'))->toHaveCount(1)
         ->and($xpath->query('//programme/icon[@src="https://example.com/banner.jpg"][@width="1280"][@height="300"]'))->toHaveCount(1)
         ->and($xpath->query('//programme/icon[@type or @orient or @size]'))->toHaveCount(0)
+        ->and($xpath->query('//programme/episode-num[@system="m3u-editor:content-id"][text()="gracenote:EP012345670089"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme/episode-num[@system="m3u-editor:series-id"][text()="gracenote:SH012345670000"]'))->toHaveCount(1)
         ->and($xpath->query('//programme/image[@type="poster"][@orient="P"][@system="schedulesdirect"][text()="https://example.com/poster.jpg"]'))->toHaveCount(1)
         ->and($xpath->query('//programme/image[@type="backdrop"][@orient="L"][@system="schedulesdirect"][text()="https://example.com/backdrop.jpg"]'))->toHaveCount(1)
         ->and($xpath->query('//programme/image[contains(text(), "banner.jpg")]'))->toHaveCount(0)
@@ -321,6 +324,8 @@ it('serializes schedules direct artwork in xmltv dtd order with dimensioned lega
             'icon',
             'icon',
             'icon',
+            'episode-num',
+            'episode-num',
             'episode-num',
             'new',
             'rating',

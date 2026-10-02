@@ -6,6 +6,7 @@ use App\Exceptions\SchedulesDirectRateLimitException;
 use App\Exceptions\SchedulesDirectTokenExpiredException;
 use App\Facades\ProxyFacade;
 use App\Models\Epg;
+use App\Support\EpgProgrammeIdentity;
 use Carbon\Carbon;
 use Exception;
 use Generator;
@@ -1796,6 +1797,10 @@ class SchedulesDirectService
                     break;
                 }
             }
+        }
+        foreach (EpgProgrammeIdentity::fromSchedulesDirect($programData) as $identityKey => $identityValue) {
+            $identitySystem = $identityKey === 'content_id' ? 'm3u-editor:content-id' : 'm3u-editor:series-id';
+            fwrite($file, '    <episode-num system="'.$identitySystem.'">'.htmlspecialchars($identityValue)."</episode-num>\n");
         }
 
         // New must precede rating in the XMLTV programme content model.

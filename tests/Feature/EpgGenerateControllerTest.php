@@ -376,6 +376,9 @@ test('cached epg generation preserves ordered episode number identities from sou
     <icon src="https://example.com/programme-artwork.jpg" />
     <episode-num system="xmltv_ns">1 . 4/10 .</episode-num>
     <episode-num system="dd_progid">EP012345670089</episode-num>
+    <episode-num system="m3u-editor:content-id">gracenote:EP012345670089</episode-num>
+    <episode-num system="m3u-editor:content-id">gracenote:EP012345670089</episode-num>
+    <episode-num system="m3u-editor:series-id">gracenote:SH012345670000</episode-num>
     <episode-num system="onscreen">S02E05</episode-num>
     <episode-num system="provider.example/id">series-0</episode-num>
     <episode-num>Unclassified 7</episode-num>
@@ -396,6 +399,9 @@ XML;
     $expectedEpisodeNumbers = [
         ['system' => 'xmltv_ns', 'value' => '1 . 4/10 .'],
         ['system' => 'dd_progid', 'value' => 'EP012345670089'],
+        ['system' => 'm3u-editor:content-id', 'value' => 'gracenote:EP012345670089'],
+        ['system' => 'm3u-editor:content-id', 'value' => 'gracenote:EP012345670089'],
+        ['system' => 'm3u-editor:series-id', 'value' => 'gracenote:SH012345670000'],
         ['system' => 'onscreen', 'value' => 'S02E05'],
         ['system' => 'provider.example/id', 'value' => 'series-0'],
         ['system' => null, 'value' => 'Unclassified 7'],
@@ -420,9 +426,19 @@ XML;
         ];
     }
 
+    $expectedGeneratedEpisodeNumbers = [
+        ['system' => 'xmltv_ns', 'value' => '1 . 4/10 .'],
+        ['system' => 'dd_progid', 'value' => 'EP012345670089'],
+        ['system' => 'onscreen', 'value' => 'S02E05'],
+        ['system' => 'provider.example/id', 'value' => 'series-0'],
+        ['system' => null, 'value' => 'Unclassified 7'],
+        ['system' => ' xmltv_ns ', 'value' => '0'],
+        ['system' => 'm3u-editor:content-id', 'value' => 'gracenote:EP012345670089'],
+        ['system' => 'm3u-editor:series-id', 'value' => 'gracenote:SH012345670000'],
+    ];
     $xpath = new DOMXPath($document);
 
-    expect($episodeNumbers)->toBe($expectedEpisodeNumbers)
+    expect($episodeNumbers)->toBe($expectedGeneratedEpisodeNumbers)
         ->and($xpath->query('//programme[@channel="identity-channel"]/icon[@src="https://example.com/programme-artwork.jpg"]'))->toHaveCount(1);
 });
 

@@ -54,6 +54,7 @@ use App\Services\VodFileNameService;
 use App\Services\WatchProgressLinker;
 use App\Services\XtreamCategoryService;
 use App\Settings\GeneralSettings;
+use App\Support\EpgProgrammeIdentity;
 use App\Support\EpisodeNumberParser;
 use App\Support\SeriesKey;
 use App\Support\TmdbRating;
@@ -1913,7 +1914,7 @@ class XtreamApiController extends Controller
                         'stop_timestamp' => (string) $endTime->timestamp,
                         'now_playing' => ($isCurrentProgramme && $isNowPlaying) ? 1 : 0,
                         'has_archive' => (! $disableCatchup && $channel->catchup && $endTime->lt($now)) ? 1 : 0,
-                    ] + $this->epgProgrammeArtwork($programme, $playlist);
+                    ] + $this->epgProgrammeArtwork($programme, $playlist) + EpgProgrammeIdentity::fromProgramme($programme);
                     $count++;
                 }
             }
@@ -1993,7 +1994,7 @@ class XtreamApiController extends Controller
                         'stop_timestamp' => (string) $endTime->timestamp,
                         'now_playing' => ($isCurrentProgramme && $isNowPlaying) ? 1 : 0,
                         'has_archive' => (! $disableCatchup && $channel->catchup && $endTime->lt($now)) ? 1 : 0,
-                    ] + $this->epgProgrammeArtwork($programme, $playlist);
+                    ] + $this->epgProgrammeArtwork($programme, $playlist) + EpgProgrammeIdentity::fromProgramme($programme);
                 }
             }
 
@@ -2176,6 +2177,7 @@ class XtreamApiController extends Controller
                         if ($includeDetails) {
                             $listing += $this->epgProgrammeDetails($programme, $playlist);
                         }
+                        $listing += EpgProgrammeIdentity::fromProgramme($programme);
                         $epgListings[] = $listing;
                     }
                     $result[(string) $streamId] = ['epg_listings' => $epgListings];

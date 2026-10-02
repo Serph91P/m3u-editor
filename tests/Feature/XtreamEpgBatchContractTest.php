@@ -649,3 +649,27 @@ it('prefers the alternative image closest to 16:9 for the guide artwork', functi
     expect($listings['wide-1']['icon'])->toBe('https://images.example/wide.jpg')
         ->and($listings['tall-1']['icon'])->toBe('https://images.example/primary.jpg');
 });
+
+it('preserves exact programme identities in short simple and batch listings', function () {
+    $ctx = makeBatchChannel($this->user, $this->playlist, 'channel.identity');
+
+    putProgramme($ctx['epg'], Carbon::now()->format('Y-m-d'), 'channel.identity', [
+        'id' => 'occurrence-1', 'title' => 'Synthetic Episode', 'desc' => '',
+        'start' => Carbon::now()->subMinutes(5)->format('Y-m-d H:i:s'),
+        'stop' => Carbon::now()->addHour()->format('Y-m-d H:i:s'),
+        'episode_nums' => [['system' => 'dd_progid', 'value' => 'EP012345670089']],
+    ]);
+
+    $short = $this->getJson(programmeUrl($this->username, $this->password, 'get_short_epg', ['stream_id' => $ctx['channel']->id]))->assertOk()->json('epg_listings.0');
+    $simple = $this->getJson(programmeUrl($this->username, $this->password, 'get_simple_data_table', ['stream_id' => $ctx['channel']->id]))->assertOk()->json('epg_listings.0');
+    $batchListings = $this->getJson(batchUrl($this->username, $this->password, ['stream_ids' => (string) $ctx['channel']->id]))->assertOk()->json((string) $ctx['channel']->id.'.epg_listings');
+    $batch = collect($batchListings)->firstWhere('id', 'occurrence-1');
+
+    foreach ([$short, $simple, $batch] as $listing) {
+        expect($listing)->toMatchArray([
+            'id' => 'occurrence-1',
+            'content_id' => 'gracenote:EP012345670089',
+            'series_id' => 'gracenote:SH012345670000',
+        ]);
+    }
+});
