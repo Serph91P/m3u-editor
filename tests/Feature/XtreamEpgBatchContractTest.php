@@ -10,6 +10,7 @@ use App\Models\NetworkProgramme;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Services\EpgCacheService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -510,6 +511,64 @@ it('preserves validated role-specific artwork in short simple and detailed batch
     }
 
     expect($batch['icon'])->toBe('https://images.example/backdrop.jpg');
+});
+
+it('keeps imported artwork conflicts failed closed while preserving legacy and proven dimensions', function () {
+    $this->playlist->update(['enable_logo_proxy' => false]);
+    $ctx = makeBatchChannel($this->user, $this->playlist, 'channel.imported-artwork');
+    $ctx['epg']->update(['is_cached' => false]);
+
+    $start = Carbon::now()->subMinutes(5)->format('YmdHis O');
+    $stop = Carbon::now()->addHour()->format('YmdHis O');
+    $xml = <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="channel.imported-artwork"><display-name>Imported Artwork</display-name></channel>
+  <programme start="{$start}" stop="{$stop}" channel="channel.imported-artwork"><title>Reverse Conflict</title><icon src="https://art.example.test/reverse.jpg" width="600" height="900" /><image type="poster" orient="P">https://art.example.test/reverse.jpg</image><image type="backdrop" orient="L">https://art.example.test/reverse.jpg</image></programme>
+  <programme start="{$start}" stop="{$stop}" channel="channel.imported-artwork"><title>Unhealed Conflict</title><icon src="https://art.example.test/unhealed.jpg" width="600" height="900" /><image type="backdrop" orient="L">https://art.example.test/unhealed.jpg</image><image type="poster" orient="P">https://art.example.test/unhealed.jpg</image><image type="poster" orient="P">https://art.example.test/unhealed.jpg</image></programme>
+  <programme start="{$start}" stop="{$stop}" channel="channel.imported-artwork"><title>Legacy Typed Poster</title><icon src="https://art.example.test/legacy-poster.jpg" type="poster" width="600" height="900" /><icon src="https://art.example.test/legacy-wide.jpg" width="1280" height="720" /></programme>
+  <programme start="{$start}" stop="{$stop}" channel="channel.imported-artwork"><title>Dimension Matrix</title><icon src="https://art.example.test/valid.jpg" type="poster" width="600" height="900" /><icon src="https://art.example.test/units.jpg" type="poster" width="600px" height="900px" /><icon src="https://art.example.test/fraction.jpg" type="poster" width="600.5" height="900" /><icon src="https://art.example.test/exponent.jpg" type="poster" width="6e2" height="900" /><icon src="https://art.example.test/empty.jpg" type="poster" width="" height="" /><icon src="https://art.example.test/missing.jpg" type="poster" /><icon src="https://art.example.test/zero.jpg" type="poster" width="0" height="900" /><icon src="https://art.example.test/negative.jpg" type="poster" width="-600" height="900" /><icon src="https://art.example.test/overflow.jpg" type="poster" width="9999999" height="900" /></programme>
+  <programme start="{$start}" stop="{$stop}" channel="channel.imported-artwork"><title>Dimensionless Standard Poster</title><image type="poster" orient="P">https://art.example.test/dimensionless-standard.jpg</image></programme>
+</tv>
+XML;
+    Storage::disk('local')->put($ctx['epg']->file_path, gzencode($xml));
+
+    expect(app(EpgCacheService::class)->cacheEpgData($ctx['epg']))->toBeTrue();
+
+    $cached = app(EpgCacheService::class)->getCachedProgrammes($ctx['epg'], Carbon::now()->format('Y-m-d'), ['channel.imported-artwork'])['channel.imported-artwork'];
+    $cachedByTitle = collect($cached)->keyBy('title');
+    expect($cachedByTitle['Reverse Conflict']['images'])->toHaveCount(3)
+        ->and($cachedByTitle['Unhealed Conflict']['images'])->toHaveCount(4)
+        ->and($cachedByTitle['Legacy Typed Poster']['icon'])->toBe('https://art.example.test/legacy-poster.jpg');
+
+    $short = collect($this->getJson(programmeUrl($this->username, $this->password, 'get_short_epg', ['stream_id' => $ctx['channel']->id]))->assertOk()->json('epg_listings'))->keyBy('title');
+    $simple = collect($this->getJson(programmeUrl($this->username, $this->password, 'get_simple_data_table', ['stream_id' => $ctx['channel']->id]))->assertOk()->json('epg_listings'))->keyBy(fn (array $listing) => base64_decode($listing['title']));
+    $batch = collect($this->getJson(batchUrl($this->username, $this->password, ['stream_ids' => (string) $ctx['channel']->id, 'details' => 1]))->assertOk()->json((string) $ctx['channel']->id.'.epg_listings'))->keyBy(fn (array $listing) => base64_decode($listing['title']));
+
+    expect($short->keys()->all())->toContain('Reverse Conflict', 'Unhealed Conflict', 'Legacy Typed Poster', 'Dimension Matrix')
+        ->and($simple->keys()->all())->toContain('Reverse Conflict', 'Unhealed Conflict', 'Legacy Typed Poster', 'Dimension Matrix')
+        ->and($batch->keys()->all())->toContain('Reverse Conflict', 'Unhealed Conflict', 'Legacy Typed Poster', 'Dimension Matrix');
+
+    foreach ([$short, $simple, $batch] as $listings) {
+        foreach (['Reverse Conflict' => 'reverse.jpg', 'Unhealed Conflict' => 'unhealed.jpg'] as $title => $filename) {
+            expect(json_encode($listings[$title], JSON_THROW_ON_ERROR))->not->toContain("https://art.example.test/{$filename}");
+        }
+        expect($listings['Dimension Matrix'])->toMatchArray(['poster_url' => 'https://art.example.test/valid.jpg', 'poster_width' => 600, 'poster_height' => 900]);
+        foreach (['units', 'fraction', 'exponent', 'empty', 'missing', 'zero', 'negative', 'overflow', 'dimensionless-standard'] as $invalid) {
+            expect($listings['Dimension Matrix'])->not->toContain("https://art.example.test/{$invalid}.jpg");
+        }
+    }
+    expect($batch['Legacy Typed Poster'])->toMatchArray(['icon' => 'https://art.example.test/legacy-wide.jpg', 'poster_url' => 'https://art.example.test/legacy-poster.jpg', 'poster_width' => 600, 'poster_height' => 900]);
+
+    $xmltv = gzdecode($this->get("/{$this->playlist->uuid}/epg.xml.gz")->assertOk()->getContent());
+    $document = new DOMDocument;
+    expect($document->loadXML($xmltv))->toBeTrue();
+    $xpath = new DOMXPath($document);
+    expect($xpath->query('//programme[title="Dimensionless Standard Poster"]'))->toHaveCount(1);
+    foreach (['Reverse Conflict', 'Unhealed Conflict'] as $title) {
+        expect($xpath->query("//programme[title='{$title}']/icon | //programme[title='{$title}']/image"))->toHaveCount(0);
+    }
+    expect($xpath->query('//programme[title="Dimensionless Standard Poster"]/image[@type="poster"][@orient="P"][text()="https://art.example.test/dimensionless-standard.jpg"]'))->toHaveCount(1);
 });
 
 it('selects canonical artwork independently of source order and rejects same-url conflicts', function () {
