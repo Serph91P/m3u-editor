@@ -1071,6 +1071,45 @@ class EpgGenerateController extends Controller
     }
 
     /**
+     * @param  array<mixed>  $images
+     * @return array<string, true>
+     */
+    private function conflictingProgrammeArtworkUrls(array $images): array
+    {
+        $evidence = [];
+        foreach ($images as $image) {
+            if (! is_array($image)) {
+                continue;
+            }
+
+            $url = trim((string) ($image['url'] ?? ''));
+            if ($url === '') {
+                continue;
+            }
+
+            $type = trim((string) ($image['type'] ?? ''));
+            $orient = trim((string) ($image['orient'] ?? ''));
+            $width = filter_var($image['width'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $height = filter_var($image['height'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if ($type !== '') {
+                $evidence[$url]['types'][$type] = true;
+            }
+            if ($orient !== '') {
+                $evidence[$url]['orientations'][$orient] = true;
+            }
+            if ($width !== false && $height !== false) {
+                $evidence[$url]['dimensions'][$width.'x'.$height] = true;
+            }
+        }
+
+        $conflicts = array_filter($evidence, static fn (array $item): bool => count($item['types'] ?? []) > 1
+            || count($item['orientations'] ?? []) > 1
+            || count($item['dimensions'] ?? []) > 1);
+
+        return array_fill_keys(array_keys($conflicts), true);
+    }
+
+    /**
      * Build DTD-valid icons for legacy consumers and same-URL dimension attestation.
      *
      * @param  array<string, mixed>  $programme
@@ -1080,9 +1119,11 @@ class EpgGenerateController extends Controller
     private function programmeLegacyIcons(array $programme, array $images, Epg $epg, bool $logoProxyEnabled): array
     {
         $icons = [];
+        $conflictingUrls = $this->conflictingProgrammeArtworkUrls($programme['images'] ?? []);
         $url = trim((string) ($programme['icon'] ?? ''));
         $scheme = mb_strtolower((string) parse_url($url, PHP_URL_SCHEME));
-        if (filter_var($url, FILTER_VALIDATE_URL)
+        if (! isset($conflictingUrls[$url])
+            && filter_var($url, FILTER_VALIDATE_URL)
             && in_array($scheme, ['http', 'https'], true)
             && ! $this->containsDotPathSegment($url)) {
             $icons[] = ['url' => $this->proxyProgrammeArtworkUrl($url, $epg, $logoProxyEnabled)];
@@ -1109,7 +1150,8 @@ class EpgGenerateController extends Controller
             $legacyScheme = mb_strtolower((string) parse_url($legacyUrl, PHP_URL_SCHEME));
             $legacyWidth = filter_var($legacyImage['width'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
             $legacyHeight = filter_var($legacyImage['height'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-            if (filter_var($legacyUrl, FILTER_VALIDATE_URL)
+            if (! isset($conflictingUrls[$legacyUrl])
+                && filter_var($legacyUrl, FILTER_VALIDATE_URL)
                 && in_array($legacyScheme, ['http', 'https'], true)
                 && ! $this->containsDotPathSegment($legacyUrl)
                 && $legacyWidth !== false

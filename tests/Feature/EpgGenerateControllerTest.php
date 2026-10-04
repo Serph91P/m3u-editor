@@ -896,6 +896,12 @@ test('cache import converts standard images and legacy typed icons without losin
     <image type="person" size="2" orient="P">https://example.com/person-imported.jpg</image>
   </programme>
   <programme start="{$start}" stop="{$stop}" channel="source.mixed-artwork">
+    <title>Same URL Conflict</title>
+    <icon src="https://example.com/conflicted.jpg" width="600" height="900" />
+    <image type="backdrop" orient="L">https://example.com/conflicted.jpg</image>
+    <image type="poster" orient="P">https://example.com/conflicted.jpg</image>
+  </programme>
+  <programme start="{$start}" stop="{$stop}" channel="source.mixed-artwork">
     <title>Legacy Icons Only</title>
     <icon src="https://example.com/legacy-square.jpg" width="600" height="600" />
     <icon src="https://example.com/legacy-wide.jpg" width="1280" height="720" />
@@ -925,6 +931,8 @@ XML;
         ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="poster"][@orient="P"][text()="https://example.com/legacy-poster.jpg"]'))->toHaveCount(1)
         ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="poster"][@orient="P"][text()="https://example.com/standard-poster.jpg"]'))->toHaveCount(0)
         ->and($xpath->query('//programme[title="Mixed Artwork"]/image[@type="person"][@orient="P"][text()="https://example.com/person-imported.jpg"]'))->toHaveCount(1)
+        ->and($xpath->query('//programme[title="Same URL Conflict"]/icon'))->toHaveCount(0)
+        ->and($xpath->query('//programme[title="Same URL Conflict"]/image'))->toHaveCount(0)
         ->and($xpath->query('//programme[title="Legacy Icons Only"]/icon'))->toHaveCount(4)
         ->and($xpath->query('//programme[title="Legacy Icons Only"]/icon[@src="https://example.com/legacy-square.jpg"]'))->toHaveCount(2)
         ->and($xpath->query('//programme[title="Legacy Icons Only"]/icon[@src="https://example.com/legacy-wide.jpg"][@width="1280"][@height="720"]'))->toHaveCount(1)

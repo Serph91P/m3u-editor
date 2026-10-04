@@ -260,6 +260,20 @@ class EpgCacheService
     }
 
     /**
+     * Return a source-proven positive pixel dimension, or zero when unknown.
+     */
+    private function pixelDimension(?string $value): int
+    {
+        $value = trim((string) $value);
+
+        if (preg_match('/^[1-9][0-9]{0,5}$/', $value) !== 1) {
+            return 0;
+        }
+
+        return (int) $value;
+    }
+
+    /**
      * Apply a single XMLTV programme child element's value to the $programme array.
      *
      * Shared by both the single-pass writer and the stream generator to avoid
@@ -287,13 +301,13 @@ class EpgCacheService
             case 'icon':
                 $imageUrl = trim($reader->getAttribute('src') ?: '');
                 $type = mb_strtolower(trim($reader->getAttribute('type') ?: ''));
-                $width = (int) ($reader->getAttribute('width') ?: 0);
-                $height = (int) ($reader->getAttribute('height') ?: 0);
+                $width = $this->pixelDimension($reader->getAttribute('width'));
+                $height = $this->pixelDimension($reader->getAttribute('height'));
 
                 if ($imageUrl === '') {
                     break;
                 }
-                if (! $programme['icon'] && $type === '') {
+                if (! $programme['icon']) {
                     $programme['icon'] = $imageUrl;
                 }
                 if (in_array($type, ['poster', 'backdrop', 'still', 'person', 'character'], true) || ($width > 0 && $height > 0)) {
@@ -316,7 +330,9 @@ class EpgCacheService
                     break;
                 }
 
-                $image = [
+                // Keep every source declaration. Collapsing same-URL evidence here
+                // makes later conflict detection depend on XML element order.
+                $programme['images'][] = [
                     'url' => $imageUrl,
                     'type' => $type,
                     'width' => 0,
@@ -324,25 +340,6 @@ class EpgCacheService
                     'orient' => $orient,
                     'size' => $size,
                 ];
-
-                $matchedIcon = false;
-                foreach ($programme['images'] as &$existingImage) {
-                    if (($existingImage['url'] ?? null) === $imageUrl
-                        && ($existingImage['width'] ?? 0) > 0
-                        && ($existingImage['height'] ?? 0) > 0) {
-                        $existingImage = array_replace($existingImage, array_filter(
-                            $image,
-                            fn (mixed $value, string $key): bool => ! in_array($key, ['width', 'height'], true) && $value !== '' && $value !== 0,
-                            ARRAY_FILTER_USE_BOTH,
-                        ));
-                        $matchedIcon = true;
-                        break;
-                    }
-                }
-                unset($existingImage);
-                if (! $matchedIcon) {
-                    $programme['images'][] = $image;
-                }
                 break;
             case 'new':
                 $programme['new'] = true;
