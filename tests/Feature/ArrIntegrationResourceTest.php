@@ -152,3 +152,10 @@ it('lists the page without error', function () {
     Livewire::test(ListArrIntegrations::class)
         ->assertOk();
 });
+
+it('shows the webhook URL on the edit page', function () {
+    $integration = ArrIntegration::factory()->create(['user_id' => $this->user->id]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
+        ->assertSchemaStateSet(['webhook_url' => url('/api/webhooks/arr/'.$integration->webhook_secret)]);
+});

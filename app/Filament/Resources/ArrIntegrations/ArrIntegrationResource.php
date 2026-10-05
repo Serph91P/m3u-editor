@@ -200,6 +200,7 @@ class ArrIntegrationResource extends Resource
                     ->schema([
                         TextInput::make('webhook_url')
                             ->label(__('Webhook URL'))
+                            ->formatStateUsing(fn (?ArrIntegration $record): ?string => $record?->webhook_url)
                             ->disabled()
                             ->dehydrated(false)
                             ->copyable()
