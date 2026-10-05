@@ -259,6 +259,42 @@ it('per-row viewError action opens a modal containing the failure message', func
         ->assertHasNoErrors();
 });
 
+it('per-row view action opens a details slide-over with the file path and format', function () {
+    Storage::fake('cache');
+
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->create();
+    $row = CachedContentFile::factory()->completed()->create([
+        'user_id' => $user->id,
+        'playlist_id' => $playlist->id,
+        'content_type' => 'movie',
+        'tmdb_id' => '901',
+        'title' => 'Details movie',
+        'disk' => 'cache',
+        'file_path' => "{$playlist->id}/details-movie.mkv",
+        'file_size_bytes' => 1_048_576,
+    ]);
+
+    Storage::disk('cache')->put($row->file_path, 'bytes');
+
+    $this->actingAs($user);
+
+    Livewire::test(ListCachedContentFiles::class)
+        ->mountTableAction('view', $row)
+        ->assertHasNoErrors()
+        ->assertMountedActionModalSee([$row->file_path, 'MKV (video/x-matroska)', $row->uuid]);
+});
+
+it('getFormatLabel returns null until a file is written', function () {
+    $row = CachedContentFile::factory()->make(['file_path' => null]);
+
+    expect(CachedContentFileResource::getFormatLabel($row))->toBeNull();
+
+    $row->file_path = '1/abc.mp4';
+
+    expect(CachedContentFileResource::getFormatLabel($row))->toBe('MP4 (video/mp4)');
+});
+
 // Ownership enforcement (per-row + bulk)
 
 it('per-row retry helper refuses to dispatch when the row belongs to another user', function () {

@@ -13,10 +13,14 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
+use Filament\Actions\ViewAction;
+use Filament\Infolists\Components\IconEntry;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\PageRegistration;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Enums\RecordActionsPosition;
 use Filament\Tables\Filters\SelectFilter;
@@ -25,6 +29,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Cached Downloads: every cached_content_files row the current user owns
@@ -97,6 +102,150 @@ class CachedContentFileResource extends Resource
         }
 
         return $query;
+    }
+
+    /**
+     * Details slide-over for a single row (opened from the View action or
+     * by clicking the row).
+     */
+    public static function infolist(Schema $schema): Schema
+    {
+        return $schema->components([
+            Section::make(__('Content'))
+                ->columns(2)
+                ->columnSpanFull()
+                ->schema([
+                    TextEntry::make('title')
+                        ->label(__('Title'))
+                        ->state(fn (CachedContentFile $record): string => self::getContentLabel($record))
+                        ->columnSpanFull(),
+                    TextEntry::make('content_type')
+                        ->label(__('Type'))
+                        ->badge()
+                        ->formatStateUsing(fn (string $state): string => match ($state) {
+                            'movie' => __('VOD'),
+                            'episode' => __('Episode'),
+                            default => ucfirst($state),
+                        }),
+                    TextEntry::make('status')
+                        ->label(__('Status'))
+                        ->badge()
+                        ->formatStateUsing(fn (CachedContentFileStatus $state): string => $state->getLabel())
+                        ->color(fn (CachedContentFileStatus $state): string => $state->getColor())
+                        ->icon(fn (CachedContentFileStatus $state): string => $state->getIcon()),
+                    TextEntry::make('managed_by')
+                        ->label(__('Source'))
+                        ->badge()
+                        ->state(fn (CachedContentFile $record): string => $record->managed_by === null ? __('Manual') : __('Auto'))
+                        ->color(fn (CachedContentFile $record): string => $record->managed_by === null ? 'gray' : 'warning'),
+                    TextEntry::make('playlist.name')
+                        ->label(__('Playlist'))
+                        ->placeholder('-'),
+                    TextEntry::make('season_number')
+                        ->label(__('Season'))
+                        ->hidden(fn (CachedContentFile $record): bool => $record->season_number === null),
+                    TextEntry::make('episode_number')
+                        ->label(__('Episode'))
+                        ->hidden(fn (CachedContentFile $record): bool => $record->episode_number === null),
+                    TextEntry::make('tmdb_id')
+                        ->label(__('TMDB ID'))
+                        ->placeholder('-')
+                        ->copyable(),
+                    TextEntry::make('tvdb_id')
+                        ->label(__('TVDB ID'))
+                        ->placeholder('-')
+                        ->copyable(),
+                    TextEntry::make('quality')
+                        ->label(__('Quality'))
+                        ->hidden(fn (CachedContentFile $record): bool => blank($record->quality)),
+                    TextEntry::make('dynamicGroups.name')
+                        ->label(__('Dynamic Groups'))
+                        ->badge()
+                        ->columnSpanFull()
+                        ->hidden(fn (CachedContentFile $record): bool => $record->managed_by === null),
+                ]),
+
+            Section::make(__('File'))
+                ->columns(2)
+                ->columnSpanFull()
+                ->schema([
+                    TextEntry::make('format')
+                        ->label(__('Format'))
+                        ->placeholder('-')
+                        ->state(fn (CachedContentFile $record): ?string => self::getFormatLabel($record)),
+                    TextEntry::make('size')
+                        ->label(__('Size'))
+                        ->placeholder('-')
+                        ->state(fn (CachedContentFile $record): ?string => self::getProgressLabel($record)),
+                    IconEntry::make('file_present')
+                        ->label(__('File on disk'))
+                        ->boolean()
+                        ->state(fn (CachedContentFile $record): bool => $record->isPlayable())
+                        ->visible(fn (CachedContentFile $record): bool => $record->hasFilePath()),
+                    TextEntry::make('disk')
+                        ->label(__('Disk'))
+                        ->state(fn (CachedContentFile $record): string => $record->resolveStorageDisk()),
+                    TextEntry::make('file_path')
+                        ->label(__('File path'))
+                        ->placeholder(__('Not written yet'))
+                        ->fontFamily('mono')
+                        ->copyable()
+                        ->columnSpanFull(),
+                    TextEntry::make('absolute_path')
+                        ->label(__('Full path'))
+                        ->placeholder('-')
+                        ->state(fn (CachedContentFile $record): ?string => self::getAbsolutePath($record))
+                        ->fontFamily('mono')
+                        ->copyable()
+                        ->columnSpanFull()
+                        ->visible(fn (CachedContentFile $record): bool => (bool) auth()->user()?->isAdmin() && ! empty($record->file_path)),
+                    TextEntry::make('uuid')
+                        ->label(__('UUID'))
+                        ->fontFamily('mono')
+                        ->copyable()
+                        ->columnSpanFull(),
+                ]),
+
+            Section::make(__('Activity'))
+                ->columns(2)
+                ->columnSpanFull()
+                ->schema([
+                    TextEntry::make('created_at')
+                        ->label(__('Queued'))
+                        ->dateTime(),
+                    TextEntry::make('updated_at')
+                        ->label(__('Last Activity'))
+                        ->since()
+                        ->dateTimeTooltip(),
+                    TextEntry::make('bytes_per_second')
+                        ->label(__('Speed'))
+                        ->state(fn (CachedContentFile $record): ?string => (int) ($record->bytes_per_second ?? 0) > 0
+                            ? ArrQueueMonitor::formatBytes((int) $record->bytes_per_second).'/s'
+                            : null)
+                        ->visible(fn (CachedContentFile $record): bool => $record->status === CachedContentFileStatus::Downloading),
+                    TextEntry::make('eta')
+                        ->label(__('ETA'))
+                        ->placeholder('-')
+                        ->state(fn (CachedContentFile $record): ?string => self::getEtaLabel($record))
+                        ->visible(fn (CachedContentFile $record): bool => $record->status === CachedContentFileStatus::Downloading),
+                    TextEntry::make('last_verified_at')
+                        ->label(__('Last verified'))
+                        ->dateTime()
+                        ->placeholder(__('never')),
+                    TextEntry::make('last_failed_at')
+                        ->label(__('Last failed'))
+                        ->dateTime()
+                        ->placeholder(__('never')),
+                    TextEntry::make('failure_count')
+                        ->label(__('Total failures')),
+                    TextEntry::make('last_error_message')
+                        ->label(__('Error message'))
+                        ->fontFamily('mono')
+                        ->copyable()
+                        ->columnSpanFull()
+                        ->hidden(fn (CachedContentFile $record): bool => blank($record->last_error_message)),
+                ]),
+        ]);
     }
 
     public static function table(Table $table): Table
@@ -192,6 +341,7 @@ class CachedContentFileResource extends Resource
                         'episode' => __('Episode'),
                     ]),
             ])
+            ->recordAction('view')
             ->recordActions([
                 ActionGroup::make([
                     Action::make('viewError')
@@ -294,6 +444,11 @@ class CachedContentFileResource extends Resource
                                 ->send();
                         }),
                 ])->button()->hiddenLabel()->size('sm'),
+                ViewAction::make()
+                    ->label(__('View Details'))
+                    ->slideOver()
+                    ->button()->hiddenLabel()->size('sm')
+                    ->modalHeading(fn (CachedContentFile $record): string => self::getContentLabel($record)),
             ], RecordActionsPosition::BeforeCells)
             ->toolbarActions([
                 BulkActionGroup::make([
@@ -544,6 +699,37 @@ class CachedContentFileResource extends Resource
         $h = intdiv($seconds % 86400, 3600);
 
         return $h > 0 ? "{$d}d {$h}h" : "{$d}d";
+    }
+
+    /**
+     * Container format of the cached file (from its extension) with its
+     * MIME type, e.g. "MKV (video/x-matroska)". Null until a file is written.
+     */
+    public static function getFormatLabel(CachedContentFile $record): ?string
+    {
+        $extension = pathinfo((string) $record->file_path, PATHINFO_EXTENSION);
+        if ($extension === '') {
+            return null;
+        }
+
+        return sprintf('%s (%s)', strtoupper($extension), $record->resolveMimeType());
+    }
+
+    /**
+     * Absolute path of the cached file on the server, or null when the
+     * disk can't resolve one.
+     */
+    public static function getAbsolutePath(CachedContentFile $record): ?string
+    {
+        if (empty($record->file_path)) {
+            return null;
+        }
+
+        try {
+            return Storage::disk($record->resolveStorageDisk())->path($record->file_path);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
