@@ -2256,7 +2256,7 @@
     "Drag and drop to reorder groups and items. Toggle visibility to hide or show them. You will need to refresh the page to see the changes take effect.": "Arrastra y suelta para reordenar grupos y elementos. Cambia la visibilidad para ocultarlos o mostrarlos. Deberás actualizar la página para ver los cambios aplicados.",
     "Drag onto a group on the left to move this channel": "Drag onto a group on the left to move this channel",
     "Drag the groups into the order you want them delivered to the client.": "Arrastra los grupos al orden en que deseas que se entreguen al cliente.",
-    "Drag the groups into the order you want them delivered to the client. Groups contributed by bouquets that are not listed here are appended in source-playlist order.": "Arrastra los grupos al orden en que quieres que se entreguen al cliente. Los grupos aportados por bouquets que no aparecen aquí se añaden al final en el orden de la lista de reproducción de origen.",
+    "Drag the groups into the order you want them delivered to the client. Includes groups from assigned bouquets.": "Arrastra los grupos al orden en que quieres que se entreguen al cliente. Incluye los grupos de los bouquets asignados.",
     "Drag to re-order the assigned EPG sources. The first will be given the highest priority.": "Arrastre para reordenar las fuentes EPG asignadas. Al primero se le dará la máxima prioridad.",
     "Drag to reorder priority attributes. First attribute has highest priority. Leave empty for default order.": "Arrastre para reordenar los atributos de prioridad. El primer atributo tiene la máxima prioridad. Déjelo vacío para el orden predeterminado.",
     "Drop": "Drop",

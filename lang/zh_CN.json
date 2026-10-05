@@ -2256,7 +2256,7 @@
     "Drag and drop to reorder groups and items. Toggle visibility to hide or show them. You will need to refresh the page to see the changes take effect.": "拖放以重新排序分组和项目。切换可见性以隐藏或显示它们。你需要刷新页面才能看到更改生效。",
     "Drag onto a group on the left to move this channel": "Drag onto a group on the left to move this channel",
     "Drag the groups into the order you want them delivered to the client.": "将分组拖动到您希望传递给客户端的顺序。",
-    "Drag the groups into the order you want them delivered to the client. Groups contributed by bouquets that are not listed here are appended in source-playlist order.": "将分组拖动到您希望交付给客户端的顺序。此处未列出的、由节目包提供的分组将按源播放列表的顺序追加在后面。",
+    "Drag the groups into the order you want them delivered to the client. Includes groups from assigned bouquets.": "将分组拖动到您希望交付给客户端的顺序。包括已分配节目包中的分组。",
     "Drag to re-order the assigned EPG sources. The first will be given the highest priority.": "拖动以重新排序分配的 EPG 源。排在首位的将获得最高优先级。",
     "Drag to reorder priority attributes. First attribute has highest priority. Leave empty for default order.": "拖动以重新排序优先级属性。第一个属性具有最高优先级。留空则按默认顺序。",
     "Drop": "Drop",

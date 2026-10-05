@@ -41,6 +41,7 @@ use Filament\Actions;
 use Filament\Actions\Action;
 use Filament\Forms;
 use Filament\Forms\Components\ModalTableSelect;
+use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas;
@@ -56,6 +57,7 @@ use Filament\Tables\Enums\RecordActionsPosition;
 use Filament\Tables\Table;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -812,6 +814,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->searchable()
                                 ->preload()
                                 ->live()
+                                ->afterStateUpdated(fn (Get $get, Set $set) => self::syncLiveGroupSortItems($get, $set))
                                 ->columnSpanFull()
                                 ->helperText(__('Channels are allowed if their group is in ANY assigned bouquet OR in the manual selections below. Bouquets and manual picks combine - assigning a bouquet never removes anything the manual pickers allow.'))
                                 ->createOptionForm([
@@ -880,9 +883,9 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                         ->label(__('Clear all'))
                                         ->icon('heroicon-o-x-mark')
                                         ->color('danger')
-                                        ->action(function (Set $set): void {
+                                        ->action(function (Get $get, Set $set): void {
                                             $set('group_filter.selected_groups', []);
-                                            $set('group_filter.live_group_order', []);
+                                            self::syncLiveGroupSortItems($get, $set, []);
                                         })
                                         ->requiresConfirmation()
                                         ->modalHeading(__('Clear selection'))
@@ -925,14 +928,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                     );
                                 })
                                 ->live()
-                                ->afterStateUpdated(function ($state, Get $get, Set $set): void {
-                                    // Keep the custom sort list in sync with the current selection:
-                                    // append newly-selected groups, drop deselected ones, preserve order.
-                                    $playlistIds = self::sourcePlaylistIds($get, 'live');
-                                    $selectedNames = self::liveGroupSortSelectedNames(is_array($state) ? $state : [], $playlistIds);
-                                    $currentOrder = self::liveGroupSortNames($get('group_filter.live_group_order'));
-                                    $set('group_filter.live_group_order', self::buildLiveGroupSortItems($currentOrder, $selectedNames, $playlistIds));
-                                }),
+                                ->afterStateUpdated(fn ($state, Get $get, Set $set) => self::syncLiveGroupSortItems($get, $set, is_array($state) ? $state : [])),
 
                             // Custom playlist equivalent. Its records are keyed by name, which is
                             // exactly what group_filter stores, so no id/name translation is needed.
@@ -961,7 +957,10 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                         ->label(__('Clear all'))
                                         ->icon('heroicon-o-x-mark')
                                         ->color('danger')
-                                        ->action(fn (Set $set) => $set('group_filter.selected_groups', []))
+                                        ->action(function (Get $get, Set $set): void {
+                                            $set('group_filter.selected_groups', []);
+                                            self::syncLiveGroupSortItems($get, $set, []);
+                                        })
                                         ->requiresConfirmation()
                                         ->modalHeading(__('Clear selection'))
                                         ->modalDescription(__('Are you sure you want to clear all selected live groups?'))
@@ -970,13 +969,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->getOptionLabelFromRecordUsing(fn ($record): string => $record->name)
                                 ->getOptionLabelsUsing(fn (array $values): array => array_combine($values, $values))
                                 ->live()
-                                ->afterStateUpdated(function ($state, Get $get, Set $set): void {
-                                    // Custom playlist selections are already names, so no
-                                    // playlist id is needed to resolve them.
-                                    $selectedNames = self::liveGroupSortSelectedNames(is_array($state) ? $state : [], null);
-                                    $currentOrder = self::liveGroupSortNames($get('group_filter.live_group_order'));
-                                    $set('group_filter.live_group_order', self::buildLiveGroupSortItems($currentOrder, $selectedNames, null));
-                                }),
+                                ->afterStateUpdated(fn ($state, Get $get, Set $set) => self::syncLiveGroupSortItems($get, $set, is_array($state) ? $state : [])),
 
                             Forms\Components\Toggle::make('group_filter.sort_live_groups_custom')
                                 ->label(__('Sort groups in custom order'))
@@ -985,16 +978,10 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->columnSpanFull()
                                 ->live()
                                 ->afterStateUpdated(function ($state, Get $get, Set $set): void {
-                                    if (! $state) {
-                                        return;
+                                    // Seed (or reconcile) the order list from the current selection and bouquets.
+                                    if ($state) {
+                                        self::syncLiveGroupSortItems($get, $set);
                                     }
-                                    // Seed the order list from the current selection the first time it's enabled.
-                                    if (! empty(self::liveGroupSortNames($get('group_filter.live_group_order')))) {
-                                        return;
-                                    }
-                                    $playlistIds = self::sourcePlaylistIds($get, 'live');
-                                    $selectedNames = self::liveGroupSortSelectedNames((array) $get('group_filter.selected_groups'), $playlistIds);
-                                    $set('group_filter.live_group_order', self::buildLiveGroupSortItems([], $selectedNames, $playlistIds));
                                 }),
 
                             Forms\Components\Repeater::make('group_filter.live_group_order')
@@ -1004,24 +991,33 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->dehydrated(true)
                                 ->table([
                                     Forms\Components\Repeater\TableColumn::make(__('Group Name')),
+                                    Forms\Components\Repeater\TableColumn::make(__('Bouquet')),
                                 ])
                                 ->schema([
                                     Forms\Components\TextInput::make('label')
                                         ->hiddenLabel()
                                         ->readOnly()
                                         ->dehydrated(false),
+                                    TextEntry::make('bouquets')
+                                        ->hiddenLabel()
+                                        ->badge()
+                                        ->color('info'),
                                     Forms\Components\Hidden::make('name'),
                                 ])
                                 ->addable(false)
                                 ->deletable(false)
                                 ->reorderable(true)
                                 ->compact()
-                                ->helperText(__('Drag the groups into the order you want them delivered to the client. Groups contributed by bouquets that are not listed here are appended in source-playlist order.'))
+                                ->helperText(__('Drag the groups into the order you want them delivered to the client. Includes groups from assigned bouquets.'))
                                 ->afterStateHydrated(function (Forms\Components\Repeater $component, $state, ?PlaylistAlias $record): void {
                                     $playlistIds = self::sourcePlaylistIdsForRecord($record, 'live');
                                     $orderedNames = self::liveGroupSortNames($state);
-                                    $selectedNames = PlaylistAlias::selectionNames($record?->group_filter['selected_groups'] ?? []);
-                                    $component->state(self::buildLiveGroupSortItems($orderedNames, $selectedNames, $playlistIds));
+                                    $bouquetSources = self::bouquetLiveGroupSources($record?->bouquets ?? []);
+                                    $selectedNames = array_values(array_unique(array_merge(
+                                        PlaylistAlias::selectionNames($record?->group_filter['selected_groups'] ?? []),
+                                        array_keys($bouquetSources),
+                                    )));
+                                    $component->state(self::buildLiveGroupSortItems($orderedNames, $selectedNames, $playlistIds, $bouquetSources));
                                 })
                                 ->dehydrateStateUsing(fn ($state): array => self::liveGroupSortNames($state)),
                         ]),
@@ -1430,22 +1426,36 @@ class PlaylistAliasResource extends Resource implements CopilotResource
      */
     protected static function bouquetContributedNames(Get $get, string $type): array
     {
-        $bouquetIds = (array) $get('bouquets');
-        if (empty($bouquetIds)) {
-            return [];
-        }
-
         $method = match ($type) {
             'vod' => 'getSelectedVodGroupNames',
             'categories' => 'getSelectedCategoryNames',
             default => 'getSelectedLiveGroupNames',
         };
 
+        return self::assignedBouquets($get)
+            ->flatMap(fn (Bouquet $bouquet): array => $bouquet->{$method}())
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * The bouquets currently selected on the alias form.
+     *
+     * @return EloquentCollection<int, Bouquet>
+     */
+    protected static function assignedBouquets(Get $get): EloquentCollection
+    {
+        $bouquetIds = (array) $get('bouquets');
+        if (empty($bouquetIds)) {
+            return new EloquentCollection;
+        }
+
         // Scope to the current user and the alias's active target - mirrors the
         // Select's own modifyQueryUsing - so a tampered `bouquets` state (e.g. a
         // forged Livewire request with another user's bouquet IDs) can never leak
-        // another user's bouquet contents through the picker badges or the
-        // contribution callout below.
+        // another user's bouquet contents through the picker badges, the
+        // contribution callout or the sort pane.
         return Bouquet::whereIn('id', $bouquetIds)
             ->where('user_id', auth()->id())
             ->where(fn (Builder $query) => match (true) {
@@ -1453,11 +1463,45 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                 (bool) $get('merged_playlist_id') => $query->where('merged_playlist_id', (int) $get('merged_playlist_id')),
                 default => $query->where('playlist_id', (int) $get('playlist_id')),
             })
-            ->get()
-            ->flatMap(fn (Bouquet $bouquet): array => $bouquet->{$method}())
-            ->unique()
-            ->values()
-            ->all();
+            ->get();
+    }
+
+    /**
+     * Rebuild the custom live group sort list from the current form state: the
+     * manual selection first, then any group contributed only by an assigned
+     * bouquet. Saved positions are kept, new groups are appended, and groups no
+     * longer selected or contributed are dropped.
+     *
+     * @param  array<mixed>|null  $selection  the live group picker state, read from the form when null
+     */
+    protected static function syncLiveGroupSortItems(Get $get, Set $set, ?array $selection = null): void
+    {
+        $playlistIds = self::sourcePlaylistIds($get, 'live');
+        $selectedNames = self::liveGroupSortSelectedNames($selection ?? (array) $get('group_filter.selected_groups'), $playlistIds);
+        $bouquetSources = self::bouquetLiveGroupSources(self::assignedBouquets($get));
+        $names = array_values(array_unique(array_merge($selectedNames, array_keys($bouquetSources))));
+        $currentOrder = self::liveGroupSortNames($get('group_filter.live_group_order'));
+
+        $set('group_filter.live_group_order', self::buildLiveGroupSortItems($currentOrder, $names, $playlistIds, $bouquetSources));
+    }
+
+    /**
+     * Map each live group name contributed by the given bouquets to the names of
+     * the bouquets contributing it, for the sort pane's source badges.
+     *
+     * @param  iterable<Bouquet>  $bouquets
+     * @return array<string, array<string>>
+     */
+    protected static function bouquetLiveGroupSources(iterable $bouquets): array
+    {
+        $sources = [];
+        foreach ($bouquets as $bouquet) {
+            foreach ($bouquet->getSelectedLiveGroupNames() as $name) {
+                $sources[$name][] = $bouquet->name;
+            }
+        }
+
+        return $sources;
     }
 
     /**
@@ -1544,9 +1588,10 @@ class PlaylistAliasResource extends Resource implements CopilotResource
      * @param  array<string>  $orderedNames
      * @param  array<string>  $selectedNames
      * @param  int|array<int>|null  $playlistIds  the alias's playlist, or a merged playlist's sources
-     * @return array<string, array{name: string, label: string}>
+     * @param  array<string, array<string>>  $bouquetSources  group name => names of the bouquets contributing it
+     * @return array<string, array{name: string, label: string, bouquets: array<string>}>
      */
-    public static function buildLiveGroupSortItems(array $orderedNames, array $selectedNames, int|array|null $playlistIds): array
+    public static function buildLiveGroupSortItems(array $orderedNames, array $selectedNames, int|array|null $playlistIds, array $bouquetSources = []): array
     {
         $selectedSet = array_flip($selectedNames);
 
@@ -1581,6 +1626,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
             $items[(string) Str::uuid()] = [
                 'name' => $name,
                 'label' => $labels[$name] ?? $name,
+                'bouquets' => $bouquetSources[$name] ?? [],
             ];
         }
 
