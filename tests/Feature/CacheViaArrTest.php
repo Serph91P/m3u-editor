@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\CacheDispatchResult;
+use App\Filament\Resources\Vods\Pages\ListVod;
 use App\Jobs\DownloadCachedContentFile;
 use App\Jobs\RequestArrEpisode;
 use App\Models\ArrIntegration;
@@ -13,6 +14,7 @@ use App\Models\Series;
 use App\Models\User;
 use App\Services\CachedContentDispatchService;
 use App\Settings\GeneralSettings;
+use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
@@ -20,6 +22,7 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Sleep;
+use Livewire\Livewire;
 
 uses(RefreshDatabase::class);
 
@@ -231,6 +234,43 @@ it('falls back to the provider when Radarr is unreachable and stops asking it fo
     expect($counts[CacheDispatchResult::Queued->value])->toBe(2)
         ->and($lookedUp)->toContain('tmdb:550')
         ->and($lookedUp)->not->toContain('tmdb:551');
+});
+
+it('routes to Radarr when the channel\'s playlist was loaded without the routing columns', function () {
+    $playlist = cvaPlaylist();
+    cvaArr($playlist, 'radarr');
+    Http::fake([
+        'radarr.test/api/v3/movie/lookup*' => Http::response(cvaMovieLookup()),
+        'radarr.test/api/v3/movie' => Http::response(['id' => 7]),
+    ]);
+
+    // The VOD table eager loads the playlist with a narrow select that
+    // leaves out prefer_media_server_sources.
+    $channel = Channel::query()
+        ->with(['playlist' => fn ($query) => $query->select('id', 'name', 'uuid', 'auto_sort', 'enable_proxy', 'enable_logo_proxy', 'user_id')])
+        ->findOrFail(cvaChannel($playlist)->id);
+
+    expect(cvaService()->dispatch($channel))->toBe(CacheDispatchResult::SentToArr)
+        ->and(CachedContentFile::query()->count())->toBe(0);
+});
+
+it('sends Cache Now from the VOD list to Radarr', function () {
+    $playlist = cvaPlaylist();
+    cvaArr($playlist, 'radarr');
+    $channel = cvaChannel($playlist);
+    Http::fake([
+        'radarr.test/api/v3/movie/lookup*' => Http::response(cvaMovieLookup()),
+        'radarr.test/api/v3/movie' => Http::response(['id' => 7]),
+    ]);
+
+    $this->actingAs($playlist->user);
+
+    Livewire::test(ListVod::class)
+        ->callAction(TestAction::make('cache_now')->table($channel));
+
+    expect(cvaSentTo('POST', '/movie'))->toBe(1)
+        ->and(CachedContentFile::query()->count())->toBe(0);
+    Bus::assertNotDispatched(DownloadCachedContentFile::class);
 });
 
 it('uses the provider on playlists that do not prefer media server sources', function () {

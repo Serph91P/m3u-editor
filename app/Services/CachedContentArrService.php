@@ -36,6 +36,9 @@ class CachedContentArrService
     /** @var array<int, true> integration ids that failed during this run */
     private array $unreachable = [];
 
+    /** @var array<int, Playlist> playlists reloaded with the columns routing reads */
+    private array $routablePlaylists = [];
+
     /**
      * Sonarr state per series id, so a series is looked up once per run.
      * Null when Sonarr can't be used for it.
@@ -179,6 +182,7 @@ class CachedContentArrService
      */
     private function integration(?Playlist $playlist, string $type): ?ArrIntegration
     {
+        $playlist = $playlist ? $this->routablePlaylist($playlist) : null;
         if (! $playlist?->prefer_media_server_sources) {
             return null;
         }
@@ -197,6 +201,23 @@ class CachedContentArrService
         $integration = $this->integrations[$key];
 
         return $integration && ! isset($this->unreachable[$integration->id]) ? $integration : null;
+    }
+
+    /**
+     * The playlist with the columns routing reads. Tables eager load the
+     * playlist with a narrow select, and a column left out reads as null,
+     * which would quietly send every Cache Now to the provider.
+     */
+    private function routablePlaylist(Playlist $playlist): Playlist
+    {
+        $attributes = $playlist->getAttributes();
+        if (array_key_exists('prefer_media_server_sources', $attributes) && array_key_exists('user_id', $attributes)) {
+            return $playlist;
+        }
+
+        return $this->routablePlaylists[$playlist->getKey()] ??= Playlist::query()
+            ->select(['id', 'user_id', 'prefer_media_server_sources'])
+            ->findOrFail($playlist->getKey());
     }
 
     /**
