@@ -7,6 +7,7 @@ use App\Filament\Resources\ArrIntegrations\Pages\EditArrIntegration;
 use App\Filament\Resources\ArrIntegrations\Pages\ListArrIntegrations;
 use App\Models\ArrIntegration;
 use App\Services\Arr\ArrService;
+use App\Services\CachedContentDispatchService;
 use App\Traits\HasUserFiltering;
 use Carbon\Carbon;
 use Filament\Actions\Action;
@@ -191,7 +192,10 @@ class ArrIntegrationResource extends Resource
 
                         Toggle::make('cache_enabled')
                             ->label(__('Use for caching'))
-                            ->helperText(__('On playlists that prefer media server sources, Cache Now and dynamic group caching add new titles here instead of downloading them from the provider. Titles already in the library are never changed or removed.'))
+                            ->disabled(fn (): bool => ! app(CachedContentDispatchService::class)->isEnabled())
+                            ->helperText(fn (): string => app(CachedContentDispatchService::class)->isEnabled()
+                                ? __('On playlists that prefer media server sources, Cache Now and dynamic group caching add new titles here instead of downloading them from the provider. Titles already in the library are never changed or removed.')
+                                : __('Turn on "Enable cache" in Settings > Cache to use this integration for caching.'))
                             ->default(false),
                     ]),
 

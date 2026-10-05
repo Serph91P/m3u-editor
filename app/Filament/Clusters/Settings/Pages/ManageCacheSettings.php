@@ -44,6 +44,12 @@ class ManageCacheSettings extends BaseSettingsPage
                         .'<pre class="mt-2 overflow-x-auto rounded-lg bg-gray-950/5 p-3 font-mono text-xs dark:bg-white/5"><code>volumes:'."\n"
                         .'  - ./cache:'.e((string) config('filesystems.disks.cache.root')).'</code></pre>'
                     )),
+                Callout::make(__('Cache through Radarr or Sonarr'))
+                    ->icon('heroicon-o-information-circle')
+                    ->color('info')
+                    ->columnSpanFull()
+                    ->visible(fn (Get $get): bool => (bool) $get('enable_cache'))
+                    ->description(__('Turn on "Use for caching" on a Radarr or Sonarr integration to send new titles there instead of downloading them from the provider. This applies to playlists that prefer media server sources. Those titles are managed in Radarr or Sonarr and cache retention never removes them.')),
                 Section::make(__('Cached Content'))
                     ->description(__('Download VOD movies and series episodes to local storage with the "Cache Now" actions. Once a download completes, playback uses the local copy instead of the provider.'))
                     ->columnSpanFull()
@@ -66,12 +72,6 @@ class ManageCacheSettings extends BaseSettingsPage
                             ->helperText(__('Default for the "Share cache across playlists" option on new playlists.'))
                             ->default(false),
                     ]),
-                Callout::make(__('Cache through Radarr or Sonarr'))
-                    ->icon('heroicon-o-information-circle')
-                    ->color('info')
-                    ->columnSpanFull()
-                    ->visible(fn (Get $get): bool => (bool) $get('enable_cache'))
-                    ->description(__('Turn on "Use for caching" on a Radarr or Sonarr integration to send new titles there instead of downloading them from the provider. This applies to playlists that prefer media server sources. Those titles are managed in Radarr or Sonarr and cache retention never removes them.')),
             ]);
     }
 

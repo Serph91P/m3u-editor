@@ -1,0 +1,56 @@
+<?php
+
+use App\Filament\Resources\ArrIntegrations\Pages\EditArrIntegration;
+use App\Filament\Resources\MediaServerIntegrations\Widgets\ArrIntegrationsWidget;
+use App\Models\ArrIntegration;
+use App\Models\User;
+use App\Settings\GeneralSettings;
+use Filament\Tables\Columns\ToggleColumn;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
+use Livewire\Livewire;
+
+uses(RefreshDatabase::class);
+
+function arrWidgetCacheSetting(bool $enabled): void
+{
+    $settings = new GeneralSettings;
+    $settings->enable_cache = $enabled;
+    app()->instance(GeneralSettings::class, $settings);
+}
+
+beforeEach(function () {
+    Bus::fake();
+    $this->user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($this->user);
+    $this->integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id]);
+});
+
+it('disables the Caching toggle while the cache feature is off', function () {
+    arrWidgetCacheSetting(false);
+
+    Livewire::test(ArrIntegrationsWidget::class)
+        ->assertTableColumnExists('cache_enabled', fn (ToggleColumn $column): bool => $column->isDisabled(), $this->integration);
+});
+
+it('enables the Caching toggle while the cache feature is on', function () {
+    arrWidgetCacheSetting(true);
+
+    Livewire::test(ArrIntegrationsWidget::class)
+        ->assertTableColumnExists('cache_enabled', fn (ToggleColumn $column): bool => ! $column->isDisabled(), $this->integration);
+});
+
+it('disables Use for caching on the edit form while the cache feature is off', function () {
+    arrWidgetCacheSetting(false);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $this->integration->id])
+        ->assertFormFieldDisabled('cache_enabled')
+        ->assertSee('Turn on &quot;Enable cache&quot; in Settings', false);
+});
+
+it('enables Use for caching on the edit form while the cache feature is on', function () {
+    arrWidgetCacheSetting(true);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $this->integration->id])
+        ->assertFormFieldEnabled('cache_enabled');
+});

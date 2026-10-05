@@ -5266,6 +5266,7 @@
     "Tuner Removed": "Sintonizador eliminado",
     "Tunes In": "Sintoniza",
     "Turkish": "Turco",
+    "Turn on \"Enable cache\" in Settings > Cache to use this integration for caching.": "Activa \"Habilitar caché\" en Ajustes > Caché para usar esta integración para el almacenamiento en caché.",
     "Turn on \"Use for caching\" on a Radarr or Sonarr integration to send new titles there instead of downloading them from the provider. This applies to playlists that prefer media server sources. Those titles are managed in Radarr or Sonarr and cache retention never removes them.": "Activa \"Usar para la caché\" en una integración de Radarr o Sonarr para enviar allí los títulos nuevos en lugar de descargarlos del proveedor. Se aplica a las listas que prefieren fuentes del servidor multimedia. Esos títulos se gestionan en Radarr o Sonarr y la retención de la caché nunca los elimina.",
     "Turns off replacement channels with no match here, for a strict curated-lineup migration. Nothing is deleted.": "Turns off replacement channels with no match here, for a strict curated-lineup migration. Nothing is deleted.",
     "Type": "Tipo",

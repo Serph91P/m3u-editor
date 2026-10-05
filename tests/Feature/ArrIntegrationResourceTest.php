@@ -7,6 +7,7 @@ use App\Filament\Resources\ArrIntegrations\Pages\ListArrIntegrations;
 use App\Filament\Resources\MediaServerIntegrations\Widgets\ArrIntegrationsWidget;
 use App\Models\ArrIntegration;
 use App\Models\User;
+use App\Settings\GeneralSettings;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
@@ -101,6 +102,10 @@ it('can edit an existing integration', function () {
 });
 
 it('saves the Use for caching toggle', function () {
+    $settings = new GeneralSettings;
+    $settings->enable_cache = true;
+    app()->instance(GeneralSettings::class, $settings);
+
     $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id]);
 
     Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
@@ -112,6 +117,10 @@ it('saves the Use for caching toggle', function () {
 });
 
 it('flips Use for caching from the integrations table', function () {
+    $settings = new GeneralSettings;
+    $settings->enable_cache = true;
+    app()->instance(GeneralSettings::class, $settings);
+
     $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id]);
 
     Livewire::test(ArrIntegrationsWidget::class)

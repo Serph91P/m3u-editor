@@ -5263,6 +5263,7 @@
     "Tuner Removed": "调谐器已移除",
     "Tunes In": "调入",
     "Turkish": "土耳其语",
+    "Turn on \"Enable cache\" in Settings > Cache to use this integration for caching.": "请在 设置 > 缓存 中开启“启用缓存”，以将此集成用于缓存。",
     "Turn on \"Use for caching\" on a Radarr or Sonarr integration to send new titles there instead of downloading them from the provider. This applies to playlists that prefer media server sources. Those titles are managed in Radarr or Sonarr and cache retention never removes them.": "在 Radarr 或 Sonarr 集成上开启 \"用于缓存\"，即可将新标题发送到那里，而不是从提供商下载。这适用于优先使用媒体服务器来源的播放列表。这些标题由 Radarr 或 Sonarr 管理，缓存保留策略永远不会删除它们。",
     "Turns off replacement channels with no match here, for a strict curated-lineup migration. Nothing is deleted.": "Turns off replacement channels with no match here, for a strict curated-lineup migration. Nothing is deleted.",
     "Type": "类型",

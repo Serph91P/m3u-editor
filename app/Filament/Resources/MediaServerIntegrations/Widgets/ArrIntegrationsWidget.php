@@ -6,6 +6,7 @@ use App\Filament\Pages\RequestContent;
 use App\Filament\Resources\ArrIntegrations\ArrIntegrationResource;
 use App\Models\ArrIntegration;
 use App\Services\Arr\ArrService;
+use App\Services\CachedContentDispatchService;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkActionGroup;
@@ -83,7 +84,10 @@ class ArrIntegrationsWidget extends BaseWidget
 
                 ToggleColumn::make('cache_enabled')
                     ->label(__('Caching'))
-                    ->tooltip(__('On playlists that prefer media server sources, Cache Now and dynamic group caching add new titles here instead of downloading them from the provider. Titles already in the library are never changed or removed.'))
+                    ->disabled(fn (): bool => ! app(CachedContentDispatchService::class)->isEnabled())
+                    ->tooltip(fn (): string => app(CachedContentDispatchService::class)->isEnabled()
+                        ? __('On playlists that prefer media server sources, Cache Now and dynamic group caching add new titles here instead of downloading them from the provider. Titles already in the library are never changed or removed.')
+                        : __('Turn on "Enable cache" in Settings > Cache to use this integration for caching.'))
                     ->sortable(),
 
                 TextColumn::make('type')
@@ -180,7 +184,7 @@ class ArrIntegrationsWidget extends BaseWidget
                 ])->button()->hiddenLabel()->size('sm'),
                 Action::make('edit')
                     ->label(__('Edit'))
-                    ->icon('heroicon-s-pencil-square')
+                    ->icon('heroicon-m-pencil-square')
                     ->url(fn (ArrIntegration $record): string => ArrIntegrationResource::getUrl('edit', ['record' => $record]))
                     ->button()->hiddenLabel()->size('sm'),
             ], RecordActionsPosition::BeforeCells)
