@@ -18,6 +18,7 @@
  */
 
 use App\Filament\Resources\PlaylistAliases\Pages\EditPlaylistAlias;
+use App\Filament\Resources\PlaylistAliases\Pages\ListPlaylistAliases;
 use App\Models\Bouquet;
 use App\Models\CustomPlaylist;
 use App\Models\Playlist;
@@ -161,4 +162,19 @@ it('does not materialize bouquet names into group_filter when the form is saved 
         ->assertHasNoFormErrors();
 
     expect($alias->refresh()->group_filter['selected_groups'])->toBe(['Manual Group']);
+});
+
+it('copies attached bouquets when duplicating an alias', function () {
+    $alias = makeFormAlias($this->user, $this->playlist);
+    $bouquets = Bouquet::factory()->count(2)->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id]);
+    $alias->bouquets()->sync($bouquets->pluck('id'));
+
+    Livewire::test(ListPlaylistAliases::class)
+        ->callTableAction('duplicate', $alias, data: ['name' => 'Form Alias Copy'])
+        ->assertHasNoTableActionErrors();
+
+    $copy = PlaylistAlias::where('name', 'Form Alias Copy')->sole();
+
+    expect($copy->bouquets()->pluck('bouquets.id')->all())->toEqualCanonicalizing($bouquets->pluck('id')->all())
+        ->and($alias->bouquets()->count())->toBe(2);
 });

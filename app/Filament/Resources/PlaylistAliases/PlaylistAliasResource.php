@@ -58,6 +58,7 @@ use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Exists;
@@ -301,13 +302,18 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->helperText(__('This will be the name of the duplicated alias.')),
                         ])
                         ->action(function ($record, $data): void {
-                            $new = $record->replicate(except: [
-                                'id', 'name', 'uuid',
-                                'username', 'password', 'expires_at', 'xtream_status',
-                            ]);
-                            $new->name = $data['name'];
-                            $new->uuid = Str::orderedUuid()->toString();
-                            $new->save();
+                            DB::transaction(function () use ($record, $data): void {
+                                $new = $record->replicate(except: [
+                                    'id', 'name', 'uuid',
+                                    'username', 'password', 'expires_at', 'xtream_status',
+                                ]);
+                                $new->name = $data['name'];
+                                $new->uuid = Str::orderedUuid()->toString();
+                                $new->save();
+
+                                // The copy keeps the same target, so every attached bouquet is valid for it.
+                                $new->bouquets()->attach($record->bouquets()->pluck('bouquets.id'));
+                            });
 
                             Notification::make()
                                 ->success()
