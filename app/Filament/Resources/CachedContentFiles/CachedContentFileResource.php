@@ -137,6 +137,14 @@ class CachedContentFileResource extends Resource
                         'episode' => 'primary',
                         default => 'gray',
                     }),
+                TextColumn::make('managed_by')
+                    ->label(__('Source'))
+                    ->badge()
+                    ->state(fn (CachedContentFile $record): string => $record->managed_by === null ? __('Manual') : __('Auto'))
+                    ->color(fn (CachedContentFile $record): string => $record->managed_by === null ? 'gray' : 'warning')
+                    ->tooltip(fn (CachedContentFile $record): ?string => $record->managed_by === null
+                        ? null
+                        : __('Cached by a dynamic group. Removed after it leaves the group unless you keep it.')),
                 TextColumn::make('status')
                     ->label(__('Status'))
                     ->badge()
@@ -254,6 +262,21 @@ class CachedContentFileResource extends Resource
                                 ->send();
                         }),
 
+                    Action::make('keep')
+                        ->label(__('Keep'))
+                        ->icon('heroicon-o-lock-closed')
+                        ->color('gray')
+                        ->visible(fn (CachedContentFile $record): bool => $record->managed_by !== null)
+                        ->action(function (CachedContentFile $record): void {
+                            $record->keep();
+
+                            Notification::make()
+                                ->success()
+                                ->title(__('Kept'))
+                                ->body(__('Dynamic group cleanup will no longer remove this file.'))
+                                ->send();
+                        }),
+
                     Action::make('deleteCache')
                         ->label(__('Delete cache'))
                         ->icon('heroicon-o-trash')
@@ -274,6 +297,26 @@ class CachedContentFileResource extends Resource
             ], RecordActionsPosition::BeforeCells)
             ->toolbarActions([
                 BulkActionGroup::make([
+                    BulkAction::make('bulkKeep')
+                        ->label(__('Keep selected'))
+                        ->icon('heroicon-o-lock-closed')
+                        ->color('gray')
+                        ->deselectRecordsAfterCompletion()
+                        ->action(function (Collection $records): void {
+                            $kept = 0;
+                            foreach (self::filterToOwnedRecords($records) as $record) {
+                                if ($record->keep()) {
+                                    $kept++;
+                                }
+                            }
+
+                            Notification::make()
+                                ->success()
+                                ->title($kept === 1 ? __('Kept 1 file') : __('Kept :count files', ['count' => $kept]))
+                                ->body(__('Dynamic group cleanup will no longer remove these files.'))
+                                ->send();
+                        }),
+
                     BulkAction::make('bulkRetry')
                         ->label(__('Retry selected'))
                         ->icon('heroicon-o-arrow-path')

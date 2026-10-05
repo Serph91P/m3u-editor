@@ -3,10 +3,12 @@
 namespace App\Models;
 
 use App\Enums\CachedContentFileStatus;
+use App\Enums\CachedContentManagedBy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
@@ -46,6 +48,7 @@ use Illuminate\Support\Str;
  * @property Carbon|null $last_failed_at
  * @property string|null $last_error_message
  * @property int $failure_count
+ * @property CachedContentManagedBy|null $managed_by
  * @property Carbon $created_at
  * @property Carbon $updated_at
  *
@@ -87,6 +90,7 @@ class CachedContentFile extends Model
         'last_failed_at',
         'last_error_message',
         'failure_count',
+        'managed_by',
     ];
 
     /**
@@ -106,6 +110,7 @@ class CachedContentFile extends Model
             'bytes_per_second' => 'integer',
             'season_number' => 'integer',
             'episode_number' => 'integer',
+            'managed_by' => CachedContentManagedBy::class,
         ];
     }
 
@@ -191,6 +196,29 @@ class CachedContentFile extends Model
     public function playlist(): BelongsTo
     {
         return $this->belongsTo(Playlist::class);
+    }
+
+    /**
+     * Make an auto-cached file manual so retention never deletes it.
+     * Returns whether anything changed.
+     */
+    public function keep(): bool
+    {
+        if ($this->managed_by === null) {
+            return false;
+        }
+
+        return $this->forceFill(['managed_by' => null])->save();
+    }
+
+    /**
+     * Dynamic groups whose auto-cache manages this file.
+     */
+    public function dynamicGroups(): BelongsToMany
+    {
+        return $this->belongsToMany(DynamicGroup::class, 'cached_content_file_dynamic_groups')
+            ->withPivot('dropped_at')
+            ->withTimestamps();
     }
 
     /**

@@ -633,3 +633,36 @@ it('table poll resolves to 5s when at least one visible row is Downloading', fun
     $table = $instance->getTable();
     expect($table->getPollingInterval())->toBe('5s');
 });
+
+it('shows Auto for dynamic-group rows and keep makes them manual', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->create();
+    $auto = CachedContentFile::factory()->completed()->dynamicGroupManaged()->create(['user_id' => $user->id, 'playlist_id' => $playlist->id]);
+    $manual = CachedContentFile::factory()->completed()->create(['user_id' => $user->id, 'playlist_id' => $playlist->id]);
+
+    $this->actingAs($user);
+
+    Livewire::test(ListCachedContentFiles::class)
+        ->assertTableColumnStateSet('managed_by', 'Auto', $auto)
+        ->assertTableColumnStateSet('managed_by', 'Manual', $manual)
+        ->assertTableActionHidden('keep', $manual)
+        ->callTableAction('keep', $auto)
+        ->assertNotified();
+
+    expect($auto->fresh()->managed_by)->toBeNull();
+});
+
+it('bulkKeep makes every dynamic-group row in the selection manual', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->create();
+    $rows = CachedContentFile::factory()->count(2)->completed()->dynamicGroupManaged()->create(['user_id' => $user->id, 'playlist_id' => $playlist->id]);
+    $manual = CachedContentFile::factory()->completed()->create(['user_id' => $user->id, 'playlist_id' => $playlist->id]);
+
+    $this->actingAs($user);
+
+    Livewire::test(ListCachedContentFiles::class)
+        ->callTableBulkAction('bulkKeep', [...$rows->modelKeys(), $manual->id])
+        ->assertNotified('Kept 2 files');
+
+    expect(CachedContentFile::whereNotNull('managed_by')->count())->toBe(0);
+});

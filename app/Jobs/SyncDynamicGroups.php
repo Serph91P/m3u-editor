@@ -8,6 +8,7 @@ use App\Models\DynamicGroup;
 use App\Models\DynamicGroupItemSnapshot;
 use App\Models\Playlist;
 use App\Models\Series;
+use App\Services\CachedContentDispatchService;
 use App\Services\SyncPipelineService;
 use App\Services\TmdbService;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -214,6 +215,13 @@ class SyncDynamicGroups implements ShouldQueue
         );
 
         $this->syncMembership($group, $type, $playlist->id, $tmdbIds, $this->syncRunId);
+
+        // Rules that cache their members queue the downloads in their own
+        // job so a large series group can't hold up this pipeline phase.
+        $group->setRelation('playlist', $playlist);
+        if (($group->cacheSettings()['enabled'] ?? false) && app(CachedContentDispatchService::class)->isEnabled()) {
+            dispatch(new QueueDynamicGroupCacheDownloads($group->id));
+        }
 
         return $group;
     }

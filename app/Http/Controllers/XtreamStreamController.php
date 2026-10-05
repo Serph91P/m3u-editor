@@ -598,6 +598,15 @@ class XtreamStreamController extends Controller
             return null;
         }
 
+        // Local media wins over a cached copy: when a reachable media-server
+        // match exists, fall through so the normal path swaps to it. If the
+        // server is down the cached copy still plays.
+        if ($item->playlist?->prefer_media_server_sources
+            && app(MediaSourcePreferenceService::class)->resolveForStreaming($item) !== $item
+        ) {
+            return null;
+        }
+
         return Redirect::to(route('cached-content.stream', [
             'username' => $username,
             'password' => $password,

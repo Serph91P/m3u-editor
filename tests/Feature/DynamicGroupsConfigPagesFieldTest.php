@@ -42,6 +42,23 @@ it('persists tmdb_params.pages = 5 in dynamic_groups_config on round-trip', func
     expect($this->playlist->fresh()->dynamic_groups_config)->toEqual([$rule]);
 });
 
+it('persists the per-rule cache keys in dynamic_groups_config on round-trip', function () {
+    $rule = [
+        'enabled' => true,
+        'type' => 'vod',
+        'source' => 'now_playing',
+        'name' => 'In Theatres',
+        'tmdb_params' => [],
+        'cache_enabled' => true,
+        'cache_keep_days' => 14,
+        'cache_max_items' => 10,
+    ];
+
+    $this->playlist->update(['dynamic_groups_config' => [$rule]]);
+
+    expect($this->playlist->fresh()->dynamic_groups_config)->toEqual([$rule]);
+});
+
 it('preserves all other tmdb_params keys alongside pages', function () {
     $rule = [
         'enabled' => true,

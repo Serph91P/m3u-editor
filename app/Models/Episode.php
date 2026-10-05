@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\Relations\MorphOne;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
@@ -246,6 +247,20 @@ class Episode extends Model
     public function scopeForSeason(Builder $query, int $seasonId): Builder
     {
         return $query->where('season_id', $seasonId);
+    }
+
+    /**
+     * Enabled episodes in their series' latest enabled season.
+     */
+    public function scopeInLatestSeason(Builder $query): Builder
+    {
+        return $query->where('episodes.enabled', true)
+            ->where('episodes.season', '=', function (QueryBuilder $latest): void {
+                $latest->selectRaw('MAX(latest.season)')
+                    ->from('episodes as latest')
+                    ->whereColumn('latest.series_id', 'episodes.series_id')
+                    ->where('latest.enabled', true);
+            });
     }
 
     /**

@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Support\Facades\DB;
 
@@ -98,6 +99,33 @@ class DynamicGroup extends Model
     }
 
     /**
+     * Cached files this group's auto-cache manages.
+     */
+    public function cachedContentFiles(): BelongsToMany
+    {
+        return $this->belongsToMany(CachedContentFile::class, 'cached_content_file_dynamic_groups')
+            ->withPivot('dropped_at')
+            ->withTimestamps();
+    }
+
+    /**
+     * Members the group's auto-cache covers: enabled members in TMDB rank
+     * order, capped at $maxItems.
+     */
+    public function cacheMembers(?int $maxItems): MorphToMany
+    {
+        $members = $this->type === 'series' ? $this->series() : $this->channels();
+        $members->where($members->getRelated()->qualifyColumn('enabled'), true)
+            ->orderByPivot('position');
+
+        if ($maxItems !== null) {
+            $members->limit($maxItems);
+        }
+
+        return $members;
+    }
+
+    /**
      * Query for the playlist items a rule's TMDB id set matches — VOD
      * channels when $type is 'vod', otherwise series. Shared by the
      * SyncDynamicGroups membership writer and the playlist form's per-rule
@@ -184,6 +212,32 @@ class DynamicGroup extends Model
     public function matchesRule(array $rule): bool
     {
         return self::ruleIdentity($rule) === self::ruleIdentity($this->only(['type', 'source', 'name']));
+    }
+
+    /**
+     * Auto-cache settings from this group's rule in the playlist's
+     * `dynamic_groups_config`, or null when the rule is gone (removed, or
+     * renamed and not re-synced yet).
+     *
+     * @return array{enabled: bool, never_expire: bool, keep_days: int, max_items: int|null}|null
+     */
+    public function cacheSettings(): ?array
+    {
+        $rule = collect($this->playlist?->dynamic_groups_config ?? [])
+            ->first(fn (array $rule): bool => $this->matchesRule($rule));
+
+        if ($rule === null) {
+            return null;
+        }
+
+        $maxItems = (int) ($rule['cache_max_items'] ?? 0);
+
+        return [
+            'enabled' => (bool) ($rule['enabled'] ?? false) && (bool) ($rule['cache_enabled'] ?? false),
+            'never_expire' => (bool) ($rule['cache_never_expire'] ?? false),
+            'keep_days' => max(0, (int) ($rule['cache_keep_days'] ?? 0)),
+            'max_items' => $maxItems > 0 ? $maxItems : null,
+        ];
     }
 
     /**

@@ -51,6 +51,7 @@ use App\Rules\Cron;
 use App\Rules\UrlIsAllowed;
 use App\Rules\UrlSafeCredential;
 use App\Rules\ValidRegexPattern;
+use App\Services\CachedContentDispatchService;
 use App\Services\DateFormatService;
 use App\Services\EpgCacheService;
 use App\Services\M3uProxyService;
@@ -1993,7 +1994,10 @@ class PlaylistResource extends Resource implements CopilotResource
                     Repeater::make('dynamic_groups_config')
                         ->label(__('Dynamic Groups Configuration'))
                         ->columnSpanFull()
-                        ->schema(self::getDynamicGroupRuleSchema())
+                        ->schema([
+                            ...self::getDynamicGroupRuleSchema(),
+                            ...self::getDynamicGroupCacheSchema(),
+                        ])
                         ->columns(12)
                         ->reorderable()
                         ->reorderableWithButtons()
@@ -3771,6 +3775,68 @@ class PlaylistResource extends Resource implements CopilotResource
                 ->placeholder(__('e.g. Trending Now, Top Comedy, Netflix'))
                 ->required()
                 ->columnSpan(3),
+        ];
+    }
+
+    /**
+     * Per-rule auto-cache options, appended to getDynamicGroupRuleSchema()
+     * on the Playlist form only (not the Dynamic Groups listing CreateAction).
+     *
+     * @return array<int, Component>
+     */
+    public static function getDynamicGroupCacheSchema(): array
+    {
+        return [
+            Fieldset::make(__('Caching'))
+                ->columnSpanFull()
+                ->columns(12)
+                ->schema([
+                    Toggle::make('cache_enabled')
+                        ->label(__('Cache group members'))
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __("Automatically download this group's members via Cached Downloads. Series rules cache only each series' latest season."),
+                        )
+                        ->helperText(fn (): string => app(CachedContentDispatchService::class)->isEnabled()
+                            ? ''
+                            : __('Caching is currently disabled in Settings.'))
+                        ->live()
+                        ->default(false)
+                        ->inline(false)
+                        ->columnSpan(3),
+                    Toggle::make('cache_never_expire')
+                        ->label(__('Never expire'))
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __('Keep everything this rule caches, even after it leaves the group. Kept files show as Manual on Cached Downloads.'),
+                        )
+                        ->live()
+                        ->default(false)
+                        ->inline(false)
+                        ->visible(fn (Get $get): bool => (bool) $get('cache_enabled'))
+                        ->columnSpan(3),
+                    TextInput::make('cache_keep_days')
+                        ->label(__('Keep after leaving (days)'))
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __('How long a cached item is kept after it leaves the group. 0 removes it at the next daily cleanup.'),
+                        )
+                        ->numeric()
+                        ->minValue(0)
+                        ->default(0)
+                        ->disabled(fn (Get $get): bool => (bool) $get('cache_never_expire'))
+                        ->dehydrated()
+                        ->visible(fn (Get $get): bool => (bool) $get('cache_enabled'))
+                        ->columnSpan(3),
+                    TextInput::make('cache_max_items')
+                        ->label(__('Top N members'))
+                        ->numeric()
+                        ->minValue(1)
+                        ->default(20)
+                        ->placeholder(__('No limit'))
+                        ->visible(fn (Get $get): bool => (bool) $get('cache_enabled'))
+                        ->columnSpan(3),
+                ]),
         ];
     }
 

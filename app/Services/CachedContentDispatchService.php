@@ -3,10 +3,12 @@
 namespace App\Services;
 
 use App\Enums\CachedContentFileStatus;
+use App\Enums\CachedContentManagedBy;
 use App\Enums\CacheDispatchResult;
 use App\Jobs\DownloadCachedContentFile;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
+use App\Models\DynamicGroup;
 use App\Models\Episode;
 use App\Models\Playlist;
 use App\Models\Series;
@@ -65,8 +67,13 @@ class CachedContentDispatchService
 
     /**
      * Queue a download for one channel or episode.
+     *
+     * `$automatic` is the dynamic-group auto-cache: new rows are marked
+     * group-managed, and Failed rows are left alone (the download job
+     * already retried for a day). A manual call on a group-managed row
+     * makes it manual, so group retention never deletes it.
      */
-    public function dispatch(Channel|Episode $item): CacheDispatchResult
+    public function dispatch(Channel|Episode $item, bool $automatic = false): CacheDispatchResult
     {
         if (! $this->isEnabled()) {
             return CacheDispatchResult::Disabled;
@@ -79,12 +86,20 @@ class CachedContentDispatchService
         $existing = $item->cachedContentFile()->first();
 
         if ($existing) {
+            if (! $automatic) {
+                $existing->keep();
+            }
+
             if (in_array($existing->status, [CachedContentFileStatus::Pending, CachedContentFileStatus::Downloading], true)) {
                 return CacheDispatchResult::AlreadyQueued;
             }
 
             if ($existing->isPlayable()) {
                 return CacheDispatchResult::AlreadyCached;
+            }
+
+            if ($automatic && $existing->status === CachedContentFileStatus::Failed) {
+                return CacheDispatchResult::Unavailable;
             }
 
             // Failed, or Completed with the file missing on disk.
@@ -113,6 +128,7 @@ class CachedContentDispatchService
                 'content_fingerprint' => $item->cacheFingerprint(),
                 'title' => $this->resolveTitle($item),
                 'status' => CachedContentFileStatus::Pending,
+                'managed_by' => $automatic ? CachedContentManagedBy::DynamicGroup : null,
             ]);
         } catch (UniqueConstraintViolationException) {
             // A concurrent dispatch created the row first.
@@ -192,6 +208,82 @@ class CachedContentDispatchService
         }
 
         return $counts;
+    }
+
+    /**
+     * Queue a dynamic group's auto-cache: each VOD member, or the latest
+     * season of each series member, top-ranked first. Members already on
+     * the user's media server are skipped (local media wins), and a copy
+     * the group cached before the match appeared is marked dropped so
+     * retention releases it.
+     *
+     * @return array<string, int> keyed by CacheDispatchResult value
+     */
+    public function dispatchForDynamicGroup(DynamicGroup $group): array
+    {
+        $counts = $this->emptyCounts();
+        $settings = $group->cacheSettings();
+
+        if (! $this->isEnabled() || ! ($settings['enabled'] ?? false)) {
+            return $counts;
+        }
+
+        $playlist = $group->playlist;
+
+        foreach ($group->cacheMembers($settings['max_items'])->cursor() as $member) {
+            // cursor() can't eager load; every member shares the group's
+            // playlist, so hand it over directly.
+            $member->setRelation('playlist', $playlist);
+
+            if ($member instanceof Channel) {
+                $this->dispatchGroupItem($member, $group, $settings['never_expire'], $counts);
+
+                continue;
+            }
+
+            foreach ($member->episodes()->inLatestSeason()->cursor() as $episode) {
+                $episode->setRelation('series', $member);
+                $episode->setRelation('playlist', $playlist);
+
+                $this->dispatchGroupItem($episode, $group, $settings['never_expire'], $counts);
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Dispatch one auto-cache item and link the group to the file it
+     * manages (clearing `dropped_at` when the item is back in the group).
+     * A Never expire rule keeps the file instead, like Cache Now. Manual
+     * files and copies shared from another playlist are never linked.
+     *
+     * @param  array<string, int>  $counts
+     */
+    private function dispatchGroupItem(Channel|Episode $item, DynamicGroup $group, bool $neverExpire, array &$counts): void
+    {
+        if (app(MediaSourcePreferenceService::class)->hasEligibleMatch($item)) {
+            $item->cachedContentFile()->first()?->dynamicGroups()
+                ->wherePivotNull('dropped_at')
+                ->updateExistingPivot($group->id, ['dropped_at' => now()]);
+
+            return;
+        }
+
+        $counts[$this->dispatch($item, automatic: true)->value]++;
+
+        $file = $item->cachedContentFile()->first();
+        if ($file?->managed_by !== CachedContentManagedBy::DynamicGroup) {
+            return;
+        }
+
+        if ($neverExpire) {
+            $file->keep();
+
+            return;
+        }
+
+        $file->dynamicGroups()->syncWithoutDetaching([$group->id => ['dropped_at' => null]]);
     }
 
     /**

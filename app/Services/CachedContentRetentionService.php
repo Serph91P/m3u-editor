@@ -3,14 +3,17 @@
 namespace App\Services;
 
 use App\Enums\CachedContentFileStatus;
+use App\Enums\CachedContentManagedBy;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
+use App\Models\DynamicGroup;
 use App\Models\Episode;
 use App\Models\Playlist;
 use App\Settings\GeneralSettings;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -134,5 +137,69 @@ class CachedContentRetentionService
                     ->from($table)
                     ->whereColumn("{$table}.id", 'cached_content_files.cacheable_id');
             });
+    }
+
+    /**
+     * Dynamic-group retention: mark files that left their group's cache
+     * scope as dropped, unlink them once the rule's keep days have passed,
+     * then delete group-managed files no group links any more. Runs
+     * regardless of the playlist's cache_retention_mode, since auto-cache
+     * is opted into per rule.
+     *
+     * @return int Number of cached files deleted.
+     */
+    public function releaseDynamicGroupCaches(): int
+    {
+        DynamicGroup::query()
+            ->whereHas('cachedContentFiles')
+            ->cursor()
+            ->each(fn (DynamicGroup $group) => $this->releaseGroupLinks($group));
+
+        $ids = CachedContentFile::query()
+            ->where('managed_by', CachedContentManagedBy::DynamicGroup->value)
+            ->whereIn('status', [
+                CachedContentFileStatus::Completed->value,
+                CachedContentFileStatus::Failed->value,
+            ])
+            ->whereDoesntHave('dynamicGroups')
+            ->pluck('id');
+
+        return $this->deleteIds($ids);
+    }
+
+    /**
+     * A file is in scope while its channel, or its episode's series, is one
+     * of the group's cache members and (for episodes) in the latest season.
+     * A group whose rule is gone was removed or renamed and not re-synced
+     * yet: its files are held a day so a renamed rule's group can re-link
+     * them on the next refresh before the old group is deleted.
+     */
+    private function releaseGroupLinks(DynamicGroup $group): void
+    {
+        $settings = $group->cacheSettings();
+        $links = fn (): QueryBuilder => DB::table('cached_content_file_dynamic_groups')
+            ->where('dynamic_group_id', $group->id);
+
+        if ($settings === null || ! $settings['enabled']) {
+            $links()->whereNull('dropped_at')->update(['dropped_at' => now()]);
+        } else {
+            $members = $group->cacheMembers($settings['max_items']);
+            $memberIds = $members->pluck($members->getRelated()->qualifyColumn('id'))->all();
+
+            $inScope = $group->type === 'series'
+                ? Episode::query()->inLatestSeason()->whereIn('episodes.series_id', $memberIds)->select('episodes.id')
+                : $memberIds;
+
+            $links()->whereNull('dropped_at')
+                ->whereExists(function (QueryBuilder $file) use ($inScope): void {
+                    $file->selectRaw('1')
+                        ->from('cached_content_files')
+                        ->whereColumn('cached_content_files.id', 'cached_content_file_dynamic_groups.cached_content_file_id')
+                        ->whereNotIn('cached_content_files.cacheable_id', $inScope);
+                })
+                ->update(['dropped_at' => now()]);
+        }
+
+        $links()->where('dropped_at', '<=', now()->subDays($settings['keep_days'] ?? 1))->delete();
     }
 }
