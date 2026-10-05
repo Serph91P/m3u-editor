@@ -196,7 +196,9 @@ class ArrIntegrationResource extends Resource
                     ]),
 
                 Section::make(__('Webhook'))
+                    ->key('webhook')
                     ->description(__('Add this URL as a notification in Radarr/Sonarr (Settings → Connect → Webhook) for real-time queue updates.'))
+                    ->afterHeader(self::getWebhookActions())
                     ->schema([
                         TextInput::make('webhook_url')
                             ->label(__('Webhook URL'))
@@ -365,6 +367,57 @@ class ArrIntegrationResource extends Resource
      *
      * @return array<int, Action>
      */
+    /**
+     * Register and Test buttons for the Webhook section. Both use the URL
+     * shown in the field, so the arr gets the address this page is open at.
+     *
+     * @return array<int, Action>
+     */
+    private static function getWebhookActions(): array
+    {
+        return [
+            Action::make('testWebhook')
+                ->label(__('Test Webhook'))
+                ->icon('heroicon-o-signal')
+                ->color('gray')
+                ->action(fn (ArrIntegration $record) => self::webhookNotification(
+                    ArrService::make($record)->testWebhook($record->webhook_url),
+                    $record,
+                    __('Webhook test succeeded'),
+                    __(':name reached this app.', ['name' => $record->name]),
+                    __('Webhook test failed'),
+                )->send()),
+            Action::make('registerWebhook')
+                ->label(__('Register Webhook'))
+                ->icon('heroicon-o-link')
+                ->requiresConfirmation()
+                ->modalIcon('heroicon-o-link')
+                ->modalDescription(fn (ArrIntegration $record): string => __(':name will send queue updates to the Webhook URL shown here. It tests the URL first and saves nothing if it can\'t reach it.', ['name' => $record->name]))
+                ->action(fn (ArrIntegration $record) => self::webhookNotification(
+                    ArrService::make($record)->registerWebhook($record->webhook_url),
+                    $record,
+                    __('Webhook registered'),
+                    __(':name will now send queue updates to this app.', ['name' => $record->name]),
+                    __('Could not register the webhook'),
+                )->send()),
+        ];
+    }
+
+    /**
+     * @param  array{ok: bool, error?: string}  $result
+     */
+    private static function webhookNotification(array $result, ArrIntegration $record, string $successTitle, string $successBody, string $failureTitle): Notification
+    {
+        if ($result['ok']) {
+            return Notification::make()->success()->title($successTitle)->body($successBody);
+        }
+
+        return Notification::make()
+            ->danger()
+            ->title($failureTitle)
+            ->body(trim(($result['error'] ?? '').' '.__(':name must be able to reach the Webhook URL. If this page is open at localhost, open it at the app\'s LAN address and try again.', ['name' => $record->name])));
+    }
+
     private static function getDiscoverActions(): array
     {
         return [

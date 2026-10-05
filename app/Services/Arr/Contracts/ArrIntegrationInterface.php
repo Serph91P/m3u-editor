@@ -112,6 +112,22 @@ interface ArrIntegrationInterface
     public function supportsEpisodes(): bool;
 
     /**
+     * Ask the server to send its Test event to our webhook URL. Nothing is saved.
+     *
+     * @return array{ok: bool, error?: string}
+     */
+    public function testWebhook(string $url): array;
+
+    /**
+     * Add (or update) a Webhook connection on the server that sends queue
+     * events to our webhook URL. The server tests the URL first and saves
+     * nothing if it can't reach it.
+     *
+     * @return array{ok: bool, error?: string}
+     */
+    public function registerWebhook(string $url): array;
+
+    /**
      * Parse raw /queue API records into the normalized queue item shape.
      * Separated from fetchQueue() to allow parallel HTTP fetching via Http::pool().
      *

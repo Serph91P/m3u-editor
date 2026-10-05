@@ -7,8 +7,11 @@ use App\Filament\Resources\ArrIntegrations\Pages\ListArrIntegrations;
 use App\Filament\Resources\MediaServerIntegrations\Widgets\ArrIntegrationsWidget;
 use App\Models\ArrIntegration;
 use App\Models\User;
+use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
 
 uses(RefreshDatabase::class);
@@ -158,4 +161,135 @@ it('shows the webhook URL on the edit page', function () {
 
     Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
         ->assertSchemaStateSet(['webhook_url' => url('/api/webhooks/arr/'.$integration->webhook_secret)]);
+});
+
+/**
+ * Radarr's Webhook connection template from /notification/schema (trimmed).
+ *
+ * @return array<string, mixed>
+ */
+function arrWebhookTemplate(): array
+{
+    return [
+        'implementation' => 'Webhook',
+        'configContract' => 'WebhookSettings',
+        'fields' => [['name' => 'url', 'value' => null], ['name' => 'method', 'value' => 1]],
+        'onGrab' => false,
+        'onDownload' => false,
+        'onUpgrade' => false,
+        'onMovieAdded' => false,
+        'onManualInteractionRequired' => false,
+        'onHealthIssue' => false,
+    ];
+}
+
+/**
+ * The url field of a Webhook connection sent to the arr.
+ */
+function arrWebhookUrl(Request $request): ?string
+{
+    return collect($request['fields'])->firstWhere('name', 'url')['value'] ?? null;
+}
+
+it('registers the webhook in Radarr with the events the app handles', function () {
+    $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id, 'url' => 'http://radarr.test']);
+    Http::preventStrayRequests();
+    Http::fake([
+        'radarr.test/api/v3/notification/schema' => Http::response([arrWebhookTemplate()]),
+        'radarr.test/api/v3/notification' => fn (Request $request) => $request->method() === 'GET'
+            ? Http::response([])
+            : Http::response(['id' => 9], 201),
+    ]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
+        ->callAction(TestAction::make('registerWebhook')->schemaComponent('webhook'))
+        ->assertNotified('Webhook registered');
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && $request['name'] === 'm3u editor ('.substr($integration->webhook_secret, 0, 8).')'
+        && arrWebhookUrl($request) === $integration->webhook_url
+        && $request['onGrab'] && $request['onDownload'] && $request['onUpgrade']
+        && $request['onMovieAdded'] && $request['onManualInteractionRequired']
+        && ! $request['onHealthIssue']);
+});
+
+it('updates an existing webhook connection instead of adding a second one', function () {
+    $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id, 'url' => 'http://radarr.test']);
+    Http::preventStrayRequests();
+    Http::fake([
+        'radarr.test/api/v3/notification' => Http::response([[
+            ...arrWebhookTemplate(),
+            'id' => 5,
+            'name' => 'My webhook',
+            'fields' => [['name' => 'url', 'value' => 'http://old-host:36400/api/webhooks/arr/'.$integration->webhook_secret]],
+        ]]),
+        'radarr.test/api/v3/notification/5' => Http::response(['id' => 5], 202),
+    ]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
+        ->callAction(TestAction::make('registerWebhook')->schemaComponent('webhook'))
+        ->assertNotified('Webhook registered');
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'PUT'
+        && $request['name'] === 'My webhook'
+        && arrWebhookUrl($request) === $integration->webhook_url
+        && $request['onGrab']);
+    Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+});
+
+it('shows the arr error when the webhook cannot be registered', function () {
+    $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id, 'url' => 'http://radarr.test']);
+    Http::preventStrayRequests();
+    Http::fake([
+        'radarr.test/api/v3/notification/schema' => Http::response([arrWebhookTemplate()]),
+        'radarr.test/api/v3/notification' => fn (Request $request) => $request->method() === 'GET'
+            ? Http::response([])
+            : Http::response([['propertyName' => '', 'errorMessage' => 'Unable to post to webhook: Connection refused']], 400),
+    ]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
+        ->callAction(TestAction::make('registerWebhook')->schemaComponent('webhook'))
+        ->assertNotified('Could not register the webhook');
+});
+
+it('tests the webhook through Radarr with one attempt', function (int $status, string $title) {
+    $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id, 'url' => 'http://radarr.test']);
+    Http::preventStrayRequests();
+    Http::fake([
+        'radarr.test/api/v3/notification/schema' => Http::response([arrWebhookTemplate()]),
+        'radarr.test/api/v3/notification/test' => Http::response($status === 200 ? [] : [['errorMessage' => 'Unable to send test message']], $status),
+        'radarr.test/api/v3/notification' => Http::response([]),
+    ]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
+        ->callAction(TestAction::make('testWebhook')->schemaComponent('webhook'))
+        ->assertNotified($title);
+
+    Http::assertSentCount(3);
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/notification/test')
+        && arrWebhookUrl($request) === $integration->webhook_url);
+})->with([
+    'reachable' => [200, 'Webhook test succeeded'],
+    'unreachable' => [400, 'Webhook test failed'],
+]);
+
+it('tests the registered webhook connection itself, so its name does not clash', function () {
+    $integration = ArrIntegration::factory()->radarr()->create(['user_id' => $this->user->id, 'url' => 'http://radarr.test']);
+    Http::preventStrayRequests();
+    Http::fake([
+        'radarr.test/api/v3/notification/test' => Http::response([]),
+        'radarr.test/api/v3/notification' => Http::response([[
+            ...arrWebhookTemplate(),
+            'id' => 5,
+            'name' => 'm3u editor',
+            'fields' => [['name' => 'url', 'value' => $integration->webhook_url]],
+        ]]),
+    ]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $integration->id])
+        ->callAction(TestAction::make('testWebhook')->schemaComponent('webhook'))
+        ->assertNotified('Webhook test succeeded');
+
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/notification/test')
+        && $request['id'] === 5);
 });
