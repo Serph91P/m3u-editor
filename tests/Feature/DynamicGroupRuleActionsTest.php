@@ -11,6 +11,7 @@ use App\Models\DynamicGroup;
 use App\Models\Playlist;
 use App\Models\User;
 use App\Services\TmdbService;
+use App\Settings\GeneralSettings;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -352,3 +353,73 @@ it('loads only the playlist columns the listing needs, so serializing a row neve
     $this->playlist->fresh()->toArray();
     Bus::assertDispatched(UpdateXtreamStats::class);
 });
+
+// --- Global caching toggle ----------------------------------------------------
+
+it('locks the caching toggle off while caching is off in Settings and keeps the rule\'s stored cache options on save', function () {
+    app(GeneralSettings::class)->enable_cache = false;
+    $cacheOptions = ['cache_enabled' => true, 'cache_never_expire' => true, 'cache_keep_days' => 3, 'cache_max_items' => 10];
+    $this->playlist->updateQuietly(['dynamic_groups_config' => [dynamicGroupRuleActionsRule($cacheOptions)]]);
+    $group = dynamicGroupRuleActionsGroup($this);
+    $this->tmdb->shouldNotReceive('collectDynamicGroupResults');
+
+    Livewire::test(ListVodDynamicGroups::class)
+        ->mountAction(TestAction::make('edit')->table($group))
+        ->assertFormFieldHidden('cache_enabled')
+        ->assertFormFieldVisible('cache_enabled_locked')
+        ->assertFormFieldDisabled('cache_enabled_locked')
+        ->assertSchemaStateSet(['cache_enabled_locked' => false])
+        ->assertFormFieldHidden('cache_never_expire')
+        ->assertFormFieldHidden('cache_keep_days')
+        ->assertFormFieldHidden('cache_max_items')
+        ->fillForm(['name' => 'Hot Right Now'])
+        ->callMountedAction()
+        ->assertHasNoActionErrors();
+
+    $rule = $this->playlist->fresh()->dynamic_groups_config[0];
+    expect($rule)->toMatchArray(['name' => 'Hot Right Now', ...$cacheOptions])
+        ->and($rule)->not->toHaveKey('cache_enabled_locked');
+});
+
+it('does not add cache options to a rule that has none while caching is off in Settings', function () {
+    app(GeneralSettings::class)->enable_cache = false;
+    $this->playlist->updateQuietly(['dynamic_groups_config' => [dynamicGroupRuleActionsRule()]]);
+    $group = dynamicGroupRuleActionsGroup($this);
+
+    Livewire::test(ListVodDynamicGroups::class)
+        ->callAction(TestAction::make('edit')->table($group), data: ['name' => 'Hot Right Now'])
+        ->assertHasNoActionErrors();
+
+    expect($this->playlist->fresh()->dynamic_groups_config[0])
+        ->toMatchArray(['name' => 'Hot Right Now', 'cache_enabled' => false])
+        ->not->toHaveKeys(['cache_never_expire', 'cache_keep_days', 'cache_max_items', 'cache_enabled_locked']);
+});
+
+it('offers the caching toggle while caching is on in Settings', function () {
+    app(GeneralSettings::class)->enable_cache = true;
+    $this->playlist->updateQuietly(['dynamic_groups_config' => [dynamicGroupRuleActionsRule(['cache_enabled' => true])]]);
+    $group = dynamicGroupRuleActionsGroup($this);
+
+    Livewire::test(ListVodDynamicGroups::class)
+        ->mountAction(TestAction::make('edit')->table($group))
+        ->assertFormFieldVisible('cache_enabled')
+        ->assertFormFieldHidden('cache_enabled_locked')
+        ->assertFormFieldVisible('cache_max_items');
+});
+
+it('shows Caching Enabled off for every row while caching is off in Settings', function (bool $cachingEnabled) {
+    app(GeneralSettings::class)->enable_cache = $cachingEnabled;
+    $this->playlist->updateQuietly(['dynamic_groups_config' => [
+        dynamicGroupRuleActionsRule(['cache_enabled' => true]),
+        dynamicGroupRuleActionsRule(['name' => 'Not Cached']),
+    ]]);
+    $cached = dynamicGroupRuleActionsGroup($this);
+    $notCached = dynamicGroupRuleActionsGroup($this, 'Not Cached');
+
+    Livewire::test(ListVodDynamicGroups::class)
+        ->assertTableColumnStateSet('cache_enabled', $cachingEnabled, $cached)
+        ->assertTableColumnStateSet('cache_enabled', false, $notCached);
+})->with([
+    'caching on' => true,
+    'caching off' => false,
+]);

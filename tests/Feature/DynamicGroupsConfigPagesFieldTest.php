@@ -6,6 +6,7 @@ use App\Models\DynamicGroup;
 use App\Models\Playlist;
 use App\Models\User;
 use App\Services\TmdbService;
+use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Livewire\Livewire;
@@ -179,4 +180,33 @@ it('does not re-sync the dynamic groups when a playlist form save leaves the rul
         ->assertHasNoFormErrors();
 
     Bus::assertNotDispatched(SyncDynamicGroups::class);
+});
+
+it('keeps each rule\'s stored cache options when the playlist form is saved while caching is off in Settings', function () {
+    app(GeneralSettings::class)->enable_cache = false;
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    app()->instance(TmdbService::class, $tmdb);
+
+    $rule = [
+        'enabled' => true,
+        'type' => 'vod',
+        'source' => 'trending',
+        'name' => 'Trending Now',
+        'tmdb_params' => ['time_window' => 'week', 'pages' => 3],
+        'cache_enabled' => true,
+        'cache_never_expire' => false,
+        'cache_keep_days' => 14,
+        'cache_max_items' => 10,
+    ];
+    $this->playlist->updateQuietly(['dynamic_groups_config' => [$rule]]);
+
+    Livewire::test(EditPlaylist::class, ['record' => $this->playlist->id])
+        ->fillForm(['user_agent' => 'Test Agent'])
+        ->call('save')
+        ->assertHasNoFormErrors();
+
+    $saved = $this->playlist->fresh()->dynamic_groups_config[0];
+    expect($saved)->toMatchArray(array_diff_key($rule, ['tmdb_params' => true]))
+        ->and($saved)->not->toHaveKey('cache_enabled_locked');
 });

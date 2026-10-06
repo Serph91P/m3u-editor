@@ -3614,6 +3614,7 @@ class PlaylistResource extends Resource implements CopilotResource
     {
         $nameSpan = $useTenCol ? 7 : 9;
         $cacheCols = $useTenCol ? 6 : 12;
+        $cachingEnabled = app(CachedContentDispatchService::class)->isEnabled();
 
         return [
             Toggle::make('enabled')
@@ -3729,18 +3730,30 @@ class PlaylistResource extends Resource implements CopilotResource
                 ->columnSpanFull()
                 ->columns($cacheCols)
                 ->schema([
+                    // With caching off in Settings nothing is cached, so the
+                    // rule's options are hidden behind a locked "off" toggle.
+                    // They still save as stored: a save meanwhile must not
+                    // wipe them, or retention would release the rule's files.
                     Toggle::make('cache_enabled')
                         ->label(__('Cache group members'))
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
                             tooltip: __("Automatically download this group's members via Cached Downloads. Series rules cache only each series' latest season."),
                         )
-                        ->helperText(fn (): string => app(CachedContentDispatchService::class)->isEnabled()
-                            ? ''
-                            : __('Caching is currently disabled in Settings.'))
                         ->live()
                         ->default(false)
                         ->inline(false)
+                        ->visible($cachingEnabled)
+                        ->dehydratedWhenHidden()
+                        ->columnSpan(3),
+                    Toggle::make('cache_enabled_locked')
+                        ->label(__('Cache group members'))
+                        ->helperText(__('Caching is currently disabled in Settings.'))
+                        ->formatStateUsing(fn (): bool => false)
+                        ->disabled()
+                        ->dehydrated(false)
+                        ->inline(false)
+                        ->hidden($cachingEnabled)
                         ->columnSpan(3),
                     Toggle::make('cache_never_expire')
                         ->label(__('Never expire'))
@@ -3751,7 +3764,8 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->live()
                         ->default(false)
                         ->inline(false)
-                        ->visible(fn (Get $get): bool => (bool) $get('cache_enabled'))
+                        ->visible(fn (Get $get): bool => $cachingEnabled && (bool) $get('cache_enabled'))
+                        ->dehydratedWhenHidden(fn (Get $get): bool => ! $cachingEnabled && (bool) $get('cache_enabled'))
                         ->columnSpan(3),
                     TextInput::make('cache_keep_days')
                         ->label(__('Keep after leaving (days)'))
@@ -3764,7 +3778,8 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->default(0)
                         ->disabled(fn (Get $get): bool => (bool) $get('cache_never_expire'))
                         ->dehydrated()
-                        ->visible(fn (Get $get): bool => (bool) $get('cache_enabled'))
+                        ->visible(fn (Get $get): bool => $cachingEnabled && (bool) $get('cache_enabled'))
+                        ->dehydratedWhenHidden(fn (Get $get): bool => ! $cachingEnabled && (bool) $get('cache_enabled'))
                         ->columnSpan(3),
                     TextInput::make('cache_max_items')
                         ->label(__('Top N members'))
@@ -3772,7 +3787,8 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->minValue(1)
                         ->default(20)
                         ->placeholder(__('No limit'))
-                        ->visible(fn (Get $get): bool => (bool) $get('cache_enabled'))
+                        ->visible(fn (Get $get): bool => $cachingEnabled && (bool) $get('cache_enabled'))
+                        ->dehydratedWhenHidden(fn (Get $get): bool => ! $cachingEnabled && (bool) $get('cache_enabled'))
                         ->columnSpan(3),
                 ]),
             // Matching runs against the playlist's synced VOD/series rows, so

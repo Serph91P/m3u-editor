@@ -7,6 +7,7 @@ use App\Filament\Resources\DynamicGroups\DynamicGroupResource;
 use App\Filament\Resources\VodDynamicGroups\VodDynamicGroupResource;
 use App\Models\DynamicGroup;
 use App\Models\Playlist;
+use App\Services\CachedContentDispatchService;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\ListRecords;
@@ -104,6 +105,8 @@ class ListVodDynamicGroups extends ListRecords
 
     public function table(Table $table): Table
     {
+        $cachingEnabled = app(CachedContentDispatchService::class)->isEnabled();
+
         return $table
             ->defaultSort('name')
             // withCount('channels') attaches the channels pivot count as
@@ -137,10 +140,13 @@ class ListVodDynamicGroups extends ListRecords
                     ->boolean(),
                 // The rule's "Cache group members" toggle, read from the
                 // eager-loaded playlist config (no extra query per row).
+                // Off for every row while caching is off in Settings, as
+                // nothing is cached then.
                 IconColumn::make('cache_enabled')
                     ->label(__('Caching Enabled'))
                     ->boolean()
-                    ->state(fn (DynamicGroup $record): bool => (bool) ($record->configRule()['cache_enabled'] ?? false)),
+                    ->state(fn (DynamicGroup $record): bool => $cachingEnabled && (bool) ($record->configRule()['cache_enabled'] ?? false))
+                    ->tooltip($cachingEnabled ? null : __('Caching is currently disabled in Settings.')),
                 TextColumn::make('channels_count')
                     ->label(__('Items'))
                     ->numeric(),
