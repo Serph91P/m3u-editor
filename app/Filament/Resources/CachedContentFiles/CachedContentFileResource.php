@@ -4,6 +4,7 @@ namespace App\Filament\Resources\CachedContentFiles;
 
 use App\Enums\CachedContentFileStatus;
 use App\Filament\Resources\CachedContentFiles\Pages\ListCachedContentFiles;
+use App\Filament\Resources\CachedContentFiles\Widgets\CachedContentStatsOverview;
 use App\Livewire\ArrQueueMonitor;
 use App\Models\CachedContentFile;
 use App\Services\CachedContentDispatchService;
@@ -792,6 +793,13 @@ class CachedContentFileResource extends Resource
     /**
      * @return array<string, PageRegistration>
      */
+    public static function getWidgets(): array
+    {
+        return [
+            CachedContentStatsOverview::class,
+        ];
+    }
+
     public static function getPages(): array
     {
         return [
