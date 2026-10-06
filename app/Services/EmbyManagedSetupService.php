@@ -69,8 +69,12 @@ class EmbyManagedSetupService
             return $this->failure(self::InvalidResponseMessage);
         }
 
-        if (($data['Ready'] ?? null) !== true) {
+        if (($data['Ready'] ?? null) === false) {
             return $this->failure(self::NotReadyMessage);
+        }
+
+        if (($data['Ready'] ?? null) !== true) {
+            return $this->failure(self::InvalidResponseMessage);
         }
 
         if (! is_int($data['CapabilityVersion'] ?? null)

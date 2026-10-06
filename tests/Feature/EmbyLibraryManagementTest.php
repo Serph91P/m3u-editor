@@ -155,6 +155,17 @@ it('fails closed without state changes for rejected or partial managed setup res
     'redirect response' => [[], 302, 'Emby rejected the managed setup request. Check the administrator credential and permissions, then retry.'],
     'scalar JSON response' => ['"not ready"', 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
     'list JSON response' => [['not ready'], 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
+    'response without a readiness state' => [[
+        'CapabilityVersion' => 1,
+        'IntegrationId' => 1,
+        'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+    ], 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
+    'response with an invalid readiness state' => [[
+        'CapabilityVersion' => 1,
+        'IntegrationId' => 1,
+        'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+        'Ready' => 'false',
+    ], 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
     'malformed JSON response' => ['{', 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
     'not ready' => [[
         'CapabilityVersion' => 1,
