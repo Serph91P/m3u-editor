@@ -95,6 +95,18 @@ class Bouquet extends Model
     }
 
     /**
+     * Whether this bouquet targets the same playlist as the alias. A bouquet's
+     * stored names are meaningless for any other playlist, so it only ever
+     * applies to aliases of its own target.
+     */
+    public function appliesTo(PlaylistAlias $alias): bool
+    {
+        return ($this->playlist_id !== null && $this->playlist_id === $alias->playlist_id)
+            || ($this->custom_playlist_id !== null && $this->custom_playlist_id === $alias->custom_playlist_id)
+            || ($this->merged_playlist_id !== null && $this->merged_playlist_id === $alias->merged_playlist_id);
+    }
+
+    /**
      * @return array<string>
      */
     public function getSelectedLiveGroupNames(): array

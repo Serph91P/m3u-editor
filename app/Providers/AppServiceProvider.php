@@ -820,6 +820,16 @@ class AppServiceProvider extends ServiceProvider
                     // The alias now points at a different playlist/custom playlist, so its
                     // cached EPG XML (generated against the previous target) is stale.
                     EpgCacheService::clearPlaylistEpgCacheFile($playlistAlias);
+
+                    // Bouquets only apply to aliases of their own playlist (see the
+                    // BouquetPlaylistAlias attach guard), so the previous target's
+                    // bouquets would otherwise keep filtering the new one.
+                    $staleBouquetIds = $playlistAlias->bouquets()->get()
+                        ->reject(fn (Bouquet $bouquet): bool => $bouquet->appliesTo($playlistAlias))
+                        ->modelKeys();
+                    if ($staleBouquetIds !== []) {
+                        $playlistAlias->bouquets()->detach($staleBouquetIds);
+                    }
                 }
 
                 return $playlistAlias;

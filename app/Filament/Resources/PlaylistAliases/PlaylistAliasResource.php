@@ -815,6 +815,20 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                 ->preload()
                                 ->live()
                                 ->afterStateUpdated(fn (Get $get, Set $set) => self::syncLiveGroupSortItems($get, $set))
+                                ->saveRelationshipsUsing(function (PlaylistAlias $record, Get $get): void {
+                                    // Filament saves relationships before the record itself, and its
+                                    // default save only detaches within the options query (the new
+                                    // target's bouquets). Persist a playlist switch first - the pivot
+                                    // guard checks the stored target, and the alias updating hook drops
+                                    // the previous target's bouquets - then sync the validated picks.
+                                    $record->update([
+                                        'playlist_id' => $get('playlist_id') ?: null,
+                                        'custom_playlist_id' => $get('custom_playlist_id') ?: null,
+                                        'merged_playlist_id' => $get('merged_playlist_id') ?: null,
+                                    ]);
+                                    $record->bouquets()->sync(self::assignedBouquets($get)->modelKeys());
+                                    $record->unsetRelation('bouquets');
+                                })
                                 ->columnSpanFull()
                                 ->helperText(__('Channels are allowed if their group is in ANY assigned bouquet OR in the manual selections below. Bouquets and manual picks combine - assigning a bouquet never removes anything the manual pickers allow.'))
                                 ->createOptionForm([
