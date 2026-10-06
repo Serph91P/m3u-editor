@@ -208,14 +208,29 @@ it('fails closed without state changes for rejected or partial managed setup res
         'Ready' => true,
         'Result' => 'Ready',
     ], 200, 'Emby reported a managed setup binding conflict. Reconnect the integration, then retry.'],
-    'unsafe confirmed root' => [[
-        'CapabilityVersion' => 1,
-        'IntegrationId' => 1,
-        'ConfirmedRoot' => '../private',
-        'Ready' => true,
-        'Result' => 'Ready',
-    ], 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
 ]);
+
+it('fails closed without state changes for a ready V1 response carrying an unsafe confirmed root', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $this->integration->id,
+            'ConfirmedRoot' => '../private',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+    ]);
+
+    expect(app(EmbyManagedSetupService::class)->setup($this->integration))->toBe([
+        'success' => false,
+        'message' => 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.',
+    ])->and($this->integration->refresh())
+        ->emby_managed_setup_binding_id->toBeNull()
+        ->emby_managed_setup_root->toBeNull()
+        ->emby_publisher_writable_paths->toBe(['/srv/emby']);
+    Http::assertSentCount(1);
+});
 
 it('reports a binding conflict only for a ready V1 response without exposing the response result', function () {
     Http::preventStrayRequests();
