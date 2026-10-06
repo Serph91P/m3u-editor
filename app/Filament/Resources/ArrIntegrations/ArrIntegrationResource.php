@@ -196,6 +196,13 @@ class ArrIntegrationResource extends Resource
                             ->helperText(fn (): string => app(CachedContentDispatchService::class)->isEnabled()
                                 ? __('On playlists that prefer media server sources, Cache Now and dynamic group caching add new titles here instead of downloading them from the provider. Titles already in the library are never changed or removed.')
                                 : __('Turn on "Enable cache" in Settings > Cache to use this integration for caching.'))
+                            ->live()
+                            ->default(false),
+
+                        Toggle::make('cache_cleanup')
+                            ->label(__('Remove after leaving dynamic groups'))
+                            ->helperText(__('Movies dynamic group caching adds here are removed, files included, once they have been out of every dynamic group for the longest "Keep after leaving (days)" among your caching rules (at least 1 day). Only movies added while this is on are removed, never ones already in the library. Use Cache Now on a movie to keep it.'))
+                            ->visible(fn (Get $get): bool => $get('type') === 'radarr' && (bool) $get('cache_enabled'))
                             ->default(false),
                     ]),
 

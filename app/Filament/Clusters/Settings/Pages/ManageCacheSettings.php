@@ -49,7 +49,7 @@ class ManageCacheSettings extends BaseSettingsPage
                     ->color('info')
                     ->columnSpanFull()
                     ->visible(fn (Get $get): bool => (bool) $get('enable_cache'))
-                    ->description(__('Turn on "Use for caching" on a Radarr or Sonarr integration to send new titles there instead of downloading them from the provider. This applies to playlists that prefer media server sources. Those titles are managed in Radarr or Sonarr and cache retention never removes them.')),
+                    ->description(__('Turn on "Use for caching" on a Radarr or Sonarr integration to send new titles there instead of downloading them from the provider. This applies to playlists that prefer media server sources. Those titles are managed in Radarr or Sonarr, and cache retention never removes them unless a Radarr integration has "Remove after leaving dynamic groups" on.')),
                 Section::make(__('Cached Content'))
                     ->description(__('Download VOD movies and series episodes to local storage with the "Cache Now" actions. Once a download completes, playback uses the local copy instead of the provider.'))
                     ->columnSpanFull()

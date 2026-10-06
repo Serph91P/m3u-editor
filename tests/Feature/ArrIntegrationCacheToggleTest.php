@@ -54,3 +54,25 @@ it('enables Use for caching on the edit form while the cache feature is on', fun
     Livewire::test(EditArrIntegration::class, ['record' => $this->integration->id])
         ->assertFormFieldEnabled('cache_enabled');
 });
+
+it('shows Remove after leaving dynamic groups on a Radarr used for caching, and saves it', function () {
+    arrWidgetCacheSetting(true);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $this->integration->id])
+        ->assertFormFieldHidden('cache_cleanup')
+        ->fillForm(['cache_enabled' => true])
+        ->assertFormFieldVisible('cache_cleanup')
+        ->fillForm(['cache_cleanup' => true])
+        ->call('save')
+        ->assertHasNoFormErrors();
+
+    expect($this->integration->refresh()->cache_cleanup)->toBeTrue();
+});
+
+it('hides Remove after leaving dynamic groups on Sonarr', function () {
+    arrWidgetCacheSetting(true);
+    $sonarr = ArrIntegration::factory()->sonarr()->cacheEnabled()->create(['user_id' => $this->user->id]);
+
+    Livewire::test(EditArrIntegration::class, ['record' => $sonarr->id])
+        ->assertFormFieldHidden('cache_cleanup');
+});
