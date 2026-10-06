@@ -257,7 +257,7 @@ class VodResource extends Resource implements CopilotResource
                 ->boolean()
                 ->trueIcon('heroicon-o-circle-stack')
                 ->falseIcon('heroicon-o-circle-stack')
-                ->trueColor('info')
+                ->trueColor('success')
                 ->falseColor('gray')
                 ->tooltip(fn (?bool $state): string => $state
                     ? __('Cached file available. Playback will use the local cache.')
