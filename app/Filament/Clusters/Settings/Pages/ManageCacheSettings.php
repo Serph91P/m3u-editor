@@ -3,7 +3,9 @@
 namespace App\Filament\Clusters\Settings\Pages;
 
 use App\Filament\Clusters\Settings\Pages\Concerns\BaseSettingsPage;
+use App\Filament\Resources\CachedContentFiles\CachedContentFileResource;
 use BackedEnum;
+use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Callout;
@@ -28,6 +30,18 @@ class ManageCacheSettings extends BaseSettingsPage
     public function getTitle(): string
     {
         return __('Cache');
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('manage_cached_items')
+                ->label(__('Manage Cached Items'))
+                ->color('gray')
+                ->icon('heroicon-o-arrow-down-tray')
+                ->url(CachedContentFileResource::getUrl())
+                ->visible(fn (): bool => CachedContentFileResource::canAccess()),
+        ];
     }
 
     public function form(Schema $schema): Schema
