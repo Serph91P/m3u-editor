@@ -51,8 +51,9 @@ class EmbyManagedSetupService
             return $this->failure(self::ConnectionFailedMessage);
         }
 
-        $data = $response->json();
-        $root = is_array($data) ? ($data['ConfirmedRoot'] ?? null) : null;
+        if (! $this->responseOriginIsValid($response, $integration)) {
+            return $this->failure(self::OriginBlockedMessage);
+        }
 
         if ($response->status() === 404) {
             return $this->failure(self::EndpointNotFoundMessage);
@@ -62,26 +63,26 @@ class EmbyManagedSetupService
             return $this->failure(self::RequestRejectedMessage);
         }
 
-        if (! $this->responseOriginIsValid($response, $integration)) {
-            return $this->failure(self::OriginBlockedMessage);
-        }
+        $data = $response->json();
 
         if (! is_array($data)) {
             return $this->failure(self::InvalidResponseMessage);
-        }
-
-        if (($data['IntegrationId'] ?? null) !== $integration->id) {
-            return $this->failure(self::BindingConflictMessage);
         }
 
         if (($data['Ready'] ?? null) !== true) {
             return $this->failure(self::NotReadyMessage);
         }
 
-        if (! is_numeric($data['CapabilityVersion'] ?? null)
-            || (int) $data['CapabilityVersion'] !== self::CONTRACT_VERSION) {
+        if (! is_int($data['CapabilityVersion'] ?? null)
+            || $data['CapabilityVersion'] !== self::CONTRACT_VERSION) {
             return $this->failure(self::UnsupportedVersionMessage);
         }
+
+        if (($data['IntegrationId'] ?? null) !== $integration->id) {
+            return $this->failure(self::BindingConflictMessage);
+        }
+
+        $root = $data['ConfirmedRoot'] ?? null;
 
         if (! is_string($root) || ! MediaServerIntegration::isSafeWritablePath($root)) {
             return $this->failure(self::InvalidResponseMessage);

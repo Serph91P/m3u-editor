@@ -158,13 +158,33 @@ it('fails closed without state changes for rejected or partial managed setup res
     'malformed JSON response' => ['{', 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
     'not ready' => [[
         'CapabilityVersion' => 1,
-        'IntegrationId' => 1,
+        'IntegrationId' => 0,
+        'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+        'Ready' => false,
+        'Result' => 'backend secret or local path',
+    ], 200, 'Emby is not ready for managed setup. Check the companion configuration, then retry.'],
+    'not ready without an integration binding' => [[
+        'CapabilityVersion' => 1,
         'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
         'Ready' => false,
         'Result' => 'backend secret or local path',
     ], 200, 'Emby is not ready for managed setup. Check the companion configuration, then retry.'],
     'old capability version' => [[
         'CapabilityVersion' => 0,
+        'IntegrationId' => 1,
+        'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+        'Ready' => true,
+        'Result' => 'Ready',
+    ], 200, 'The Emby companion does not support managed setup version 1. Update the companion, then retry.'],
+    'fractional capability version' => [[
+        'CapabilityVersion' => 1.9,
+        'IntegrationId' => 1,
+        'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+        'Ready' => true,
+        'Result' => 'Ready',
+    ], 200, 'The Emby companion does not support managed setup version 1. Update the companion, then retry.'],
+    'string capability version' => [[
+        'CapabilityVersion' => '1.5',
         'IntegrationId' => 1,
         'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
         'Ready' => true,
@@ -186,14 +206,14 @@ it('fails closed without state changes for rejected or partial managed setup res
     ], 200, 'Emby returned an invalid managed setup response. Check the companion configuration, then retry.'],
 ]);
 
-it('reports a binding conflict before a V1 response marked not ready without exposing the response result', function () {
+it('reports a binding conflict only for a ready V1 response without exposing the response result', function () {
     Http::preventStrayRequests();
     Http::fake([
         'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
             'CapabilityVersion' => 1,
             'IntegrationId' => $this->integration->id + 1,
             'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
-            'Ready' => false,
+            'Ready' => true,
             'Result' => 'backend secret or local path',
         ]),
     ]);
