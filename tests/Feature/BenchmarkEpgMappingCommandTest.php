@@ -75,7 +75,13 @@ it('produces the same mappings for the same seed', function () {
 });
 
 it('reports identical mappings when compared with a matching baseline', function () {
-    file_put_contents($this->baselinePath, json_encode(runEpgBenchmark()));
+    $baseline = runEpgBenchmark();
+
+    // Runs this small are timing noise (especially on a busy parallel CI
+    // runner), so pin the baseline's time high enough that this run can
+    // never read as a slowdown - only the mapping comparison is under test.
+    $baseline['summary']['median_seconds'] = 3600;
+    file_put_contents($this->baselinePath, json_encode($baseline));
 
     $this->artisan('epg:benchmark-mapping', [
         '--channels' => 60,
