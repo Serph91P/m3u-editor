@@ -251,21 +251,21 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
      */
     protected function exactMatchCandidates(Epg $epg, array $terms, array $callsigns): array
     {
-        $query = fn (): Builder => $epg->matchableChannels()
+        $baseQuery = fn (): Builder => $epg->matchableChannels()
             ->select('id', 'channel_id', 'name', 'display_name')
             ->selectRaw('LOWER(channel_id) AS channel_id_lower, LOWER(name) AS name_lower, LOWER(display_name) AS display_name_lower');
 
         return [
-            'channel_id' => $terms === [] ? new Collection : $query()
+            'channel_id' => $terms === [] ? new Collection : $baseQuery()
                 ->where('channel_id', '!=', '')
                 ->whereIn(DB::raw('LOWER(channel_id)'), $terms)
                 ->get(),
-            'name' => $terms === [] ? new Collection : $query()
+            'name' => $terms === [] ? new Collection : $baseQuery()
                 ->where(fn (Builder $query): Builder => $query
                     ->whereIn(DB::raw('LOWER(name)'), $terms)
                     ->orWhereIn(DB::raw('LOWER(display_name)'), $terms))
                 ->get(),
-            'callsign' => $callsigns === [] ? new Collection : $query()
+            'callsign' => $callsigns === [] ? new Collection : $baseQuery()
                 ->where(function (Builder $query) use ($callsigns): void {
                     foreach ($callsigns as $callsign) {
                         $query->orWhereRaw('LOWER(channel_id) = ?', [$callsign])

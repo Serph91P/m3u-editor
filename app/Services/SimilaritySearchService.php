@@ -24,6 +24,15 @@ class SimilaritySearchService
 
     private const MAX_NORMALIZED_NAMES = 50000;
 
+    /**
+     * Provider labels for high/low bitrate copies of the same feed
+     * ("U&Alibi HEVC HB" / "U&Alibi HEVC LB"), which namesConflict() treats
+     * like quality tokens rather than as different words.
+     *
+     * @var list<string>
+     */
+    private const BITRATE_VARIANTS = ['hb', 'lb'];
+
     private const MAX_REVIEW_CANDIDATES = 3;
 
     private const MIN_REVIEW_CONFIDENCE = 40;
@@ -267,13 +276,24 @@ class SimilaritySearchService
     {
         $title = $this->sanitizeUtf8($cleanedTitle ?? $channel->title_custom ?? $channel->title);
         $name = $this->sanitizeUtf8($cleanedName ?? $channel->name_custom ?? $channel->name);
-        $normalized = $this->normalizeChannelName(trim($title ?: $name));
 
-        if (! $normalized || mb_strlen($normalized, 'UTF-8') < $this->minChannelLength) {
+        return $this->searchTermsForNormalizedName($this->normalizeChannelName(trim($title ?: $name)));
+    }
+
+    /**
+     * The longest words of a normalized name, shared by searchTermsFor() and
+     * findEpgChannelCandidates() so a batch prefetch always covers the terms
+     * each channel is later narrowed by.
+     *
+     * @return list<string>
+     */
+    private function searchTermsForNormalizedName(string $normalizedName): array
+    {
+        if (! $normalizedName || mb_strlen($normalizedName, 'UTF-8') < $this->minChannelLength) {
             return [];
         }
 
-        return collect(explode(' ', $normalized))
+        return collect(explode(' ', $normalizedName))
             ->filter(fn (string $term): bool => mb_strlen($term, 'UTF-8') >= $this->minChannelLength)
             ->sortByDesc(fn (string $term): int => mb_strlen($term, 'UTF-8'))
             ->take(4)
@@ -436,12 +456,10 @@ class SimilaritySearchService
      * channel_id, name, display_name or an alternate display name, or by
      * pg_trgm similarity when enabled.
      *
-     * @param  iterable<string>  $terms
+     * @param  list<string>  $terms
      */
-    private function candidateQuery(Epg $epg, iterable $terms, bool $trigramMatchingEnabled): Builder
+    private function candidateQuery(Epg $epg, array $terms, bool $trigramMatchingEnabled): Builder
     {
-        $terms = collect($terms)->values()->all();
-
         return $epg->matchableChannels()
             ->where(function (Builder $query) use ($terms, $trigramMatchingEnabled): void {
                 if (DB::connection()->getConfig('driver') === 'pgsql') {
@@ -664,24 +682,16 @@ class SimilaritySearchService
             'explanation' => __('No candidate had enough normalized name or identifier overlap.'),
         ];
 
-        if (! $epg || ! $normalizedChan || mb_strlen($normalizedChan, 'UTF-8') < $this->minChannelLength) {
-            return $emptyResult;
-        }
+        $searchTerms = $this->searchTermsForNormalizedName($normalizedChan);
 
-        $searchTerms = collect(explode(' ', $normalizedChan))
-            ->filter(fn (string $term): bool => mb_strlen($term, 'UTF-8') >= $this->minChannelLength)
-            ->sortByDesc(fn (string $term): int => mb_strlen($term, 'UTF-8'))
-            ->take(4)
-            ->values();
-
-        if ($searchTerms->isEmpty()) {
+        if (! $epg || $searchTerms === []) {
             return $emptyResult;
         }
 
         if ($prefetchedCandidates !== null) {
-            $databaseCandidates = $this->candidatesMatchingTerms($epg, $prefetchedCandidates, $searchTerms->all());
+            $databaseCandidates = $this->candidatesMatchingTerms($epg, $prefetchedCandidates, $searchTerms);
         } else {
-            [$relevanceSql, $relevanceBindings] = $this->candidateRelevanceOrder($searchTerms->all(), $trigramMatchingEnabled);
+            [$relevanceSql, $relevanceBindings] = $this->candidateRelevanceOrder($searchTerms, $trigramMatchingEnabled);
 
             $databaseCandidates = $this->dedupeByPriority(
                 $epg,
@@ -768,7 +778,10 @@ class SimilaritySearchService
                 && $topCandidate['distance'] < $this->upperFuzzyThreshold
                 && $topCandidate['word_similarity'] >= $this->embedSimThreshold;
 
-            if ($topCandidate['is_exact'] || $meetsDistanceRule || $meetsWordRule) {
+            $meetsGuards = $topCandidate['is_exact']
+                || $this->agreesWithAnyName($normalizedChan, $topCandidate['model']);
+
+            if (($topCandidate['is_exact'] || $meetsDistanceRule || $meetsWordRule) && $meetsGuards) {
                 $automaticMatch = $topCandidate['model'];
             }
         }
@@ -911,6 +924,97 @@ class SimilaritySearchService
         }
 
         return $this->normalizedNames[$original] = trim(implode(' ', $tokens));
+    }
+
+    /**
+     * Whether any of the candidate's names (or, without names, its channel
+     * ID) is free of a namesConflict() with the channel. Names rather than
+     * the best-scoring field, since channel IDs glue words together
+     * ("TigoSport.cr").
+     */
+    private function agreesWithAnyName(string $normalizedChannel, EpgChannel $candidate): bool
+    {
+        $names = array_filter([$candidate->name, $candidate->display_name, ...($candidate->additional_display_names ?? [])]);
+
+        foreach ($names ?: [$candidate->channel_id] as $name) {
+            if (! $this->namesConflict($normalizedChannel, $this->normalizeChannelName($name))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether two normalized names that score as similar are, on closer
+     * reading, different channels: their numbers differ ("tsn 42" vs
+     * "tsn 12", "itv 1" vs "itv"), or each has a word the other lacks with
+     * no typo-like pair between them ("mls 18" vs "tsn 18"). One name only
+     * adding words to the other ("radio dallas cowboys" vs "dallas cowboys")
+     * is not a conflict. Quality tokens ("4k", "1080p") are ignored either way.
+     */
+    private function namesConflict(string $normalizedChannel, string $normalizedCandidate): bool
+    {
+        $ignored = [...self::DEFAULT_QUALITY_INDICATORS, ...$this->qualityIndicators, ...self::BITRATE_VARIANTS];
+        $channelTokens = array_values(array_diff(explode(' ', $normalizedChannel), $ignored));
+        $candidateTokens = array_values(array_diff(explode(' ', $normalizedCandidate), $ignored));
+
+        if ($this->numbersIn($channelTokens) !== $this->numbersIn($candidateTokens)) {
+            return true;
+        }
+
+        // Plurals count as the same word ("mysteries" / "mystery")
+        $channelWords = array_map($this->singular(...), $channelTokens);
+        $candidateWords = array_map($this->singular(...), $candidateTokens);
+        $channelOnly = array_diff($channelWords, $candidateWords);
+        $candidateOnly = array_diff($candidateWords, $channelWords);
+
+        if ($channelOnly === [] || $candidateOnly === []) {
+            return false;
+        }
+
+        // A typo is one edit per four letters, so short words like "nhl" and
+        // "nfl" must match exactly while "sport"/"sports" still pair up
+        foreach ($channelOnly as $channelToken) {
+            foreach ($candidateOnly as $candidateToken) {
+                $longest = max(mb_strlen($channelToken, 'UTF-8'), mb_strlen($candidateToken, 'UTF-8'));
+                if (levenshtein($channelToken, $candidateToken) <= intdiv($longest, 4)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * A rough English singular ("mysteries" -> "mystery", "sports" ->
+     * "sport"), applied to both names alike so it can only merge plurals.
+     * Short words like "cbs" are left alone.
+     */
+    private function singular(string $word): string
+    {
+        return match (true) {
+            mb_strlen($word, 'UTF-8') <= 3 => $word,
+            str_ends_with($word, 'ies') => mb_substr($word, 0, -3, 'UTF-8').'y',
+            str_ends_with($word, 's') && ! str_ends_with($word, 'ss') => mb_substr($word, 0, -1, 'UTF-8'),
+            default => $word,
+        };
+    }
+
+    /**
+     * Every run of digits in the tokens, without leading zeros, sorted.
+     *
+     * @param  list<string>  $tokens
+     * @return list<string>
+     */
+    private function numbersIn(array $tokens): array
+    {
+        preg_match_all('/\d+/', implode(' ', $tokens), $matches);
+        $numbers = array_map(fn (string $number): string => ltrim($number, '0') ?: '0', $matches[0]);
+        sort($numbers);
+
+        return $numbers;
     }
 
     /**

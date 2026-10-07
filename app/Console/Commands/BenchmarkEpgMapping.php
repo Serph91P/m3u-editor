@@ -189,9 +189,7 @@ class BenchmarkEpgMapping extends Command
         $this->components->twoColumnDetail('Settings', $settings === [] ? 'defaults' : json_encode($settings));
         $this->newLine();
 
-        DB::listen(function (QueryExecuted $query): void {
-            $this->recordQuery($query);
-        });
+        DB::listen($this->recordQuery(...));
 
         $runs = [];
         $mappings = null;
@@ -632,16 +630,7 @@ class BenchmarkEpgMapping extends Command
             'playlist_id' => $playlistId,
             ...$timestamps,
         ]);
-        $mapId = DB::table('epg_maps')->insertGetId([
-            'name' => $name,
-            'uuid' => Str::uuid()->toString(),
-            'user_id' => $userId,
-            'epg_id' => $epgId,
-            'playlist_id' => $playlistId,
-            'settings' => json_encode($settings),
-            'processing' => true,
-            ...$timestamps,
-        ]);
+        $mapId = $this->insertScratchMap($userId, $epgId, $playlistId, $settings);
 
         foreach (array_chunk($data['epg'], 500) as $chunk) {
             DB::table('epg_channels')->insert(array_map(fn (array $row): array => [
@@ -706,23 +695,34 @@ class BenchmarkEpgMapping extends Command
         $selected = $channels->clone()->orderBy('id')->limit($channelLimit)->get(['id', 'source_id']);
 
         return [
-            'map_id' => DB::table('epg_maps')->insertGetId([
-                'name' => 'EPG mapping benchmark',
-                'uuid' => Str::uuid()->toString(),
-                'user_id' => $map->user_id,
-                'epg_id' => $map->epg_id,
-                'playlist_id' => $map->playlist_id,
-                'settings' => json_encode($settings),
-                'processing' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]),
+            'map_id' => $this->insertScratchMap($map->user_id, $map->epg_id, $map->playlist_id, $settings),
             'epg_id' => $map->epg_id,
             'channel_ids' => $selected->pluck('id')->all(),
             'source_ids' => $selected->pluck('source_id')->all(),
             'epg_channel_ids' => Epg::query()->findOrFail($map->epg_id)->matchableChannels()->pluck('channel_id', 'id')->all(),
             'map_channels' => $channels->count(),
         ];
+    }
+
+    /**
+     * Insert the map the chunk jobs report progress to, rolled back with
+     * everything else the benchmark writes.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private function insertScratchMap(int $userId, int $epgId, ?int $playlistId, array $settings): int
+    {
+        return DB::table('epg_maps')->insertGetId([
+            'name' => 'EPG mapping benchmark',
+            'uuid' => Str::uuid()->toString(),
+            'user_id' => $userId,
+            'epg_id' => $epgId,
+            'playlist_id' => $playlistId,
+            'settings' => json_encode($settings),
+            'processing' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
     /**
@@ -756,11 +756,7 @@ class BenchmarkEpgMapping extends Command
      */
     private function quality(array $expected, array $mappings): array
     {
-        $quality = [];
-
-        foreach (array_keys(self::PATTERNS) as $pattern) {
-            $quality[$pattern] = ['channels' => 0, 'correct' => 0, 'wrong' => 0, 'unmapped' => 0];
-        }
+        $quality = array_fill_keys(array_keys(self::PATTERNS), ['channels' => 0, 'correct' => 0, 'wrong' => 0, 'unmapped' => 0]);
 
         foreach ($expected as $sourceId => $channel) {
             $actual = $mappings[$sourceId] ?? null;
