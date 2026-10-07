@@ -303,7 +303,7 @@ class VodResource extends Resource
                 Action::make('play')
                     ->tooltip(__('Play Video'))
                     ->action(function ($record, $livewire) {
-                        $livewire->dispatch('openFloatingStream', $record->getFloatingPlayerAttributes());
+                        $livewire->dispatch('openFloatingStream', static::playerAttributes($record));
                     })
                     ->icon('heroicon-s-play-circle')
                     ->button()
