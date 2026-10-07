@@ -99,6 +99,8 @@ class BenchmarkEpgMapping extends Command
 
     private const EXPLAINED_QUERIES = 3;
 
+    private const REPORTED_QUERY_SHAPES = 5;
+
     private Randomizer $random;
 
     /** @var array<string, true> */
@@ -114,6 +116,9 @@ class BenchmarkEpgMapping extends Command
 
     /** @var array<string, array{sql: string, bindings: array<int, mixed>, time: float}> */
     private array $slowestQueries = [];
+
+    /** @var array<string, array{count: int, milliseconds: float}> */
+    private array $queryShapes = [];
 
     public function handle(): int
     {
@@ -192,6 +197,7 @@ class BenchmarkEpgMapping extends Command
         $mappings = null;
         $deterministic = true;
         $explained = [];
+        $queryShapes = [];
 
         DB::beginTransaction();
 
@@ -230,6 +236,7 @@ class BenchmarkEpgMapping extends Command
 
                 if ($run > 0) {
                     $runs[] = $result['stats'];
+                    $queryShapes = $result['query_shapes'];
                 }
             }
 
@@ -260,6 +267,7 @@ class BenchmarkEpgMapping extends Command
             'deterministic' => $deterministic,
             'mappings_hash' => sha1((string) json_encode($mappings)),
             'mappings' => $mappings,
+            'query_shapes' => $queryShapes,
             'explain' => $explained,
         ];
 
@@ -303,7 +311,7 @@ class BenchmarkEpgMapping extends Command
      *
      * @param  array{map_id: int, epg_id: int, channel_ids: list<int>, source_ids: list<?string>, epg_channel_ids: array<int, string>}  $seeded
      * @param  array<string, mixed>  $settings
-     * @return array{stats: array{seconds: float, queries: int, query_seconds: float, peak_memory_bytes: int}, mappings: array<string, ?string>}
+     * @return array{stats: array{seconds: float, queries: int, query_seconds: float, peak_memory_bytes: int}, mappings: array<string, ?string>, query_shapes: list<array{sql: string, count: int, seconds: float}>}
      */
     private function runMatcher(array $seeded, array $settings): array
     {
@@ -315,6 +323,7 @@ class BenchmarkEpgMapping extends Command
 
         $this->queryCount = 0;
         $this->queryMilliseconds = 0;
+        $this->queryShapes = [];
         memory_reset_peak_usage();
         $memoryBefore = memory_get_usage();
 
@@ -362,6 +371,16 @@ class BenchmarkEpgMapping extends Command
                 'peak_memory_bytes' => $peakMemory,
             ],
             'mappings' => $mappings,
+            'query_shapes' => collect($this->queryShapes)
+                ->sortByDesc('milliseconds')
+                ->take(self::REPORTED_QUERY_SHAPES)
+                ->map(fn (array $totals, string $shape): array => [
+                    'sql' => $shape,
+                    'count' => $totals['count'],
+                    'seconds' => round($totals['milliseconds'] / 1000, 4),
+                ])
+                ->values()
+                ->all(),
         ];
     }
 
@@ -374,16 +393,19 @@ class BenchmarkEpgMapping extends Command
         $this->queryCount++;
         $this->queryMilliseconds += $query->time;
 
+        // Statements sharing their first 160 characters are the same query
+        // with a different number of search terms (e.g. one candidate
+        // prefetch per chunk), so they're totalled, and explained, together.
+        $shape = substr($query->sql, 0, 160);
+        $this->queryShapes[$shape]['count'] = ($this->queryShapes[$shape]['count'] ?? 0) + 1;
+        $this->queryShapes[$shape]['milliseconds'] = ($this->queryShapes[$shape]['milliseconds'] ?? 0) + $query->time;
+
         if (! $this->captureSlowest
             || $query->connectionName !== DB::getDefaultConnection()
             || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')) {
             return;
         }
 
-        // Statements sharing their first 160 characters are the same query
-        // with a different number of search terms (e.g. one candidate
-        // prefetch per chunk) - keep only the slowest of each.
-        $shape = substr($query->sql, 0, 160);
         if ($query->time > ($this->slowestQueries[$shape]['time'] ?? -1)) {
             $this->slowestQueries[$shape] = ['sql' => $query->sql, 'bindings' => $query->bindings, 'time' => $query->time];
         }
@@ -795,6 +817,19 @@ class BenchmarkEpgMapping extends Command
         }
 
         $this->components->twoColumnDetail('Mappings hash', $results['mappings_hash']);
+
+        if ($results['query_shapes'] !== []) {
+            $this->newLine();
+            $this->table(
+                ['Slowest queries in total (last run)', 'Count', 'Time', 'Average'],
+                collect($results['query_shapes'])->map(fn (array $shape): array => [
+                    Str::limit((string) preg_replace('/\s+/', ' ', $shape['sql']), 100),
+                    number_format($shape['count']),
+                    $this->seconds($shape['seconds']),
+                    number_format($shape['seconds'] * 1000 / max(1, $shape['count']), 2).' ms',
+                ])->all(),
+            );
+        }
 
         if (! $results['deterministic']) {
             $this->components->warn('The mappings changed between runs on identical data, so the matcher is not deterministic.');

@@ -22,6 +22,8 @@ class SimilaritySearchService
 
     private const MAX_PREFETCH_TERMS = 200;
 
+    private const MAX_NORMALIZED_NAMES = 50000;
+
     private const MAX_REVIEW_CANDIDATES = 3;
 
     private const MIN_REVIEW_CONFIDENCE = 40;
@@ -128,13 +130,25 @@ class SimilaritySearchService
     private ?bool $trigramAvailable = null;
 
     /**
-     * What candidatesMatchingTerms needs per prefetched candidate: its
-     * searchable text and the terms Postgres matched it to by trigram.
-     * Weakly keyed, so entries go away with the prefetched models.
+     * What candidatesMatchingTerms needs per prefetched pool: each
+     * candidate's searchable text and trigram-matched terms (by position),
+     * plus the positions each search term finds, filled in as channels ask.
+     * Channels in a batch share most of their terms, so each term scans the
+     * pool once instead of once per channel. Weakly keyed by the pool.
      *
-     * @var WeakMap<EpgChannel, array{text: string, trigram_terms: array<string, true>}>|null
+     * @var WeakMap<Collection<int, EpgChannel>, object{models: list<EpgChannel>, ids: list<int>, priorities: list<int>|null, text: string, starts: list<int>, trigramTerms: array<int, array<string, true>>, termHits: array<string, list<int>>}>|null
      */
-    private ?WeakMap $candidateTerms = null;
+    private ?WeakMap $prefetchIndexes = null;
+
+    /**
+     * normalizeChannelName() results for the current quality-indicator
+     * settings. Batch callers score the same candidate names for every
+     * channel in a batch, so this skips repeating the Unicode and regex
+     * passes. Cleared whenever those settings change.
+     *
+     * @var array<string, string>
+     */
+    private array $normalizedNames = [];
 
     /**
      * Apply the map's configured prefix or regex cleanup before any matching strategy runs.
@@ -326,15 +340,95 @@ class SimilaritySearchService
             }
         }
 
-        $this->candidateTerms ??= new WeakMap;
-        foreach ($candidates as $id => $candidate) {
-            $this->candidateTerms[$candidate] = [
-                'text' => $this->searchableText($candidate),
-                'trigram_terms' => $trigramTerms[$id] ?? [],
-            ];
+        $pool = $this->dedupeByPriority($epg, new Collection(array_values($candidates)));
+        $this->prefetchIndex($pool, $trigramTerms);
+
+        return $pool;
+    }
+
+    /**
+     * Build (or fetch) the lookup structure candidatesMatchingTerms narrows
+     * a prefetched pool with.
+     *
+     * @param  Collection<int, EpgChannel>  $pool
+     * @param  array<int, array<string, true>>  $trigramTermsById
+     * @return object{models: list<EpgChannel>, ids: list<int>, priorities: list<int>|null, text: string, starts: list<int>, trigramTerms: array<int, array<string, true>>, termHits: array<string, list<int>>}
+     */
+    private function prefetchIndex(Collection $pool, array $trigramTermsById = []): object
+    {
+        $this->prefetchIndexes ??= new WeakMap;
+
+        if (isset($this->prefetchIndexes[$pool])) {
+            return $this->prefetchIndexes[$pool];
         }
 
-        return $this->dedupeByPriority($epg, new Collection(array_values($candidates)));
+        $models = $pool->values()->all();
+        $trigramTerms = [];
+        foreach ($models as $position => $model) {
+            if (isset($trigramTermsById[$model->id])) {
+                $trigramTerms[$position] = $trigramTermsById[$model->id];
+            }
+        }
+
+        // Every candidate's searchable text in one string (NUL-separated, so
+        // a term of letters and digits can't match across two candidates),
+        // with each candidate's start offset, so termPositions() can let
+        // strpos() jump between hits instead of testing each text in turn.
+        $text = '';
+        $starts = [];
+        foreach ($models as $model) {
+            $starts[] = strlen($text);
+            $text .= $this->searchableText($model)."\0";
+        }
+
+        return $this->prefetchIndexes[$pool] = (object) [
+            'models' => $models,
+            'ids' => array_map(fn (EpgChannel $model): int => $model->id, $models),
+            'priorities' => null,
+            'text' => $text,
+            'starts' => $starts,
+            'trigramTerms' => $trigramTerms,
+            'termHits' => [],
+        ];
+    }
+
+    /**
+     * Positions of the pool candidates a term finds: by substring, like the
+     * LIKE conditions, or by Postgres' trigram match.
+     *
+     * @param  object{models: list<EpgChannel>, ids: list<int>, priorities: list<int>|null, text: string, starts: list<int>, trigramTerms: array<int, array<string, true>>, termHits: array<string, list<int>>}  $index
+     * @return list<int>
+     */
+    private function termPositions(object $index, string $term): array
+    {
+        $positions = [];
+        $offset = 0;
+
+        while ($term !== '' && ($found = strpos($index->text, $term, $offset)) !== false) {
+            // Binary search for the candidate whose text holds this offset
+            $low = 0;
+            $high = count($index->starts) - 1;
+            while ($low < $high) {
+                $middle = intdiv($low + $high + 1, 2);
+                if ($index->starts[$middle] <= $found) {
+                    $low = $middle;
+                } else {
+                    $high = $middle - 1;
+                }
+            }
+
+            $positions[$low] = true;
+            // One hit per candidate is enough, so skip to the next one
+            $offset = $index->starts[$low + 1] ?? strlen($index->text);
+        }
+
+        foreach ($index->trigramTerms as $position => $trigramTerms) {
+            if (isset($trigramTerms[$term])) {
+                $positions[$position] = true;
+            }
+        }
+
+        return array_keys($positions);
     }
 
     /**
@@ -346,8 +440,16 @@ class SimilaritySearchService
      */
     private function candidateQuery(Epg $epg, iterable $terms, bool $trigramMatchingEnabled): Builder
     {
+        $terms = collect($terms)->values()->all();
+
         return $epg->matchableChannels()
             ->where(function (Builder $query) use ($terms, $trigramMatchingEnabled): void {
+                if (DB::connection()->getConfig('driver') === 'pgsql') {
+                    $this->addPostgresSearchConditions($query, $terms, $trigramMatchingEnabled);
+
+                    return;
+                }
+
                 foreach ($terms as $term) {
                     $likeTerm = $this->likePattern($term);
                     $query->orWhereRaw("LOWER(channel_id) LIKE ? ESCAPE '!'", [$likeTerm])
@@ -358,6 +460,37 @@ class SimilaritySearchService
                 }
             })
             ->select(self::CANDIDATE_COLUMNS);
+    }
+
+    /**
+     * candidateQuery's conditions written as one `LIKE ANY` (and `% ANY`) per
+     * column instead of one condition per term per column. Same rows, but
+     * Postgres lowercases each column once per row rather than once per term,
+     * which made a batch prefetch's ~100-200 terms about 4x faster.
+     *
+     * @param  list<string>  $terms
+     */
+    private function addPostgresSearchConditions(Builder $query, array $terms, bool $trigramMatchingEnabled): void
+    {
+        // No ESCAPE clause with ANY, so wildcards are escaped with LIKE's
+        // default backslash instead of likePattern()'s '!'.
+        $patterns = $this->postgresTextArray(array_map(
+            fn (string $term): string => '%'.addcslashes($term, '\\%_').'%',
+            $terms,
+        ));
+
+        $query->whereRaw('LOWER(channel_id) LIKE ANY (CAST(? AS text[]))', [$patterns])
+            ->orWhereRaw('LOWER(name) LIKE ANY (CAST(? AS text[]))', [$patterns])
+            ->orWhereRaw('LOWER(display_name) LIKE ANY (CAST(? AS text[]))', [$patterns])
+            ->orWhereRaw('(additional_display_names IS NOT NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(additional_display_names) AS elem WHERE LOWER(elem) LIKE ANY (CAST(? AS text[]))))', [$patterns]);
+
+        if ($trigramMatchingEnabled && $this->trigramAvailable()) {
+            $words = $this->postgresTextArray(array_map(fn (string $term): string => mb_strtolower($term, 'UTF-8'), $terms));
+
+            $query->orWhereRaw('LOWER(channel_id) % ANY (CAST(? AS text[]))', [$words])
+                ->orWhereRaw('LOWER(name) % ANY (CAST(? AS text[]))', [$words])
+                ->orWhereRaw('LOWER(display_name) % ANY (CAST(? AS text[]))', [$words]);
+        }
     }
 
     /**
@@ -377,8 +510,8 @@ class SimilaritySearchService
     /**
      * Narrow a batch prefetch (loadEpgCandidates) to what this channel's own
      * query would return: rows matching at least one of its search terms,
-     * ranked like that query (source priority, terms matched, id) and capped
-     * at MAX_DATABASE_CANDIDATES. Scoring every channel against the whole
+     * capped at MAX_DATABASE_CANDIDATES by that query's ranking (source
+     * priority, terms matched, id). Scoring every channel against the whole
      * batch instead was slower and let other channels' candidates win
      * (e.g. "Tennis 49: NO EVENT" -> "EVENT 49").
      *
@@ -388,32 +521,47 @@ class SimilaritySearchService
      */
     private function candidatesMatchingTerms(Epg $epg, Collection $candidates, array $searchTerms): Collection
     {
-        $this->candidateTerms ??= new WeakMap;
-        $priority = array_flip($epg->matchableEpgIds());
-        $ranked = [];
+        $index = $this->prefetchIndex($candidates);
 
-        foreach ($candidates as $candidate) {
-            $this->candidateTerms[$candidate] ??= ['text' => $this->searchableText($candidate), 'trigram_terms' => []];
-            ['text' => $text, 'trigram_terms' => $trigramTerms] = $this->candidateTerms[$candidate];
+        // How many of this channel's terms each candidate (by position) matches
+        $matched = [];
+        foreach ($searchTerms as $term) {
+            $index->termHits[$term] ??= $this->termPositions($index, $term);
 
-            $matched = 0;
-            foreach ($searchTerms as $term) {
-                if (str_contains($text, $term) || isset($trigramTerms[$term])) {
-                    $matched++;
-                }
-            }
-
-            if ($matched > 0) {
-                $ranked[] = [
-                    'rank' => [$priority[$candidate->epg_id] ?? PHP_INT_MAX, -$matched, $candidate->id],
-                    'candidate' => $candidate,
-                ];
+            foreach ($index->termHits[$term] as $position) {
+                $matched[$position] = ($matched[$position] ?? 0) + 1;
             }
         }
 
-        usort($ranked, fn (array $first, array $second): int => $first['rank'] <=> $second['rank']);
+        $positions = array_keys($matched);
 
-        return new Collection(array_column(array_slice($ranked, 0, self::MAX_DATABASE_CANDIDATES), 'candidate'));
+        // Scoring orders its own results (confidence, then id), so the order
+        // here only matters for which candidates survive the cap: the same
+        // ones the per-channel query's ORDER BY ... LIMIT would keep.
+        if (count($positions) > self::MAX_DATABASE_CANDIDATES) {
+            if ($index->priorities === null) {
+                $priority = array_flip($epg->matchableEpgIds());
+                $index->priorities = array_map(fn (EpgChannel $model): int => $priority[$model->epg_id] ?? PHP_INT_MAX, $index->models);
+            }
+
+            $priorities = [];
+            $ids = [];
+            foreach ($positions as $position) {
+                $priorities[] = $index->priorities[$position];
+                $ids[] = $index->ids[$position];
+            }
+            $counts = array_values($matched);
+
+            array_multisort(
+                $priorities, SORT_ASC, SORT_NUMERIC,
+                $counts, SORT_DESC, SORT_NUMERIC,
+                $ids, SORT_ASC, SORT_NUMERIC,
+                $positions,
+            );
+            $positions = array_slice($positions, 0, self::MAX_DATABASE_CANDIDATES);
+        }
+
+        return new Collection(array_map(fn (int $position): EpgChannel => $index->models[$position], $positions));
     }
 
     /**
@@ -489,14 +637,19 @@ class SimilaritySearchService
         ?Collection $prefetchedCandidates = null,
         bool $trigramMatchingEnabled = false,
     ): array {
-        $this->removeQualityIndicators = $removeQualityIndicators;
-        $this->upperFuzzyThreshold = $fuzzyMaxDistance;
-        $this->bestFuzzyThreshold = $exactMatchDistance;
-
-        $this->qualityIndicators = array_map(
+        $qualityIndicators = array_map(
             'mb_strtolower',
             $customQualityIndicators ?? self::DEFAULT_QUALITY_INDICATORS,
         );
+
+        if ($removeQualityIndicators !== $this->removeQualityIndicators || $qualityIndicators !== $this->qualityIndicators) {
+            $this->normalizedNames = [];
+        }
+
+        $this->removeQualityIndicators = $removeQualityIndicators;
+        $this->qualityIndicators = $qualityIndicators;
+        $this->upperFuzzyThreshold = $fuzzyMaxDistance;
+        $this->bestFuzzyThreshold = $exactMatchDistance;
 
         $title = $this->sanitizeUtf8($cleanedTitle ?? $channel->title_custom ?? $channel->title);
         $name = $this->sanitizeUtf8($cleanedName ?? $channel->name_custom ?? $channel->name);
@@ -588,13 +741,13 @@ class SimilaritySearchService
                     $bestComparison['distance'] - self::PREFERRED_REGION_DISTANCE_BONUS,
                 );
                 $bestComparison['confidence'] = min(100, $bestComparison['confidence'] + 5);
-                $bestComparison['reason'] .= __('; preferred region');
             }
 
             $scoredCandidates[] = [
                 'model' => $epgChannel,
                 'epg_channel_id' => $epgChannel->id,
                 'display_name' => $epgChannel->display_name ?: $epgChannel->name ?: $epgChannel->channel_id,
+                'preferred_region' => $inPreferredRegion,
                 ...$bestComparison,
             ];
         }
@@ -621,9 +774,14 @@ class SimilaritySearchService
         }
 
         $reviewCandidates = array_map(
-            fn (array $candidate): array => collect($candidate)
-                ->except(['model', 'distance', 'levenshtein_confidence', 'word_similarity', 'is_exact'])
-                ->all(),
+            fn (array $candidate): array => [
+                'epg_channel_id' => $candidate['epg_channel_id'],
+                'display_name' => $candidate['display_name'],
+                'matched_value' => $candidate['matched_value'],
+                'normalized_value' => $candidate['normalized_value'],
+                'confidence' => $candidate['confidence'],
+                'reason' => $this->comparisonReason($candidate['reason'], $candidate['field'], $candidate['preferred_region']),
+            ],
             array_slice($scoredCandidates, 0, self::MAX_REVIEW_CANDIDATES),
         );
 
@@ -639,7 +797,23 @@ class SimilaritySearchService
     }
 
     /**
-     * @return array{matched_value: string, normalized_value: string, confidence: int, reason: string, distance: int, levenshtein_confidence: int, word_similarity: float, is_exact: bool}|null
+     * The review text for a candidate's best comparison. Translated only for
+     * the few candidates a result returns, not for every comparison scored.
+     */
+    private function comparisonReason(string $reason, string $field, bool $preferredRegion): string
+    {
+        $text = match ($reason) {
+            'exact' => __('Exact normalized :field', ['field' => $field]),
+            'words' => __('Same normalized words via :field', ['field' => $field]),
+            'containment' => __('Strong normalized containment via :field', ['field' => $field]),
+            default => __('Similar normalized :field', ['field' => $field]),
+        };
+
+        return $preferredRegion ? $text.__('; preferred region') : $text;
+    }
+
+    /**
+     * @return array{matched_value: string, normalized_value: string, confidence: int, reason: 'similar'|'exact'|'words'|'containment', field: string, distance: int, levenshtein_confidence: int, word_similarity: float, is_exact: bool}|null
      */
     private function compareNormalizedValues(string $normalizedChannel, mixed $candidateValue, string $field): ?array
     {
@@ -662,19 +836,19 @@ class SimilaritySearchService
             $this->textToVector($normalizedCandidate),
         );
         $confidence = $levenshteinConfidence;
-        $reason = __('Similar normalized :field', ['field' => $field]);
+        $reason = 'similar';
         $isExact = $compactChannel === $compactCandidate;
 
         if ($isExact) {
             $confidence = 100;
-            $reason = __('Exact normalized :field', ['field' => $field]);
+            $reason = 'exact';
         } elseif ($wordSimilarity >= $this->embedSimThreshold) {
             $confidence = max($confidence, (int) round($wordSimilarity * 100));
-            $reason = __('Same normalized words via :field', ['field' => $field]);
+            $reason = 'words';
         } elseif (min(strlen($compactChannel), strlen($compactCandidate)) >= 4
             && (str_contains($compactChannel, $compactCandidate) || str_contains($compactCandidate, $compactChannel))) {
             $confidence = max($confidence, 80);
-            $reason = __('Strong normalized containment via :field', ['field' => $field]);
+            $reason = 'containment';
         }
 
         return [
@@ -682,6 +856,7 @@ class SimilaritySearchService
             'normalized_value' => $normalizedCandidate,
             'confidence' => $confidence,
             'reason' => $reason,
+            'field' => $field,
             'distance' => $distance,
             'levenshtein_confidence' => $levenshteinConfidence,
             'word_similarity' => $wordSimilarity,
@@ -697,6 +872,12 @@ class SimilaritySearchService
         if (! $name) {
             return '';
         }
+
+        if (isset($this->normalizedNames[$name])) {
+            return $this->normalizedNames[$name];
+        }
+
+        $original = $name;
 
         // Normalize Unicode compatibility characters (e.g. "ʀᴀᴡ" → "raw", "ＨＤ" → "HD")
         $normalized = \Normalizer::normalize($name, \Normalizer::NFKC);
@@ -725,7 +906,11 @@ class SimilaritySearchService
             $tokens = array_values(array_diff($tokens, $this->qualityIndicators));
         }
 
-        return trim(implode(' ', $tokens));
+        if (count($this->normalizedNames) >= self::MAX_NORMALIZED_NAMES) {
+            $this->normalizedNames = [];
+        }
+
+        return $this->normalizedNames[$original] = trim(implode(' ', $tokens));
     }
 
     /**
@@ -885,8 +1070,10 @@ class SimilaritySearchService
         $likeTerm = $this->likePattern($term);
 
         return match ($driver) {
+            // The IS NOT NULL guards skip the per-row subquery for the (usually
+            // most) rows with no alternate names; it can't match those anyway.
             'pgsql' => [
-                "EXISTS (SELECT 1 FROM jsonb_array_elements_text(additional_display_names) AS elem WHERE LOWER(elem) LIKE ? ESCAPE '!')",
+                "(additional_display_names IS NOT NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(additional_display_names) AS elem WHERE LOWER(elem) LIKE ? ESCAPE '!'))",
                 [$likeTerm],
             ],
             'mysql', 'mariadb' => [
@@ -894,7 +1081,7 @@ class SimilaritySearchService
                 [$likeTerm],
             ],
             'sqlite' => [
-                "EXISTS (SELECT 1 FROM json_each(additional_display_names) WHERE LOWER(json_each.value) LIKE ? ESCAPE '!')",
+                "(additional_display_names IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(additional_display_names) WHERE LOWER(json_each.value) LIKE ? ESCAPE '!'))",
                 [$likeTerm],
             ],
             default => [
