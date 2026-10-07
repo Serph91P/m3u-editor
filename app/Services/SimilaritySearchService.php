@@ -8,13 +8,19 @@ use App\Models\EpgChannel;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
+use WeakMap;
 
 /**
  * Service to handle similarity search between channels and EPG channels.
  */
 class SimilaritySearchService
 {
+    /** @var list<string> */
+    private const CANDIDATE_COLUMNS = ['id', 'channel_id', 'name', 'display_name', 'additional_display_names', 'epg_id'];
+
     private const MAX_DATABASE_CANDIDATES = 250;
+
+    private const MAX_PREFETCH_TERMS = 200;
 
     private const MAX_REVIEW_CANDIDATES = 3;
 
@@ -120,6 +126,15 @@ class SimilaritySearchService
      * risking a stale answer surviving across separate requests/jobs.
      */
     private ?bool $trigramAvailable = null;
+
+    /**
+     * What candidatesMatchingTerms needs per prefetched candidate: its
+     * searchable text and the terms Postgres matched it to by trigram.
+     * Weakly keyed, so entries go away with the prefetched models.
+     *
+     * @var WeakMap<EpgChannel, array{text: string, trigram_terms: array<string, true>}>|null
+     */
+    private ?WeakMap $candidateTerms = null;
 
     /**
      * Apply the map's configured prefix or regex cleanup before any matching strategy runs.
@@ -258,7 +273,9 @@ class SimilaritySearchService
      * Intended for batch flows that iterate many channels against the same EPG
      * source: pass the union of every channel's searchTermsFor() result, then
      * feed the returned collection to findEpgChannelCandidates() via the
-     * $prefetchedCandidates argument to skip per-channel DB round-trips.
+     * $prefetchedCandidates argument to skip per-channel DB round-trips. Each
+     * channel is then only scored against the rows its own terms found (see
+     * candidatesMatchingTerms), exactly as its own query would have.
      *
      * @param  list<string>  $unionTerms
      * @return Collection<int, EpgChannel>
@@ -268,20 +285,70 @@ class SimilaritySearchService
         $unionTerms = collect($unionTerms)
             ->filter(fn (string $term): bool => mb_strlen($term, 'UTF-8') >= $this->minChannelLength)
             ->unique()
-            ->take(200)
             ->values()
             ->all();
 
         if ($unionTerms === []) {
             return $this->dedupeByPriority(
                 $epg,
-                $epg->matchableChannels()->select('id', 'channel_id', 'name', 'display_name', 'additional_display_names', 'epg_id')->get(),
+                $epg->matchableChannels()->select(self::CANDIDATE_COLUMNS)->get(),
             );
         }
 
-        $candidates = $epg->matchableChannels()
-            ->where(function (Builder $query) use ($unionTerms, $trigramMatchingEnabled): void {
-                foreach ($unionTerms as $term) {
+        $trigramActive = $trigramMatchingEnabled && $this->trigramAvailable();
+        $candidates = [];
+        $trigramTerms = [];
+
+        // Batched rather than truncated, so every term is covered even when a
+        // caller (like the candidate review) passes a whole map's channels.
+        foreach (array_chunk($unionTerms, self::MAX_PREFETCH_TERMS) as $terms) {
+            $query = $this->candidateQuery($epg, $terms, $trigramMatchingEnabled);
+
+            if ($trigramActive) {
+                // A LIKE match can be re-checked in PHP, but a trigram match
+                // can't, so ask Postgres which of these terms each row matched
+                // via the same `%` operator and threshold.
+                $query->selectRaw(
+                    'ARRAY(SELECT term.ordinal FROM unnest(CAST(? AS text[])) WITH ORDINALITY AS term(word, ordinal) WHERE LOWER(channel_id) % term.word OR LOWER(name) % term.word OR LOWER(display_name) % term.word) AS trigram_positions',
+                    [$this->postgresTextArray($terms)],
+                );
+            }
+
+            foreach ($query->get() as $candidate) {
+                $candidates[$candidate->id] ??= $candidate;
+
+                if ($trigramActive) {
+                    foreach (array_filter(explode(',', trim((string) $candidate->trigram_positions, '{}'))) as $position) {
+                        $trigramTerms[$candidate->id][$terms[(int) $position - 1]] = true;
+                    }
+                    unset($candidate->trigram_positions);
+                }
+            }
+        }
+
+        $this->candidateTerms ??= new WeakMap;
+        foreach ($candidates as $id => $candidate) {
+            $this->candidateTerms[$candidate] = [
+                'text' => $this->searchableText($candidate),
+                'trigram_terms' => $trigramTerms[$id] ?? [],
+            ];
+        }
+
+        return $this->dedupeByPriority($epg, new Collection(array_values($candidates)));
+    }
+
+    /**
+     * Matchable rows of this EPG that at least one term finds: by LIKE on
+     * channel_id, name, display_name or an alternate display name, or by
+     * pg_trgm similarity when enabled.
+     *
+     * @param  iterable<string>  $terms
+     */
+    private function candidateQuery(Epg $epg, iterable $terms, bool $trigramMatchingEnabled): Builder
+    {
+        return $epg->matchableChannels()
+            ->where(function (Builder $query) use ($terms, $trigramMatchingEnabled): void {
+                foreach ($terms as $term) {
                     $likeTerm = $this->likePattern($term);
                     $query->orWhereRaw("LOWER(channel_id) LIKE ? ESCAPE '!'", [$likeTerm])
                         ->orWhereRaw("LOWER(name) LIKE ? ESCAPE '!'", [$likeTerm])
@@ -290,10 +357,77 @@ class SimilaritySearchService
                     $this->addTrigramSearchCondition($query, $term, $trigramMatchingEnabled);
                 }
             })
-            ->select('id', 'channel_id', 'name', 'display_name', 'additional_display_names', 'epg_id')
-            ->get();
+            ->select(self::CANDIDATE_COLUMNS);
+    }
 
-        return $this->dedupeByPriority($epg, $candidates);
+    /**
+     * Encode values as a Postgres text[] literal (each one quoted and
+     * escaped), so a list of terms can be bound as a single parameter
+     * instead of interpolated into the SQL.
+     *
+     * @param  list<string>  $values
+     */
+    private function postgresTextArray(array $values): string
+    {
+        $quotedValues = array_map(fn (string $value): string => '"'.addcslashes($value, '"\\').'"', $values);
+
+        return '{'.implode(',', $quotedValues).'}';
+    }
+
+    /**
+     * Narrow a batch prefetch (loadEpgCandidates) to what this channel's own
+     * query would return: rows matching at least one of its search terms,
+     * ranked like that query (source priority, terms matched, id) and capped
+     * at MAX_DATABASE_CANDIDATES. Scoring every channel against the whole
+     * batch instead was slower and let other channels' candidates win
+     * (e.g. "Tennis 49: NO EVENT" -> "EVENT 49").
+     *
+     * @param  Collection<int, EpgChannel>  $candidates
+     * @param  list<string>  $searchTerms
+     * @return Collection<int, EpgChannel>
+     */
+    private function candidatesMatchingTerms(Epg $epg, Collection $candidates, array $searchTerms): Collection
+    {
+        $this->candidateTerms ??= new WeakMap;
+        $priority = array_flip($epg->matchableEpgIds());
+        $ranked = [];
+
+        foreach ($candidates as $candidate) {
+            $this->candidateTerms[$candidate] ??= ['text' => $this->searchableText($candidate), 'trigram_terms' => []];
+            ['text' => $text, 'trigram_terms' => $trigramTerms] = $this->candidateTerms[$candidate];
+
+            $matched = 0;
+            foreach ($searchTerms as $term) {
+                if (str_contains($text, $term) || isset($trigramTerms[$term])) {
+                    $matched++;
+                }
+            }
+
+            if ($matched > 0) {
+                $ranked[] = [
+                    'rank' => [$priority[$candidate->epg_id] ?? PHP_INT_MAX, -$matched, $candidate->id],
+                    'candidate' => $candidate,
+                ];
+            }
+        }
+
+        usort($ranked, fn (array $first, array $second): int => $first['rank'] <=> $second['rank']);
+
+        return new Collection(array_column(array_slice($ranked, 0, self::MAX_DATABASE_CANDIDATES), 'candidate'));
+    }
+
+    /**
+     * The lowercased fields the candidate LIKE conditions search, joined by
+     * newlines so a term (letters and digits only) can't match across two.
+     */
+    private function searchableText(EpgChannel $candidate): string
+    {
+        return mb_strtolower(implode("\n", [
+            $candidate->channel_id,
+            $candidate->name,
+            $candidate->display_name,
+            ...($candidate->additional_display_names ?? []),
+        ]), 'UTF-8');
     }
 
     /**
@@ -392,24 +526,13 @@ class SimilaritySearchService
         }
 
         if ($prefetchedCandidates !== null) {
-            $databaseCandidates = $prefetchedCandidates;
+            $databaseCandidates = $this->candidatesMatchingTerms($epg, $prefetchedCandidates, $searchTerms->all());
         } else {
             [$relevanceSql, $relevanceBindings] = $this->candidateRelevanceOrder($searchTerms->all(), $trigramMatchingEnabled);
 
             $databaseCandidates = $this->dedupeByPriority(
                 $epg,
-                $epg->matchableChannels()
-                    ->where(function (Builder $query) use ($searchTerms, $trigramMatchingEnabled): void {
-                        foreach ($searchTerms as $term) {
-                            $likeTerm = $this->likePattern($term);
-                            $query->orWhereRaw("LOWER(channel_id) LIKE ? ESCAPE '!'", [$likeTerm])
-                                ->orWhereRaw("LOWER(name) LIKE ? ESCAPE '!'", [$likeTerm])
-                                ->orWhereRaw("LOWER(display_name) LIKE ? ESCAPE '!'", [$likeTerm]);
-                            $this->addJsonSearchCondition($query, $term);
-                            $this->addTrigramSearchCondition($query, $term, $trigramMatchingEnabled);
-                        }
-                    })
-                    ->select('id', 'channel_id', 'name', 'display_name', 'additional_display_names', 'epg_id')
+                $this->candidateQuery($epg, $searchTerms, $trigramMatchingEnabled)
                     ->orderByRaw("{$relevanceSql} DESC", $relevanceBindings)
                     ->orderBy('id')
                     ->limit(self::MAX_DATABASE_CANDIDATES)
