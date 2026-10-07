@@ -185,9 +185,10 @@ class SimilaritySearchService
      * Extract the matcher-relevant fields from an EpgMap's persisted settings.
      *
      * Centralizes the settings→parameter mapping so a channel gets identical
-     * candidates and automatic-match decisions from the mapping job and the
-     * Copilot preview tool for the same EpgMap, instead of the tool silently
-     * using its own hardcoded defaults.
+     * candidates and automatic-match decisions from the mapping job, the
+     * candidate review and the Copilot preview tool for the same EpgMap.
+     * An empty custom quality indicator list (what the form saves when left
+     * empty) means the built-in defaults, as the form's helper text says.
      *
      * @param  array<string, mixed>  $settings
      * @return array{
@@ -206,7 +207,7 @@ class SimilaritySearchService
             'similarity_threshold' => $settings['similarity_threshold'] ?? 70,
             'fuzzy_max_distance' => $settings['fuzzy_max_distance'] ?? 25,
             'exact_match_distance' => $settings['exact_match_distance'] ?? 8,
-            'quality_indicators' => $settings['quality_indicators'] ?? null,
+            'quality_indicators' => ($settings['quality_indicators'] ?? null) ?: null,
             'trigram_matching_enabled' => $settings['trigram_matching_enabled'] ?? false,
         ];
     }

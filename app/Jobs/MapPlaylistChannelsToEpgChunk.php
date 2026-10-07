@@ -176,12 +176,7 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
         // Resolve every deferred channel against one prefetched candidate
         // set for the whole chunk, instead of a per-channel DB round-trip.
         if (! empty($pendingSimilarity)) {
-            $removeQualityIndicators = $this->settings['remove_quality_indicators'] ?? false;
-            $similarityThreshold = $this->settings['similarity_threshold'] ?? 70;
-            $fuzzyMaxDistance = $this->settings['fuzzy_max_distance'] ?? 25;
-            $exactMatchDistance = $this->settings['exact_match_distance'] ?? 8;
-            $customQualityIndicators = $this->settings['quality_indicators'] ?? null;
-            $trigramMatchingEnabled = $this->settings['trigram_matching_enabled'] ?? false;
+            $options = $this->similaritySearch->matcherOptionsFromSettings($this->settings);
 
             $unionTerms = collect($pendingSimilarity)
                 ->flatMap(fn (array $pending): array => $this->similaritySearch->searchTermsFor(
@@ -192,23 +187,23 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
                 ->unique()
                 ->values()
                 ->all();
-            $prefetchedCandidates = $this->similaritySearch->loadEpgCandidates($epg, $unionTerms, $trigramMatchingEnabled);
+            $prefetchedCandidates = $this->similaritySearch->loadEpgCandidates($epg, $unionTerms, $options['trigram_matching_enabled']);
 
             foreach ($pendingSimilarity as $pending) {
                 $epgChannel = $this->similaritySearch->findMatchingEpgChannel(
-                    $pending['channel'],
-                    $epg,
-                    $removeQualityIndicators,
-                    $similarityThreshold,
-                    $fuzzyMaxDistance,
-                    $exactMatchDistance,
-                    $customQualityIndicators ?: null,
+                    channel: $pending['channel'],
+                    epg: $epg,
+                    removeQualityIndicators: $options['remove_quality_indicators'],
+                    similarityThreshold: $options['similarity_threshold'],
+                    fuzzyMaxDistance: $options['fuzzy_max_distance'],
+                    exactMatchDistance: $options['exact_match_distance'],
+                    customQualityIndicators: $options['quality_indicators'],
                     // Pass the prefix/pattern-cleaned values so the similarity
                     // search honors the map's exclude settings (issue #1265)
                     cleanedTitle: $pending['cleaned_title'],
                     cleanedName: $pending['cleaned_name'],
                     prefetchedCandidates: $prefetchedCandidates,
-                    trigramMatchingEnabled: $trigramMatchingEnabled,
+                    trigramMatchingEnabled: $options['trigram_matching_enabled'],
                 );
 
                 if ($epgChannel) {
