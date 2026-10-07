@@ -389,6 +389,13 @@ return [
         '4b62ac19b9b5', // channels query (live/vod split)
         '71f612830296', // series + episodes queries (COUNT(*) per bucket)
 
+        // BenchmarkEpgMapping::explainSlowestQueries (epg:benchmark-mapping
+        // --explain, a local CLI-only command): prefixes EXPLAIN to SQL captured
+        // from the app's own QueryExecuted events, i.e. statements the query
+        // builder already compiled with ? placeholders. Their values are passed
+        // back as bindings, never interpolated. No request/user input reaches it.
+        '785553ec1889',
+
         // ── XSS — controlled server-side rendering ───────────────────────────
         // regex-tester.blade.php: {!! !!} renders output from a Livewire
         // component method — content is generated server-side, not from raw
