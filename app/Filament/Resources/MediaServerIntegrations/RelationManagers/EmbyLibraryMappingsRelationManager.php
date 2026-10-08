@@ -937,44 +937,65 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             ]);
         }
 
-        $path = $this->managedLibraryPath($root, $name);
-        if (! MediaServerIntegration::isSafeWritablePath($path)) {
+        $lifecycle = app(EmbyManagedSetupService::class);
+        $prepared = $lifecycle->prepareLibrary($this->ownerRecord, $name, $collectionType);
+        if (! $prepared['success'] || ! is_string($prepared['path'])) {
             throw ValidationException::withMessages([
-                'destination' => __('Choose a valid new Emby library.'),
+                'destination' => __($prepared['message']),
             ]);
         }
+
+        $path = $prepared['path'];
+        $matchingManagedMappings = $this->ownerRecord->embyLibraryMappings()
+            ->where('is_managed', true)
+            ->where('target_library_name', $name)
+            ->where('collection_type', $collectionType);
+        $knownLibraryId = (clone $matchingManagedMappings)
+            ->whereNotNull('target_library_id')
+            ->value('target_library_id');
+        $createWasAlreadyRequested = $knownLibraryId !== null
+            || (clone $matchingManagedMappings)->whereNotNull('library_create_requested_at')->exists();
         $result = MediaServerService::make($this->ownerRecord)->createLibrary(
             $name,
             $collectionType,
             [$path],
             false,
+            $knownLibraryId,
+            createIfMissing: ! $createWasAlreadyRequested,
         );
         $libraryId = $result['library']['id'] ?? null;
-        if (! $result['success']) {
+        $createIsAmbiguous = ! $result['success'] && $result['created'];
+        if (! $result['success'] && ! $createIsAmbiguous) {
+            $aborted = $lifecycle->abortLibrary(
+                $this->ownerRecord,
+                $prepared['operation_id'],
+                $path,
+            );
+            $message = $aborted['success']
+                ? __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.')
+                : __('Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.');
             throw ValidationException::withMessages([
-                'destination' => __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.'),
+                'destination' => $message,
             ]);
         }
 
+        $libraryIsConfirmed = is_string($libraryId) && $libraryId !== '';
+        $committed = $libraryIsConfirmed
+            ? $lifecycle->commitLibrary(
+                $this->ownerRecord,
+                $prepared['operation_id'],
+                $path,
+            )
+            : ['success' => false];
+
         return [
-            'library_id' => is_string($libraryId) && $libraryId !== '' ? $libraryId : null,
+            'library_id' => $libraryIsConfirmed ? $libraryId : null,
             'name' => $name,
             'collection_type' => $collectionType,
             'path' => $path,
             'managed' => true,
-            'pending' => ! is_string($libraryId) || $libraryId === '',
+            'pending' => ! $libraryIsConfirmed || ! $committed['success'],
         ];
-    }
-
-    private function managedLibraryPath(string $root, string $name): string
-    {
-        $separator = str_contains($root, '\\') ? '\\' : '/';
-        $directory = Str::slug($name);
-        if ($directory === '') {
-            $directory = 'library-'.substr(hash('sha256', $name), 0, 12);
-        }
-
-        return rtrim($root, '/\\').$separator.$directory;
     }
 
     /**
@@ -1530,7 +1551,6 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         if ($targetLibraryId !== $mapping->target_library_id) {
             $mapping->updateQuietly([
                 'target_library_id' => $targetLibraryId,
-                'library_create_requested_at' => null,
             ]);
             $mapping->refresh();
         }
@@ -1574,6 +1594,42 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             return;
         }
 
+        if ($mapping->is_managed && $mapping->library_create_requested_at !== null) {
+            $preparedPath = $this->lifecyclePreparedPath($mapping->output_path, $mapping->collection_type);
+            if ($preparedPath !== null) {
+                $lifecycle = app(EmbyManagedSetupService::class);
+                $committed = $lifecycle->commitLibrary(
+                    $this->ownerRecord,
+                    $lifecycle->libraryOperationId(
+                        $this->ownerRecord,
+                        $mapping->target_library_name,
+                        $mapping->collection_type,
+                    ),
+                    $preparedPath,
+                );
+                if (! $committed['success']) {
+                    $mapping->updateQuietly([
+                        'last_planned_revision' => null,
+                        'status' => 'pending',
+                        'status_summary' => __('Pending'),
+                        'error_summary' => EmbyLibraryMapping::redactSummary($committed['message']),
+                    ]);
+                    Notification::make()
+                        ->warning()
+                        ->title(__('Pending'))
+                        ->body(__($committed['message']))
+                        ->send();
+
+                    return;
+                }
+            }
+
+            $mapping->updateQuietly([
+                'library_create_requested_at' => null,
+            ]);
+            $mapping->refresh();
+        }
+
         $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
         $mapping->updateQuietly([
             'last_planned_revision' => $catalog['revision'],
@@ -1586,5 +1642,26 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             ->title(__('Managed library plan updated'))
             ->body(Str::limit($catalog['revision'], 12, ''))
             ->send();
+    }
+
+    private function lifecyclePreparedPath(string $path, string $collectionType): ?string
+    {
+        $root = $this->ownerRecord->emby_managed_setup_root;
+        if (! is_string($root)
+            || ! MediaServerIntegration::isSafeWritablePath($path)
+            || ! MediaServerIntegration::isPathWithinWritableRoot($path, $root)) {
+            return null;
+        }
+
+        $normalizedPath = rtrim(str_replace('\\', '/', $path), '/');
+        $normalizedRoot = rtrim(str_replace('\\', '/', $root), '/');
+        $relativePath = substr($normalizedPath, strlen($normalizedRoot) + 1);
+        $preparedDirectory = explode('/', $relativePath, 2)[0] ?? '';
+
+        if (preg_match('/^'.preg_quote($collectionType, '/').'-[0-9a-f]{24}$/i', $preparedDirectory) !== 1) {
+            return null;
+        }
+
+        return $normalizedRoot.'/'.$preparedDirectory;
     }
 }

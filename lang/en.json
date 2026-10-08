@@ -3420,6 +3420,7 @@
     "Email variables": "Email variables",
     "Emby": "Emby",
     "Emby could not create the managed library. Retry after checking the companion version and administrator credential.": "Emby could not create the managed library. Retry after checking the companion version and administrator credential.",
+    "Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.": "Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.",
     "Emby is not ready for managed setup. Check the companion configuration, then retry.": "Emby is not ready for managed setup. Check the companion configuration, then retry.",
     "Emby library": "Emby library",
     "Emby library configuration differs from this mapping.": "Emby library configuration differs from this mapping.",
