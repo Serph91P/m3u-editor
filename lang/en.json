@@ -4222,6 +4222,7 @@
     "Managed": "Managed",
     "Managed Libraries": "Managed Libraries",
     "Managed library cleanup completed": "Managed library cleanup completed",
+    "Managed library cleanup is pending. Retry after cleanup completes.": "Managed library cleanup is pending. Retry after cleanup completes.",
     "Managed library configuration drifted": "Managed library configuration drifted",
     "Managed library plan updated": "Managed library plan updated",
     "Managed library reconcile failed": "Managed library reconcile failed",

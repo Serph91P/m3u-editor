@@ -946,6 +946,18 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             ]);
         }
 
+        $cleanupIsPending = $this->ownerRecord->embyLibraryMappings()
+            ->where('is_managed', true)
+            ->where('target_library_name', $name)
+            ->where('collection_type', $collectionType)
+            ->where('status', 'cleanup_pending')
+            ->exists();
+        if ($cleanupIsPending) {
+            throw ValidationException::withMessages([
+                'destination' => __('Managed library cleanup is pending. Retry after cleanup completes.'),
+            ]);
+        }
+
         $lifecycle = app(EmbyManagedSetupService::class);
         $prepared = $lifecycle->prepareLibrary($this->ownerRecord, $name, $collectionType);
         if (! $prepared['success'] || ! is_string($prepared['path'])) {

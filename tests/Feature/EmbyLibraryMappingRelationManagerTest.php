@@ -1047,6 +1047,164 @@ it('durably retries cleanup after Emby rejects creation and the first abort fail
         ->and($operationIds[0])->toBe($operationIds[1], $operationIds[2]);
 });
 
+it('rejects another source while managed library cleanup is pending and allows it after cleanup', function () {
+    config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $firstGroup = Group::factory()->for($user)->for($playlist)->create(['name' => 'Action', 'type' => 'vod']);
+    $secondGroup = Group::factory()->for($user)->for($playlist)->create(['name' => 'Drama', 'type' => 'vod']);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    Http::preventStrayRequests();
+    $preparedPath = '/srv/emby/managed/movies-0123456789abcdef01234567';
+    $prepareRequests = 0;
+    $createRequests = 0;
+    $inventoryRequests = 0;
+    $abortRequests = 0;
+    $commitRequests = 0;
+    $operationIds = [];
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => function (Request $request) use (&$prepareRequests, &$operationIds, $integration, $preparedPath) {
+            $prepareRequests++;
+            $operationIds[] = $request->data()['OperationId'];
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'prepared',
+                'Success' => true,
+            ]);
+        },
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Abort' => function (Request $request) use (&$abortRequests, &$operationIds, $integration, $preparedPath) {
+            $abortRequests++;
+            $operationIds[] = $request->data()['OperationId'];
+
+            if ($abortRequests === 1) {
+                return Http::response(['detail' => 'emby-secret'], 500);
+            }
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'aborted',
+                'Success' => true,
+            ]);
+        },
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Commit' => function (Request $request) use (&$commitRequests, &$operationIds, $integration, $preparedPath) {
+            $commitRequests++;
+            $operationIds[] = $request->data()['OperationId'];
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'committed',
+                'Success' => true,
+            ]);
+        },
+        'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createRequests, &$inventoryRequests, $preparedPath) {
+            if ($request->method() === 'POST') {
+                $createRequests++;
+
+                return $createRequests === 1
+                    ? Http::response(['detail' => 'emby-secret'], 401)
+                    : Http::response([], 204);
+            }
+
+            $inventoryRequests++;
+
+            return $inventoryRequests < 3
+                ? Http::response([])
+                : Http::response([[
+                    'ItemId' => 'managed-library-1',
+                    'Name' => 'Managed Movies',
+                    'CollectionType' => 'movies',
+                    'Locations' => [$preparedPath],
+                ]]);
+        },
+    ]);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$firstGroup->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertNotified();
+
+    $cleanupIntent = EmbyLibraryMapping::query()->sole();
+    expect($cleanupIntent->status)->toBe('cleanup_pending')
+        ->and($cleanupIntent->source_identifier)->toBe((string) $firstGroup->id);
+
+    foreach (range(1, 2) as $_attempt) {
+        Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+            'ownerRecord' => $integration->fresh(),
+            'pageClass' => EditMediaServerIntegration::class,
+        ])->callAction(TestAction::make('create')->table(), [
+            'publication_type' => 'movies',
+            'sources' => ['vod:'.$secondGroup->id],
+            'destination' => '__new__',
+            'new_library_name' => 'Managed Movies',
+        ])->assertHasActionErrors([
+            'destination' => 'Managed library cleanup is pending. Retry after cleanup completes.',
+        ]);
+    }
+
+    expect(EmbyLibraryMapping::query()->sole()->is($cleanupIntent))->toBeTrue()
+        ->and($prepareRequests)->toBe(1)
+        ->and($createRequests)->toBe(1)
+        ->and($abortRequests)->toBe(1);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration->fresh(),
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('reconcile')->table($cleanupIntent->fresh()))
+        ->assertNotified();
+
+    expect(EmbyLibraryMapping::query()->count())->toBe(0)
+        ->and($createRequests)->toBe(1)
+        ->and($abortRequests)->toBe(2);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration->fresh(),
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$secondGroup->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasNoActionErrors();
+
+    $publishedMapping = EmbyLibraryMapping::query()->sole();
+    expect($publishedMapping->source_identifier)->toBe((string) $secondGroup->id)
+        ->and($publishedMapping->status)->toBe('planned')
+        ->and($prepareRequests)->toBe(2)
+        ->and($createRequests)->toBe(2)
+        ->and($abortRequests)->toBe(2)
+        ->and($commitRequests)->toBe(1)
+        ->and($operationIds)->each->toBe($operationIds[0]);
+});
+
 it('creates an owned mapping from eligible unified source and destination choices', function () {
     config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
