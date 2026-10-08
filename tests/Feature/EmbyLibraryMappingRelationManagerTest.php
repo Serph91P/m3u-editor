@@ -1465,9 +1465,8 @@ it('persists managed create intent before the Emby post and reconciles in a fres
                     && $intent->library_create_requested_at !== null
                     && $intent->output_path === $preparedPath
                     && $intent->status === 'pending';
-                DB::unprepared("CREATE TRIGGER fail_emby_mapping_update BEFORE UPDATE ON emby_library_mappings BEGIN SELECT RAISE(FAIL, 'simulated persistence failure'); END");
 
-                return Http::response([], 204);
+                throw new Error('simulated persistence failure after Emby accepted the request');
             }
 
             return Http::response($inventoryReady ? [[
@@ -1504,7 +1503,6 @@ it('persists managed create intent before the Emby post and reconciles in a fres
         ->and($abortRequests)->toBe(0)
         ->and($commitRequests)->toBe(0);
 
-    DB::unprepared('DROP TRIGGER fail_emby_mapping_update');
     $inventoryReady = true;
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration->fresh(),
@@ -1562,7 +1560,14 @@ it('does not post to Emby when durable create intent persistence fails', functio
             return Http::response([], 200);
         },
     ]);
-    DB::unprepared("CREATE TRIGGER fail_emby_mapping_insert BEFORE INSERT ON emby_library_mappings BEGIN SELECT RAISE(FAIL, 'simulated intent persistence failure'); END");
+    $failIntentPersistence = true;
+    EmbyLibraryMapping::creating(function () use (&$failIntentPersistence): void {
+        if ($failIntentPersistence) {
+            $failIntentPersistence = false;
+
+            throw new RuntimeException('simulated intent persistence failure');
+        }
+    });
 
     try {
         Livewire::test(EmbyLibraryMappingsRelationManager::class, [
@@ -1576,8 +1581,6 @@ it('does not post to Emby when durable create intent persistence fails', functio
         ]);
     } catch (Throwable $exception) {
         expect($exception->getMessage())->toContain('simulated intent persistence failure');
-    } finally {
-        DB::unprepared('DROP TRIGGER fail_emby_mapping_insert');
     }
 
     expect(EmbyLibraryMapping::query()->count())->toBe(0)
