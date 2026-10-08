@@ -72,6 +72,9 @@ class EpgCacheService
      */
     private array $programmeStores = [];
 
+    /** Maximum wait for sanctioned store replacement/removal coordination. */
+    protected int $programmeStoreLockTimeoutMs = 5000;
+
     /**
      * Get the cache directory path for an EPG
      */
@@ -195,7 +198,9 @@ class EpgCacheService
             $parseProgressCeiling = $hasDvr ? self::DVR_PROGRESS_START : 99;
 
             // Start by clearing existing cache
-            $this->clearCache($epg);
+            if (! $this->clearCache($epg)) {
+                return false;
+            }
             $cacheDir = $this->getCacheDir($epg);
             Storage::disk('local')->makeDirectory($cacheDir);
 
@@ -1026,7 +1031,12 @@ class EpgCacheService
             ]);
 
             // Delete current version directory
-            Storage::disk('local')->deleteDirectory($this->getCacheDir($epg));
+            $storePath = Storage::disk('local')->path($this->getCacheFilePath($epg, self::PROGRAMMES_DB_FILE));
+            EpgProgrammeStore::withExclusivePathLock(
+                $storePath,
+                fn (): bool => Storage::disk('local')->deleteDirectory($this->getCacheDir($epg)),
+                $this->programmeStoreLockTimeoutMs,
+            );
 
             // Also delete any legacy version directories so stale data is not left on disk
             foreach (self::PREVIOUS_CACHE_VERSIONS as $version) {
