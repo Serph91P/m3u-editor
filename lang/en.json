@@ -4221,6 +4221,7 @@
     "Manage your Plex server directly from m3u-editor - register DVR tuners, monitor sessions, and control libraries.": "Manage your Plex server directly from m3u-editor - register DVR tuners, monitor sessions, and control libraries.",
     "Managed": "Managed",
     "Managed Libraries": "Managed Libraries",
+    "Managed library cleanup completed": "Managed library cleanup completed",
     "Managed library configuration drifted": "Managed library configuration drifted",
     "Managed library plan updated": "Managed library plan updated",
     "Managed library reconcile failed": "Managed library reconcile failed",

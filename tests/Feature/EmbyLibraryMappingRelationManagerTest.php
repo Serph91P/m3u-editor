@@ -844,7 +844,7 @@ it('publishes to an existing Mixed Content library, taking collection_type from 
         ->output_path->toStartWith('/srv/emby/managed/everything/');
 });
 
-it('keeps confirmed setup while rolling back mapping state when Emby rejects library creation', function (int $status, int $abortStatus, string $expectedMessage) {
+it('keeps confirmed setup while rolling back mapping state when Emby rejects library creation', function (int $status, string $expectedMessage) {
     config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);
@@ -884,12 +884,8 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
                 'Success' => true,
             ]);
         },
-        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Abort' => function (Request $request) use (&$requestOrder, $abortStatus, $integration, $preparedPath) {
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Abort' => function (Request $request) use (&$requestOrder, $integration, $preparedPath) {
             $requestOrder[] = 'abort';
-
-            if ($abortStatus !== 200) {
-                return Http::response(['detail' => 'emby-secret'], $abortStatus);
-            }
 
             return Http::response([
                 'CapabilityVersion' => 1,
@@ -945,11 +941,111 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
 
     $component->assertMountedActionModalSee('Publish to Emby');
 })->with([
-    'bad request' => [400, 200, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential.'],
-    'unauthorized' => [401, 200, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential.'],
-    'forbidden' => [403, 200, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential.'],
-    'abort remains pending' => [401, 500, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.'],
+    'bad request' => [400, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential.'],
+    'unauthorized' => [401, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential.'],
+    'forbidden' => [403, 'Emby could not create the managed library. Retry after checking the companion version and administrator credential.'],
 ]);
+
+it('durably retries cleanup after Emby rejects creation and the first abort fails', function () {
+    config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    Http::preventStrayRequests();
+    $preparedPath = '/srv/emby/managed/movies-0123456789abcdef01234567';
+    $createRequests = 0;
+    $abortRequests = 0;
+    $operationIds = [];
+    $cleanupWasDurableBeforeAbort = false;
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => function (Request $request) use (&$operationIds, $integration, $preparedPath) {
+            $operationIds[] = $request->data()['OperationId'];
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'prepared',
+                'Success' => true,
+            ]);
+        },
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Abort' => function (Request $request) use (&$abortRequests, &$operationIds, &$cleanupWasDurableBeforeAbort, $integration, $preparedPath) {
+            $abortRequests++;
+            $operationIds[] = $request->data()['OperationId'];
+            if ($abortRequests === 1) {
+                $intent = EmbyLibraryMapping::query()->first();
+                $cleanupWasDurableBeforeAbort = $intent?->status === 'cleanup_pending'
+                    && str_contains((string) $intent->error_summary, 'Emby rejected the library request.');
+
+                return Http::response(['detail' => 'emby-secret'], 500);
+            }
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'aborted',
+                'Success' => true,
+            ]);
+        },
+        'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createRequests) {
+            if ($request->method() === 'POST') {
+                $createRequests++;
+
+                return Http::response(['detail' => 'emby-secret'], 401);
+            }
+
+            return Http::response([], 200);
+        },
+    ]);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'publish_all' => true,
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertNotified();
+
+    $mapping = EmbyLibraryMapping::query()->sole();
+    expect($mapping->status)->toBe('cleanup_pending')
+        ->and($mapping->library_create_requested_at)->not->toBeNull()
+        ->and($mapping->output_path)->toBe($preparedPath)
+        ->and($mapping->error_summary)->toContain('Emby rejected the library request.')
+        ->and($mapping->error_summary)->not->toContain('emby-secret', $preparedPath)
+        ->and($createRequests)->toBe(1)
+        ->and($abortRequests)->toBe(1)
+        ->and($cleanupWasDurableBeforeAbort)->toBeTrue();
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration->fresh(),
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('reconcile')->table($mapping->fresh()))
+        ->assertNotified();
+
+    expect(EmbyLibraryMapping::query()->count())->toBe(0)
+        ->and($createRequests)->toBe(1)
+        ->and($abortRequests)->toBe(2)
+        ->and($operationIds)->toHaveCount(3)
+        ->and($operationIds[0])->toBe($operationIds[1], $operationIds[2]);
+});
 
 it('creates an owned mapping from eligible unified source and destination choices', function () {
     config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
@@ -1303,7 +1399,7 @@ it('creates a managed library from only its required destination choices', funct
         ->and($requestOrder)->toBe(['prepare', 'emby-post', 'commit']);
 });
 
-it('persists an ambiguous managed library create and reconciles without aborting or posting twice', function () {
+it('persists managed create intent before the Emby post and reconciles in a fresh execution', function () {
     config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);
@@ -1317,11 +1413,13 @@ it('persists an ambiguous managed library create and reconciles without aborting
     ]);
     Http::preventStrayRequests();
     $preparedPath = '/srv/emby/managed/movies-0123456789abcdef01234567';
-    $inventoryRequests = 0;
+    $inventoryReady = false;
     $createRequests = 0;
     $abortRequests = 0;
     $commitRequests = 0;
     $operationIds = [];
+    $intentObservedBeforePost = false;
+    $persistenceFailed = false;
     Http::fake([
         'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
             'CapabilityVersion' => 1,
@@ -1359,16 +1457,20 @@ it('persists an ambiguous managed library create and reconciles without aborting
 
             return Http::response([], 500);
         },
-        'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$inventoryRequests, &$createRequests, $preparedPath) {
+        'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$inventoryReady, &$createRequests, &$intentObservedBeforePost, $preparedPath) {
             if ($request->method() === 'POST') {
                 $createRequests++;
+                $intent = EmbyLibraryMapping::query()->first();
+                $intentObservedBeforePost = $intent !== null
+                    && $intent->library_create_requested_at !== null
+                    && $intent->output_path === $preparedPath
+                    && $intent->status === 'pending';
+                DB::unprepared("CREATE TRIGGER fail_emby_mapping_update BEFORE UPDATE ON emby_library_mappings BEGIN SELECT RAISE(FAIL, 'simulated persistence failure'); END");
 
-                return Http::response([], 500);
+                return Http::response([], 204);
             }
 
-            $inventoryRequests++;
-
-            return Http::response($inventoryRequests >= 3 ? [[
+            return Http::response($inventoryReady ? [[
                 'ItemId' => 'managed-library',
                 'Name' => 'Managed Movies',
                 'CollectionType' => 'movies',
@@ -1377,26 +1479,37 @@ it('persists an ambiguous managed library create and reconciles without aborting
         },
     ]);
 
-    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
-        'ownerRecord' => $integration,
-        'pageClass' => EditMediaServerIntegration::class,
-    ])->callAction(TestAction::make('create')->table(), [
-        'publication_type' => 'movies',
-        'publish_all' => true,
-        'destination' => '__new__',
-        'new_library_name' => 'Managed Movies',
-    ])->assertHasNoActionErrors();
+    try {
+        Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+            'ownerRecord' => $integration,
+            'pageClass' => EditMediaServerIntegration::class,
+        ])->callAction(TestAction::make('create')->table(), [
+            'publication_type' => 'movies',
+            'publish_all' => true,
+            'destination' => '__new__',
+            'new_library_name' => 'Managed Movies',
+        ]);
+    } catch (Throwable $exception) {
+        $persistenceFailed = str_contains($exception->getMessage(), 'simulated persistence failure');
+    }
 
     $mapping = EmbyLibraryMapping::query()->sole();
     expect($mapping->target_library_id)->toBeNull()
         ->and($mapping->output_path)->toBe($preparedPath)
         ->and($mapping->status)->toBe('pending')
         ->and($mapping->library_create_requested_at)->not->toBeNull()
+        ->and($intentObservedBeforePost)->toBeTrue()
+        ->and($persistenceFailed)->toBeTrue()
         ->and($createRequests)->toBe(1)
         ->and($abortRequests)->toBe(0)
         ->and($commitRequests)->toBe(0);
 
-    $component->callAction(TestAction::make('reconcile')->table($mapping))
+    DB::unprepared('DROP TRIGGER fail_emby_mapping_update');
+    $inventoryReady = true;
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration->fresh(),
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('reconcile')->table($mapping->fresh()))
         ->assertNotified();
 
     expect($mapping->refresh()->target_library_id)->toBe('managed-library')
@@ -1407,6 +1520,68 @@ it('persists an ambiguous managed library create and reconciles without aborting
         ->and($commitRequests)->toBe(1)
         ->and($operationIds)->toHaveCount(2)
         ->and($operationIds[0])->toBe($operationIds[1]);
+});
+
+it('does not post to Emby when durable create intent persistence fails', function () {
+    config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    $preparedPath = '/srv/emby/managed/movies-0123456789abcdef01234567';
+    $createRequests = 0;
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => function (Request $request) use ($integration, $preparedPath) {
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'prepared',
+                'Success' => true,
+            ]);
+        },
+        'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createRequests) {
+            if ($request->method() === 'POST') {
+                $createRequests++;
+            }
+
+            return Http::response([], 200);
+        },
+    ]);
+    DB::unprepared("CREATE TRIGGER fail_emby_mapping_insert BEFORE INSERT ON emby_library_mappings BEGIN SELECT RAISE(FAIL, 'simulated intent persistence failure'); END");
+
+    try {
+        Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+            'ownerRecord' => $integration,
+            'pageClass' => EditMediaServerIntegration::class,
+        ])->callAction(TestAction::make('create')->table(), [
+            'publication_type' => 'movies',
+            'publish_all' => true,
+            'destination' => '__new__',
+            'new_library_name' => 'Managed Movies',
+        ]);
+    } catch (Throwable $exception) {
+        expect($exception->getMessage())->toContain('simulated intent persistence failure');
+    } finally {
+        DB::unprepared('DROP TRIGGER fail_emby_mapping_insert');
+    }
+
+    expect(EmbyLibraryMapping::query()->count())->toBe(0)
+        ->and($createRequests)->toBe(0);
 });
 
 it('does not repeat an ambiguous Emby create when another source joins the same pending managed library', function () {
