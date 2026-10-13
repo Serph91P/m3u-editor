@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\CachedContentActivityLease;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
 use App\Models\EmbyLibraryMapping;
@@ -181,6 +182,44 @@ it('records an interest for an existing catalog cache without adopting it', func
         ->where('consumer_id', 'profile-a')
         ->exists())->toBeTrue()
         ->and($file->fresh()->managed_by)->toBeNull();
+});
+
+it('creates a playback lease from the validated companion session', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping);
+    $item = $catalog['items'][0];
+    $sessionId = (string) Str::uuid();
+
+    $this->postJson('/player_api.php', [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_playback',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
+        'session_id' => $sessionId,
+        'sequence' => 1,
+        'state' => 'start',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+    ])->assertOk();
+
+    expect(CachedContentActivityLease::query()
+        ->where('integration_id', $this->integration->id)
+        ->where('lease_id', $sessionId)
+        ->where('kind', 'playback')
+        ->exists())->toBeTrue();
 });
 
 it('returns idempotent success for identical prefetch request id and payload', function () {

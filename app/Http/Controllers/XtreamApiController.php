@@ -43,6 +43,7 @@ use App\Models\ViewerFavorite;
 use App\Models\ViewerWatchProgress;
 use App\Providers\VersionServiceProvider;
 use App\Services\AIOStreamsAuthorizationService;
+use App\Services\CachedContentActivityService;
 use App\Services\CachedContentDispatchService;
 use App\Services\ChannelNumberSequence;
 use App\Services\ContentRequestService;
@@ -3768,6 +3769,20 @@ class XtreamApiController extends Controller
         }
 
         $validated = $validator->validated();
+        $action = (string) $request->input('action');
+        if ($action === 'm3u_editor_cache_playback') {
+            $playbackValidator = Validator::make($request->all(), [
+                'session_id' => ['required', 'uuid'],
+                'sequence' => ['required', 'integer', 'min:1'],
+                'state' => ['required', 'string', 'in:start,heartbeat,stop'],
+                'targets' => ['required', 'array', 'list', 'size:1'],
+            ]);
+            if ($playbackValidator->fails()) {
+                return $this->apiVersionValidationError($request);
+            }
+
+            $validated = [...$validated, ...$playbackValidator->validated()];
+        }
         $mapping = app(ManagedCacheControlService::class)->resolveActiveMapping(
             $effectivePlaylist->user,
             $validated['integration_id'],
@@ -3801,12 +3816,17 @@ class XtreamApiController extends Controller
             ];
         }
 
-        $action = (string) $request->input('action');
         $payloadHash = hash('sha256', json_encode([
             'mapping_uuid' => $validated['mapping_uuid'],
             'revision' => $validated['revision'],
             'consumer_id' => $validated['consumer_id'],
             'targets' => $validated['targets'],
+            'session_id' => $validated['session_id'] ?? null,
+            'sequence' => $validated['sequence'] ?? null,
+            'state' => $validated['state'] ?? null,
+            'watched' => $validated['watched'] ?? null,
+            'cohort_complete' => $validated['cohort_complete'] ?? null,
+            'delete_after_hours' => $validated['delete_after_hours'] ?? null,
         ], JSON_THROW_ON_ERROR));
 
         $findEvent = fn (): ?ManagedCacheEvent => ManagedCacheEvent::query()
@@ -3830,6 +3850,28 @@ class XtreamApiController extends Controller
                 $existing = $findEvent();
                 if ($existing) {
                     return $existing;
+                }
+
+                if ($action === 'm3u_editor_cache_playback') {
+                    $target = $resolvedTargets[0]['target'];
+                    $activityTarget = [
+                        'mapping_uuid' => $mapping->uuid,
+                        'revision' => $validated['revision'],
+                        'canonical_id' => $target['canonical_id'],
+                        'variant_key' => $target['variant_key'],
+                    ];
+                    $activity = app(CachedContentActivityService::class);
+                    if ($validated['state'] === 'stop') {
+                        $activity->stopPlayback($mapping->integration, $validated['session_id'], $validated['sequence']);
+                    } else {
+                        $activity->acquirePlayback(
+                            $effectivePlaylist->user,
+                            $mapping->integration,
+                            $validated['session_id'],
+                            $validated['sequence'],
+                            $activityTarget,
+                        );
+                    }
                 }
 
                 $response = [
