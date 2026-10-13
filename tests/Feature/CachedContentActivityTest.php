@@ -121,3 +121,18 @@ it('serialises reader acquire and delete check under the same file lock', functi
 
     expect($service->isSafeToDelete($file))->toBeTrue();
 });
+
+it('runs a deletion recheck under the same file activity lock', function () {
+    $user = User::factory()->create();
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $file = CachedContentFile::factory()->for($playlist)->createQuietly([
+        'status' => 'completed',
+        'content_fingerprint' => 'fixture-fingerprint',
+    ]);
+
+    $result = app(CachedContentActivityService::class)->withFileActivityLock($file, function () use ($file): int {
+        return $file->id;
+    });
+
+    expect($result)->toBe($file->id);
+});

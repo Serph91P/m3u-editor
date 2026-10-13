@@ -178,41 +178,34 @@ class CachedContentRetentionService
      */
     public function deleteManagedFileIfReleasable(CachedContentFile $file): bool
     {
-        if ($file->managed_by !== CachedContentManagedBy::ManagedPublishing) {
-            return false;
-        }
+        return app(CachedContentActivityService::class)->withFileActivityLock($file, function () use ($file): bool {
+            $file = $file->fresh();
+            if ($file === null || $file->managed_by !== CachedContentManagedBy::ManagedPublishing || $file->source !== 'provider') {
+                return false;
+            }
 
-        if ($file->source !== 'provider') {
-            return false;
-        }
+            if (in_array($file->status, [
+                CachedContentFileStatus::Pending,
+                CachedContentFileStatus::Downloading,
+            ], true)) {
+                return false;
+            }
 
-        if (in_array($file->status, [
-            CachedContentFileStatus::Pending,
-            CachedContentFileStatus::Downloading,
-        ], true)) {
-            return false;
-        }
+            $hasUnreleasedInterest = ManagedCacheInterest::query()
+                ->where('cached_content_file_id', $file->id)
+                ->where(function (Builder $q): void {
+                    $q->whereNull('watched_at')
+                        ->orWhereNull('release_after')
+                        ->orWhere('release_after', '>', now());
+                })
+                ->exists();
 
-        $hasUnreleasedInterest = ManagedCacheInterest::query()
-            ->where('cached_content_file_id', $file->id)
-            ->where(function (Builder $q): void {
-                $q->whereNull('watched_at')
-                    ->orWhereNull('release_after')
-                    ->orWhere('release_after', '>', now());
-            })
-            ->exists();
+            if ($hasUnreleasedInterest || ! app(CachedContentActivityService::class)->isSafeToDelete($file)) {
+                return false;
+            }
 
-        if ($hasUnreleasedInterest) {
-            return false;
-        }
-
-        $hasActiveLease = app(CachedContentActivityService::class)->isSafeToDelete($file) === false;
-
-        if ($hasActiveLease) {
-            return false;
-        }
-
-        return $this->deleteStoredFileAndRow($file);
+            return $this->deleteStoredFileAndRow($file);
+        });
     }
 
     /**

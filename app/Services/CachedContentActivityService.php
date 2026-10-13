@@ -177,6 +177,21 @@ class CachedContentActivityService
             ->exists();
     }
 
+    /**
+     * Serialize a file deletion recheck with reader-lease acquisition. Both
+     * paths use the same file-derived key, so a reader cannot appear between
+     * the deletion safety check and storage removal.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    public function withFileActivityLock(CachedContentFile $file, callable $callback): mixed
+    {
+        return $this->withActivityLock($this->fileTarget($file), $file, $callback);
+    }
+
     private function resolveIntegration(User $user, ?MediaServerIntegration $integration): MediaServerIntegration
     {
         if ($integration !== null) {
