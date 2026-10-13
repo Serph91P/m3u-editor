@@ -3,7 +3,9 @@
 namespace App\Services;
 
 use App\Models\CachedContentFile;
+use App\Models\Channel;
 use App\Models\EmbyLibraryMapping;
+use App\Models\Episode;
 use App\Models\ManagedCacheInterest;
 use App\Models\MediaServerIntegration;
 use App\Models\User;
@@ -130,6 +132,26 @@ class ManagedCacheControlService
         }
 
         return null;
+    }
+
+    /**
+     * Resolve the preferred server-built catalog source without accepting an
+     * arbitrary cacheable ID from the companion request.
+     *
+     * @param  array{item: array<string, mixed>, variant: array<string, mixed>}  $target
+     */
+    public function resolveCacheableTarget(EmbyLibraryMapping $mapping, array $target): Channel|Episode|null
+    {
+        $sourceId = $target['variant']['preferred']['source_id'] ?? null;
+        if (! is_numeric($sourceId)) {
+            return null;
+        }
+
+        $model = ($target['item']['media_type'] ?? null) === 'episode' ? Episode::class : Channel::class;
+
+        return $model::query()
+            ->where('user_id', $mapping->user_id)
+            ->find((int) $sourceId);
     }
 
     /**

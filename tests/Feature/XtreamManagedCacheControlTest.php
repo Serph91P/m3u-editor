@@ -5,6 +5,7 @@ use App\Models\Channel;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Group;
 use App\Models\ManagedCacheEvent;
+use App\Models\ManagedCacheInterest;
 use App\Models\MediaServerIntegration;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
@@ -100,10 +101,10 @@ it('returns deferred when managed cache capacity is unknown', function () {
         'mapping_uuid' => $this->mapping->uuid,
         'revision' => str_repeat('a', 64),
         'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
         'targets' => [[
             'canonical_id' => $item['canonical_id'],
             'variant_key' => $item['variants'][0]['key'],
-            'consumer_id' => 'profile-a',
         ]],
     ]));
 
@@ -112,6 +113,74 @@ it('returns deferred when managed cache capacity is unknown', function () {
         ->assertJsonPath('data.results.0.canonical_id', $item['canonical_id'])
         ->assertJsonPath('data.results.0.variant_key', $item['variants'][0]['key'])
         ->assertJsonPath('data.results.0.status', 'deferred');
+});
+
+it('accepts the companion form contract with one global consumer id', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+
+    $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping);
+    $item = $catalog['items'][0];
+
+    $this->post('/player_api.php', [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+    ])->assertOk()
+        ->assertJsonPath('data.results.0.status', 'deferred');
+});
+
+it('records an interest for an existing catalog cache without adopting it', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    $channel = Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    $file = CachedContentFile::factory()->forItem($channel)->completed()->create();
+    Storage::disk(CachedContentFile::DISK)->put($file->file_path, 'cached');
+
+    $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping);
+    $item = $catalog['items'][0];
+
+    $this->postJson('/player_api.php', [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+    ])->assertOk()
+        ->assertJsonPath('data.results.0.status', 'already_cached');
+
+    expect(ManagedCacheInterest::query()
+        ->where('cached_content_file_id', $file->id)
+        ->where('consumer_id', 'profile-a')
+        ->exists())->toBeTrue()
+        ->and($file->fresh()->managed_by)->toBeNull();
 });
 
 it('returns idempotent success for identical prefetch request id and payload', function () {
@@ -135,10 +204,10 @@ it('returns idempotent success for identical prefetch request id and payload', f
         'mapping_uuid' => $this->mapping->uuid,
         'revision' => str_repeat('a', 64),
         'request_id' => $requestId,
+        'consumer_id' => 'profile-a',
         'targets' => [[
             'canonical_id' => $item['canonical_id'],
             'variant_key' => $item['variants'][0]['key'],
-            'consumer_id' => 'profile-a',
         ]],
     ];
 
@@ -173,17 +242,17 @@ it('conflicts when the same request id carries a different payload', function ()
         'mapping_uuid' => $this->mapping->uuid,
         'revision' => str_repeat('a', 64),
         'request_id' => $requestId,
+        'consumer_id' => 'profile-a',
         'targets' => [[
             'canonical_id' => $item['canonical_id'],
             'variant_key' => $item['variants'][0]['key'],
-            'consumer_id' => 'profile-a',
         ]],
     ];
 
     $this->postJson('/player_api.php', $base)->assertOk();
 
     $conflict = $base;
-    $conflict['targets'][0]['consumer_id'] = 'profile-b';
+    $conflict['consumer_id'] = 'profile-b';
 
     $this->postJson('/player_api.php', $conflict)
         ->assertConflict()

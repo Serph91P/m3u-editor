@@ -15,6 +15,7 @@ use App\Facades\ProxyFacade;
 use App\Jobs\FetchTmdbIds;
 use App\Jobs\RefreshMediaServerLibraryJob;
 use App\Models\ArrIntegration;
+use App\Models\CachedContentFile;
 use App\Models\Category;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
@@ -3757,10 +3758,10 @@ class XtreamApiController extends Controller
             'mapping_uuid' => ['required', 'uuid'],
             'revision' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
             'request_id' => ['required', 'uuid'],
+            'consumer_id' => ['required', 'string', 'max:255'],
             'targets' => ['required', 'array', 'list', 'min:1', 'max:100'],
             'targets.*.canonical_id' => ['required', 'string', 'max:255'],
             'targets.*.variant_key' => ['required', 'string', 'max:255'],
-            'targets.*.consumer_id' => ['required', 'string', 'max:255'],
         ]);
         if ($validator->fails()) {
             return $this->apiVersionValidationError($request);
@@ -3777,20 +3778,34 @@ class XtreamApiController extends Controller
             return $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
         }
 
+        $control = app(ManagedCacheControlService::class);
+        $resolvedTargets = [];
         foreach ($validated['targets'] as $target) {
-            if (! app(ManagedCacheControlService::class)->resolveCatalogTarget(
+            $catalogTarget = $control->resolveCatalogTarget(
                 $mapping,
                 $target['canonical_id'],
                 $target['variant_key'],
-            )) {
+            );
+            if ($catalogTarget === null) {
                 return $this->requestError('target_not_found', 'The managed catalog target was not found.', 404);
             }
+
+            $cacheable = $control->resolveCacheableTarget($mapping, $catalogTarget);
+            if ($cacheable === null) {
+                return $this->requestError('target_not_found', 'The managed catalog target was not found.', 404);
+            }
+
+            $resolvedTargets[] = [
+                'target' => $target,
+                'cacheable' => $cacheable,
+            ];
         }
 
         $action = (string) $request->input('action');
         $payloadHash = hash('sha256', json_encode([
             'mapping_uuid' => $validated['mapping_uuid'],
             'revision' => $validated['revision'],
+            'consumer_id' => $validated['consumer_id'],
             'targets' => $validated['targets'],
         ], JSON_THROW_ON_ERROR));
 
@@ -3810,20 +3825,42 @@ class XtreamApiController extends Controller
             return $this->requestSuccess($existing->redacted_response);
         }
 
-        $response = [
-            'request_id' => $validated['request_id'],
-            'results' => array_map(static fn (array $target): array => [
-                'canonical_id' => $target['canonical_id'],
-                'variant_key' => $target['variant_key'],
-                'status' => 'deferred',
-            ], $validated['targets']),
-        ];
         try {
-            $event = DB::transaction(function () use ($findEvent, $effectivePlaylist, $validated, $action, $payloadHash, $response): ManagedCacheEvent {
+            $event = DB::transaction(function () use ($findEvent, $effectivePlaylist, $validated, $action, $payloadHash, $mapping, $control, $resolvedTargets): ManagedCacheEvent {
                 $existing = $findEvent();
                 if ($existing) {
                     return $existing;
                 }
+
+                $response = [
+                    'request_id' => $validated['request_id'],
+                    'results' => array_map(function (array $resolved) use ($control, $mapping, $validated): array {
+                        $target = $resolved['target'];
+                        $file = CachedContentFile::findServableFor($resolved['cacheable']);
+                        if ($file?->isPlayable()) {
+                            $control->recordInterest(
+                                $file,
+                                $mapping->integration,
+                                $mapping->uuid,
+                                $target['canonical_id'],
+                                $target['variant_key'],
+                                $validated['consumer_id'],
+                            );
+
+                            return [
+                                'canonical_id' => $target['canonical_id'],
+                                'variant_key' => $target['variant_key'],
+                                'status' => 'already_cached',
+                            ];
+                        }
+
+                        return [
+                            'canonical_id' => $target['canonical_id'],
+                            'variant_key' => $target['variant_key'],
+                            'status' => 'deferred',
+                        ];
+                    }, $resolvedTargets),
+                ];
 
                 return ManagedCacheEvent::create([
                     'user_id' => $effectivePlaylist->user_id,
