@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Services\CachedContentActivityService;
 use App\Services\CachedContentRetentionService;
 use App\Services\ManagedCacheControlService;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
 
@@ -200,4 +201,30 @@ it('does not let generic retention delete managed publishing files', function ()
 
     expect(CachedContentFile::find($file->id))->not->toBeNull()
         ->and(Storage::disk('cache')->exists('managed/movie.mp4'))->toBeTrue();
+});
+
+it('retains managed metadata when the storage delete reports failure', function () {
+    $file = makeManagedFile($this->playlist);
+    ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => '123e4567-e89b-12d3-a456-426614174000',
+        'canonical_id' => 'episode:fixture:s01e01',
+        'variant_key' => '1080p',
+        'consumer_id' => 'profile-a',
+        'watched_at' => now()->subHour(),
+        'release_after' => now()->subHour(),
+    ]);
+
+    Storage::shouldReceive('disk')
+        ->once()
+        ->with('cache')
+        ->andReturn(Mockery::mock(Filesystem::class, function ($disk): void {
+            $disk->shouldReceive('delete')->once()->with('managed/movie.mp4')->andReturnFalse();
+        }));
+
+    dispatch_sync(new ReleaseWatchedManagedCache);
+
+    expect(CachedContentFile::find($file->id))->not->toBeNull()
+        ->and(ManagedCacheInterest::query()->where('cached_content_file_id', $file->id)->exists())->toBeTrue();
 });
