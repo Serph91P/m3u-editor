@@ -222,6 +222,56 @@ it('creates a playback lease from the validated companion session', function () 
         ->exists())->toBeTrue();
 });
 
+it('releases and undoes a watched managed cache interest through the companion form contract', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    $channel = Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    $file = CachedContentFile::factory()->forItem($channel)->completed()->create();
+    Storage::disk(CachedContentFile::DISK)->put($file->file_path, 'cached');
+    $item = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping)['items'][0];
+    $interest = ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'canonical_id' => $item['canonical_id'],
+        'variant_key' => $item['variants'][0]['key'],
+        'consumer_id' => 'profile-a',
+    ]);
+    $payload = [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_release',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'consumer_id' => 'profile-a',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+        'watched' => true,
+        'cohort_complete' => true,
+        'delete_after_hours' => 0,
+    ];
+
+    $this->postJson('/player_api.php', [...$payload, 'request_id' => (string) Str::uuid()])
+        ->assertOk();
+
+    expect($interest->fresh()->watched_at)->not->toBeNull()
+        ->and($interest->fresh()->release_after)->not->toBeNull();
+
+    $this->postJson('/player_api.php', [...$payload, 'request_id' => (string) Str::uuid(), 'watched' => false])
+        ->assertOk();
+
+    expect($interest->fresh()->watched_at)->toBeNull()
+        ->and($interest->fresh()->release_after)->toBeNull();
+});
+
 it('returns idempotent success for identical prefetch request id and payload', function () {
     $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
     $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);

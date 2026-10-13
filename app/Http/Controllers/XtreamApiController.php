@@ -3783,6 +3783,18 @@ class XtreamApiController extends Controller
 
             $validated = [...$validated, ...$playbackValidator->validated()];
         }
+        if ($action === 'm3u_editor_cache_release') {
+            $releaseValidator = Validator::make($request->all(), [
+                'watched' => ['required', 'boolean'],
+                'cohort_complete' => ['required', 'boolean'],
+                'delete_after_hours' => ['required', 'integer', 'min:0', 'max:168'],
+            ]);
+            if ($releaseValidator->fails()) {
+                return $this->apiVersionValidationError($request);
+            }
+
+            $validated = [...$validated, ...$releaseValidator->validated()];
+        }
         $mapping = app(ManagedCacheControlService::class)->resolveActiveMapping(
             $effectivePlaylist->user,
             $validated['integration_id'],
@@ -3876,8 +3888,21 @@ class XtreamApiController extends Controller
 
                 $response = [
                     'request_id' => $validated['request_id'],
-                    'results' => array_map(function (array $resolved) use ($control, $mapping, $validated): array {
+                    'results' => array_map(function (array $resolved) use ($action, $control, $effectivePlaylist, $mapping, $validated): array {
                         $target = $resolved['target'];
+                        if ($action === 'm3u_editor_cache_release') {
+                            $control->releaseWatched(
+                                $effectivePlaylist->user,
+                                $mapping->integration,
+                                $mapping->uuid,
+                                $target['canonical_id'],
+                                $target['variant_key'],
+                                $validated['consumer_id'],
+                                $validated['watched'],
+                                $validated['delete_after_hours'],
+                                $validated['cohort_complete'],
+                            );
+                        }
                         $file = CachedContentFile::findServableFor($resolved['cacheable']);
                         if ($file?->isPlayable()) {
                             $control->recordInterest(
