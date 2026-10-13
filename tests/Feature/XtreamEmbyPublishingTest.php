@@ -8,6 +8,7 @@ use App\Models\MediaServerIntegration;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Services\EmbyPublicationCatalogService;
 use App\Services\ManagedCacheControlService;
 use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -135,6 +136,32 @@ it('resolves only an active managed mapping owned by the requesting user at its 
 
     $this->mapping->update(['enabled' => true, 'last_applied_revision' => str_repeat('b', 64)]);
     expect($service->resolveActiveMapping($this->user, $this->integration->id, $this->mapping->uuid, str_repeat('a', 64)))->toBeNull();
+});
+
+it('resolves cache targets only from the validated mapping catalog', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+
+    $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping);
+    $item = $catalog['items'][0];
+    $variantKey = $item['variants'][0]['key'];
+
+    $target = app(ManagedCacheControlService::class)->resolveCatalogTarget(
+        $this->mapping,
+        $item['canonical_id'],
+        $variantKey,
+    );
+
+    expect($target)->not->toBeNull()
+        ->and($target['canonical_id'])->toBe($item['canonical_id'])
+        ->and($target['variant_key'])->toBe($variantKey)
+        ->and(app(ManagedCacheControlService::class)->resolveCatalogTarget($this->mapping, 'source:arbitrary', $variantKey))->toBeNull()
+        ->and(app(ManagedCacheControlService::class)->resolveCatalogTarget($this->mapping, $item['canonical_id'], 'unknown'))->toBeNull();
 });
 
 it('advertises publisher registration before the first mapping exists', function () {
