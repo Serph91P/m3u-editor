@@ -41,6 +41,24 @@ it('keeps independent playback sessions active and stops only the named lease', 
     expect($service->hasActivePlayback($target))->toBeFalse();
 });
 
+it('does not revive a terminal playback session from a late heartbeat', function () {
+    $user = User::factory()->create();
+    $integration = MediaServerIntegration::factory()->for($user)->create();
+    $service = app(CachedContentActivityService::class);
+    $target = [
+        'mapping_uuid' => (string) Str::uuid(),
+        'revision' => str_repeat('a', 64),
+        'canonical_id' => 'episode:tmdb:550',
+        'variant_key' => '1080p',
+    ];
+
+    $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
+    $service->stopPlayback($integration, 'session-a', 2);
+    $service->acquirePlayback($user, $integration, 'session-a', 3, $target);
+
+    expect($service->hasActivePlayback($target))->toBeFalse();
+});
+
 it('acquires a reader lease and considers it active for the target', function () {
     $user = User::factory()->create();
     $integration = MediaServerIntegration::factory()->for($user)->create();

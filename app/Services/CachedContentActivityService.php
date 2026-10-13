@@ -34,7 +34,7 @@ class CachedContentActivityService
             'lease_id' => $leaseId,
         ]);
 
-        if ($lease->exists && $sequence <= $lease->sequence) {
+        if ($lease->exists && ($sequence <= $lease->sequence || $lease->terminal_until?->isFuture())) {
             return $lease;
         }
 
@@ -48,6 +48,7 @@ class CachedContentActivityService
             'sequence' => $sequence,
             'expires_at' => $now->copy()->addSeconds(self::PLAYBACK_TTL_SECONDS),
             'last_activity_at' => $now,
+            'terminal_until' => null,
         ]);
         $lease->save();
 
@@ -65,6 +66,7 @@ class CachedContentActivityService
                 'sequence' => $sequence,
                 'expires_at' => now(),
                 'last_activity_at' => now(),
+                'terminal_until' => now()->addSeconds(self::PLAYBACK_TTL_SECONDS),
             ]);
     }
 

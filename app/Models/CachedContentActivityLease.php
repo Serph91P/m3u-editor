@@ -24,6 +24,7 @@ class CachedContentActivityLease extends Model
         'sequence',
         'expires_at',
         'last_activity_at',
+        'terminal_until',
     ];
 
     protected function casts(): array
@@ -32,6 +33,7 @@ class CachedContentActivityLease extends Model
             'sequence' => 'integer',
             'expires_at' => 'datetime',
             'last_activity_at' => 'datetime',
+            'terminal_until' => 'datetime',
         ];
     }
 }
