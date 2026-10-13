@@ -1,10 +1,10 @@
 <?php
 
-use App\Enums\CachedContentManagedBy;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Group;
+use App\Models\ManagedCacheEvent;
 use App\Models\MediaServerIntegration;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
@@ -108,7 +108,10 @@ it('returns deferred when managed cache capacity is unknown', function () {
     ]));
 
     $response->assertOk()
-        ->assertJsonPath('data.status', 'deferred');
+        ->assertJsonPath('data.request_id', $response->json('data.request_id'))
+        ->assertJsonPath('data.results.0.canonical_id', $item['canonical_id'])
+        ->assertJsonPath('data.results.0.variant_key', $item['variants'][0]['key'])
+        ->assertJsonPath('data.results.0.status', 'deferred');
 });
 
 it('returns idempotent success for identical prefetch request id and payload', function () {
@@ -146,7 +149,7 @@ it('returns idempotent success for identical prefetch request id and payload', f
     $second->assertOk()
         ->assertJsonPath('data.status', $first->json('data.status'));
 
-    expect(\App\Models\ManagedCacheEvent::count())->toBe(1);
+    expect(ManagedCacheEvent::count())->toBe(1);
 });
 
 it('conflicts when the same request id carries a different payload', function () {

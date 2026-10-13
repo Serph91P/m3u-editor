@@ -3810,7 +3810,14 @@ class XtreamApiController extends Controller
             return $this->requestSuccess($existing->redacted_response);
         }
 
-        $response = ['status' => 'deferred'];
+        $response = [
+            'request_id' => $validated['request_id'],
+            'results' => array_map(static fn (array $target): array => [
+                'canonical_id' => $target['canonical_id'],
+                'variant_key' => $target['variant_key'],
+                'status' => 'deferred',
+            ], $validated['targets']),
+        ];
         try {
             $event = DB::transaction(function () use ($findEvent, $effectivePlaylist, $validated, $action, $payloadHash, $response): ManagedCacheEvent {
                 $existing = $findEvent();
