@@ -3,6 +3,7 @@
 use App\Models\CachedContentFile;
 use App\Models\ManagedCacheInterest;
 use App\Models\MediaServerIntegration;
+use App\Services\ManagedCacheControlService;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -116,4 +117,22 @@ it('cascades interest cleanup when the integration is deleted', function () {
 
     expect(ManagedCacheInterest::find($interest->id))->toBeNull()
         ->and(CachedContentFile::find($file->id))->not->toBeNull();
+});
+
+it('records an interest on the cache file without changing its owner', function () {
+    $file = CachedContentFile::factory()->completed()->create();
+    $integration = MediaServerIntegration::factory()->create(['user_id' => $file->user_id]);
+
+    $interest = app(ManagedCacheControlService::class)->recordInterest(
+        $file,
+        $integration,
+        (string) Str::uuid(),
+        'movie:tmdb:550',
+        '1080p',
+        'profile-a',
+    );
+
+    expect($interest->cached_content_file_id)->toBe($file->id)
+        ->and($interest->integration_id)->toBe($integration->id)
+        ->and($file->fresh()->managed_by)->toBeNull();
 });

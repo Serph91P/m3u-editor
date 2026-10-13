@@ -2,11 +2,38 @@
 
 namespace App\Services;
 
+use App\Models\CachedContentFile;
 use App\Models\EmbyLibraryMapping;
+use App\Models\ManagedCacheInterest;
+use App\Models\MediaServerIntegration;
 use App\Models\User;
 
 class ManagedCacheControlService
 {
+    /**
+     * Persist additive consumer metadata for an already selected cache file.
+     * This deliberately does not alter the file ownership: a shared/manual
+     * cache may satisfy a request but is never adopted by this feature.
+     */
+    public function recordInterest(
+        CachedContentFile $file,
+        MediaServerIntegration $integration,
+        string $mappingUuid,
+        string $canonicalId,
+        string $variantKey,
+        string $consumerId,
+    ): ManagedCacheInterest {
+        return ManagedCacheInterest::firstOrCreate([
+            'cached_content_file_id' => $file->id,
+            'integration_id' => $integration->id,
+            'mapping_uuid' => $mappingUuid,
+            'consumer_id' => $consumerId,
+        ], [
+            'canonical_id' => $canonicalId,
+            'variant_key' => $variantKey,
+        ]);
+    }
+
     public function resolveActiveMapping(
         User $user,
         int $integrationId,
