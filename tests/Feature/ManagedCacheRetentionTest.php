@@ -125,6 +125,38 @@ it('does not delete a managed file while a reader lease is active', function () 
         ->and(Storage::disk('cache')->exists('managed/movie.mp4'))->toBeTrue();
 });
 
+it('does not delete a managed file while a playback lease for its interest target is active', function () {
+    $file = makeManagedFile($this->playlist);
+    Storage::disk('cache')->put('managed/movie.mp4', 'video-bytes');
+    $interest = ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => '123e4567-e89b-12d3-a456-426614174000',
+        'canonical_id' => 'episode:fixture:s01e01',
+        'variant_key' => '1080p',
+        'consumer_id' => 'profile-a',
+        'watched_at' => now()->subHour(),
+        'release_after' => now()->subHour(),
+    ]);
+    app(CachedContentActivityService::class)->acquirePlayback(
+        $this->user,
+        $this->integration,
+        'playback-session-1',
+        1,
+        [
+            'mapping_uuid' => $interest->mapping_uuid,
+            'revision' => str_repeat('a', 64),
+            'canonical_id' => $interest->canonical_id,
+            'variant_key' => $interest->variant_key,
+        ],
+    );
+
+    dispatch_sync(new ReleaseWatchedManagedCache);
+
+    expect(CachedContentFile::find($file->id))->not->toBeNull()
+        ->and(Storage::disk('cache')->exists('managed/movie.mp4'))->toBeTrue();
+});
+
 it('deletes a managed file when all interests are released and no lease is active', function () {
     $file = makeManagedFile($this->playlist);
     Storage::disk('cache')->put('managed/movie.mp4', 'video-bytes');

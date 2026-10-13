@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\CachedContentActivityLease;
 use App\Models\CachedContentFile;
+use App\Models\ManagedCacheInterest;
 use App\Models\MediaServerIntegration;
 use App\Models\User;
 use Illuminate\Contracts\Cache\LockTimeoutException;
@@ -185,9 +186,25 @@ class CachedContentActivityService
 
     public function isSafeToDelete(CachedContentFile $file): bool
     {
-        return ! CachedContentActivityLease::query()
+        if (CachedContentActivityLease::query()
             ->where('cached_content_file_id', $file->id)
             ->where('expires_at', '>', now())
+            ->exists()) {
+            return false;
+        }
+
+        return ! ManagedCacheInterest::query()
+            ->where('cached_content_file_id', $file->id)
+            ->whereExists(function ($lease): void {
+                $lease->selectRaw('1')
+                    ->from('cached_content_activity_leases')
+                    ->where('kind', 'playback')
+                    ->where('expires_at', '>', now())
+                    ->whereColumn('cached_content_activity_leases.integration_id', 'managed_cache_interests.integration_id')
+                    ->whereColumn('cached_content_activity_leases.mapping_uuid', 'managed_cache_interests.mapping_uuid')
+                    ->whereColumn('cached_content_activity_leases.canonical_id', 'managed_cache_interests.canonical_id')
+                    ->whereColumn('cached_content_activity_leases.variant_key', 'managed_cache_interests.variant_key');
+            })
             ->exists();
     }
 
