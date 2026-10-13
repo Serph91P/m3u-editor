@@ -91,7 +91,7 @@ class StreamLocalFile
             try {
                 [$start, $end, $length] = static::parseRangeOrThrow($range, $fileSize);
             } catch (InvalidRangeException) {
-                return static::rangeNotSatisfiableResponse($fileSize, $mimeType, $filename);
+                return static::rangeNotSatisfiableResponse($fileSize, $mimeType, $filename, $onFinish);
             }
 
             return response()->stream(
@@ -121,12 +121,13 @@ class StreamLocalFile
         ?\Closure $onProgress,
         ?\Closure $onFinish,
     ): void {
-        $handle = fopen($fullPath, 'rb');
-        if ($handle === false) {
-            return;
-        }
+        $handle = @fopen($fullPath, 'rb');
 
         try {
+            if ($handle === false) {
+                return;
+            }
+
             $onStart?->__invoke();
             fseek($handle, $start);
             $remaining = $length;
@@ -143,7 +144,9 @@ class StreamLocalFile
                 $onProgress?->__invoke();
             }
         } finally {
-            fclose($handle);
+            if ($handle !== false && $handle !== null) {
+                fclose($handle);
+            }
             $onFinish?->__invoke();
         }
     }
@@ -236,7 +239,7 @@ class StreamLocalFile
      * spec - the client learns the file size from the Content-Range
      * header (bytes wildcard, then slash, then total size).
      */
-    private static function rangeNotSatisfiableResponse(int $fileSize, string $mimeType, string $filename): StreamedResponse
+    private static function rangeNotSatisfiableResponse(int $fileSize, string $mimeType, string $filename, ?\Closure $onFinish): StreamedResponse
     {
         $headers = [
             'Content-Type' => $mimeType,
@@ -245,8 +248,8 @@ class StreamLocalFile
             'Content-Disposition' => 'inline; filename="'.$filename.'"',
         ];
 
-        return response()->stream(static function (): void {
-            // 416 has no body per RFC 7233.
+        return response()->stream(static function () use ($onFinish): void {
+            $onFinish?->__invoke();
         }, 416, $headers);
     }
 }

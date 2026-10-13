@@ -3,12 +3,22 @@
 namespace App\Services;
 
 use App\Models\CachedContentActivityLease;
+use App\Models\CachedContentFile;
 use App\Models\MediaServerIntegration;
 use App\Models\User;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class CachedContentActivityService
 {
     private const int PLAYBACK_TTL_SECONDS = 120;
+
+    private const int READER_TTL_SECONDS = 30;
+
+    private const int LOCK_TIMEOUT_SECONDS = 10;
+
+    private const int LOCK_WAIT_SECONDS = 5;
 
     /** @param array{mapping_uuid: string, revision: string, canonical_id: string, variant_key: string} $target */
     public function acquirePlayback(
@@ -69,5 +79,174 @@ class CachedContentActivityService
             ->where('variant_key', $target['variant_key'])
             ->where('expires_at', '>', now())
             ->exists();
+    }
+
+    public function acquireReaderForFile(
+        User $user,
+        ?MediaServerIntegration $integration,
+        string $leaseId,
+        CachedContentFile $file,
+    ): CachedContentActivityLease {
+        return $this->acquireReader(
+            $user,
+            $this->resolveIntegration($user, $integration),
+            $leaseId,
+            $this->fileTarget($file),
+            $file,
+        );
+    }
+
+    /**
+     * @param  array{mapping_uuid: string|null, revision: string|null, canonical_id: string|null, variant_key: string|null}  $target
+     */
+    public function acquireReader(
+        User $user,
+        MediaServerIntegration $integration,
+        string $leaseId,
+        array $target,
+        ?CachedContentFile $file = null,
+    ): CachedContentActivityLease {
+        return $this->withActivityLock($target, $file, function () use ($user, $integration, $leaseId, $target, $file): CachedContentActivityLease {
+            $now = now();
+
+            $lease = CachedContentActivityLease::firstOrNew([
+                'integration_id' => $integration->id,
+                'kind' => 'reader',
+                'lease_id' => $leaseId,
+            ]);
+
+            $lease->fill([
+                'user_id' => $user->id,
+                'mapping_uuid' => $target['mapping_uuid'],
+                'revision' => $target['revision'],
+                'canonical_id' => $target['canonical_id'],
+                'variant_key' => $target['variant_key'],
+                'cached_content_file_id' => $file?->id,
+                'sequence' => 0,
+                'expires_at' => $now->copy()->addSeconds(self::READER_TTL_SECONDS),
+                'last_activity_at' => $now,
+            ]);
+            $lease->save();
+
+            return $lease;
+        });
+    }
+
+    public function releaseReader(CachedContentActivityLease $lease): void
+    {
+        $lease->update([
+            'expires_at' => now(),
+            'last_activity_at' => now(),
+        ]);
+    }
+
+    /** @param array{mapping_uuid: string, revision: string, canonical_id: string, variant_key: string} $target */
+    public function hasActiveReader(array $target): bool
+    {
+        return CachedContentActivityLease::query()
+            ->where('kind', 'reader')
+            ->where('mapping_uuid', $target['mapping_uuid'])
+            ->where('revision', $target['revision'])
+            ->where('canonical_id', $target['canonical_id'])
+            ->where('variant_key', $target['variant_key'])
+            ->where('expires_at', '>', now())
+            ->exists();
+    }
+
+    public function hasActiveReaderForFile(CachedContentFile $file): bool
+    {
+        return $this->findActiveReaderLeaseForFile($file) !== null;
+    }
+
+    public function findActiveReaderLeaseForFile(CachedContentFile $file): ?CachedContentActivityLease
+    {
+        return CachedContentActivityLease::query()
+            ->where('cached_content_file_id', $file->id)
+            ->where('kind', 'reader')
+            ->where('expires_at', '>', now())
+            ->first();
+    }
+
+    public function isSafeToDelete(CachedContentFile $file): bool
+    {
+        return ! CachedContentActivityLease::query()
+            ->where('cached_content_file_id', $file->id)
+            ->where('expires_at', '>', now())
+            ->exists();
+    }
+
+    private function resolveIntegration(User $user, ?MediaServerIntegration $integration): MediaServerIntegration
+    {
+        if ($integration !== null) {
+            return $integration;
+        }
+
+        $fallback = MediaServerIntegration::query()
+            ->where('user_id', $user->id)
+            ->first();
+
+        if ($fallback === null) {
+            throw new \RuntimeException('No media server integration available for activity lease');
+        }
+
+        return $fallback;
+    }
+
+    /**
+     * @return array{mapping_uuid: null, revision: null, canonical_id: string|null, variant_key: string|null}
+     */
+    private function fileTarget(CachedContentFile $file): array
+    {
+        return [
+            'mapping_uuid' => null,
+            'revision' => null,
+            'canonical_id' => $file->cacheable ? (string) $file->cacheable->getKey() : null,
+            'variant_key' => $file->quality,
+        ];
+    }
+
+    /**
+     * @param  array{mapping_uuid: string|null, revision: string|null, canonical_id: string|null, variant_key: string|null}  $target
+     * @param  callable(): T  $callback
+     * @return T
+     *
+     * @template T
+     */
+    private function withActivityLock(array $target, ?CachedContentFile $file, callable $callback): mixed
+    {
+        $key = $this->activityLockKey($target, $file);
+
+        try {
+            $lock = Cache::lock($key, self::LOCK_TIMEOUT_SECONDS);
+
+            return $lock->block(self::LOCK_WAIT_SECONDS, $callback);
+        } catch (LockTimeoutException) {
+            Log::warning('Managed cache activity lock timeout', [
+                'key' => $key,
+                'mapping_uuid' => $target['mapping_uuid'],
+                'canonical_id' => $target['canonical_id'],
+            ]);
+
+            throw new \RuntimeException('Managed cache activity lock unavailable');
+        }
+    }
+
+    /**
+     * @param  array{mapping_uuid: string|null, revision: string|null, canonical_id: string|null, variant_key: string|null}  $target
+     */
+    private function activityLockKey(array $target, ?CachedContentFile $file): string
+    {
+        if ($file !== null && $file->exists) {
+            return "managed-cache:file:{$file->id}:activity";
+        }
+
+        $hash = hash('sha256', implode(':', array_filter([
+            $target['mapping_uuid'],
+            $target['revision'],
+            $target['canonical_id'],
+            $target['variant_key'],
+        ], fn (?string $v): bool => $v !== null)));
+
+        return "managed-cache:target:{$hash}:activity";
     }
 }

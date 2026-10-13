@@ -13,10 +13,10 @@ return new class extends Migration
             $table->foreignId('cached_content_file_id')->nullable()->constrained()->nullOnDelete();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->foreignId('integration_id')->constrained('media_server_integrations')->cascadeOnDelete();
-            $table->uuid('mapping_uuid');
-            $table->string('revision', 64);
-            $table->string('canonical_id');
-            $table->string('variant_key');
+            $table->uuid('mapping_uuid')->nullable();
+            $table->string('revision', 64)->nullable();
+            $table->string('canonical_id')->nullable();
+            $table->string('variant_key')->nullable();
             $table->string('kind');
             $table->uuid('lease_id');
             $table->unsignedBigInteger('sequence')->default(0);
