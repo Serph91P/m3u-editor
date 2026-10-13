@@ -184,6 +184,10 @@ class CachedContentRetentionService
                 return false;
             }
 
+            if ($file->playlist?->share_cache_across_playlists) {
+                return false;
+            }
+
             if (in_array($file->status, [
                 CachedContentFileStatus::Pending,
                 CachedContentFileStatus::Downloading,
