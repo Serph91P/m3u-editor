@@ -3854,6 +3854,22 @@ class XtreamApiController extends Controller
                 return $this->requestError('idempotency_conflict', 'The request ID was already used with a different payload.', 409);
             }
 
+            if ($action === 'm3u_editor_cache_playback' && $validated['state'] === 'heartbeat') {
+                $target = $resolvedTargets[0]['target'];
+                app(CachedContentActivityService::class)->acquirePlayback(
+                    $effectivePlaylist->user,
+                    $mapping->integration,
+                    $validated['session_id'],
+                    $validated['sequence'],
+                    [
+                        'mapping_uuid' => $mapping->uuid,
+                        'revision' => $validated['revision'],
+                        'canonical_id' => $target['canonical_id'],
+                        'variant_key' => $target['variant_key'],
+                    ],
+                );
+            }
+
             return $this->requestSuccess($existing->redacted_response);
         }
 

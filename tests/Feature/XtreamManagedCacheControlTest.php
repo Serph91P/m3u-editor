@@ -222,6 +222,45 @@ it('creates a playback lease from the validated companion session', function () 
         ->exists())->toBeTrue();
 });
 
+it('renews an active playback lease when an idempotent heartbeat is retried', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    $item = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping)['items'][0];
+    $sessionId = (string) Str::uuid();
+    $heartbeat = [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_playback',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
+        'session_id' => $sessionId,
+        'sequence' => 1,
+        'state' => 'heartbeat',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+    ];
+
+    $this->postJson('/player_api.php', $heartbeat)->assertOk();
+    $lease = CachedContentActivityLease::query()->where('lease_id', $sessionId)->sole();
+    $lease->update(['expires_at' => now()->addSecond()]);
+    $expiryBeforeRetry = $lease->fresh()->expires_at;
+
+    $this->postJson('/player_api.php', $heartbeat)->assertOk();
+
+    expect($lease->fresh()->expires_at->greaterThan($expiryBeforeRetry))->toBeTrue();
+});
+
 it('releases and undoes a watched managed cache interest through the companion form contract', function () {
     $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
     $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
