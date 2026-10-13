@@ -66,6 +66,17 @@ it('advertises the versioned managed library publishing contract to authenticate
         ->assertJsonPath('m3u_editor.library_publishing.actions.register_publisher', 'm3u_editor_register_publisher')
         ->assertJsonPath('m3u_editor.library_publishing.actions.catalog', 'm3u_editor_catalog')
         ->assertJsonPath('m3u_editor.library_publishing.actions.sync_result', 'm3u_editor_sync_result')
+        ->assertJsonPath('m3u_editor.library_publishing.cache_control', [
+            'api_version' => 1,
+            'actions' => [
+                'prefetch' => 'm3u_editor_cache_prefetch',
+                'playback' => 'm3u_editor_cache_playback',
+                'release' => 'm3u_editor_cache_release',
+            ],
+            'max_targets' => 100,
+            'heartbeat_seconds' => 30,
+            'lease_seconds' => 120,
+        ])
         ->assertJsonPath('m3u_editor.library_publishing.snapshot_mode', 'full')
         ->assertJsonPath('m3u_editor.library_publishing.features', [
             'library_mappings',

@@ -534,6 +534,17 @@ class XtreamApiController extends Controller
                             'catalog' => 'm3u_editor_catalog',
                             'sync_result' => 'm3u_editor_sync_result',
                         ],
+                        'cache_control' => [
+                            'api_version' => 1,
+                            'actions' => [
+                                'prefetch' => 'm3u_editor_cache_prefetch',
+                                'playback' => 'm3u_editor_cache_playback',
+                                'release' => 'm3u_editor_cache_release',
+                            ],
+                            'max_targets' => 100,
+                            'heartbeat_seconds' => 30,
+                            'lease_seconds' => 120,
+                        ],
                         'snapshot_mode' => 'full',
                         'features' => [
                             'library_mappings',
