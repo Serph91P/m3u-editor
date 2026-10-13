@@ -3753,6 +3753,27 @@ class XtreamApiController extends Controller
             return $this->requestError('cache_disabled', 'Caching is disabled.', 403);
         }
 
+        $mappingValidator = Validator::make($request->all(), [
+            'api_version' => ['required', 'integer', 'in:1'],
+            'integration_id' => ['required', 'integer', 'min:1'],
+            'mapping_uuid' => ['required', 'uuid'],
+            'revision' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
+        ]);
+        if ($mappingValidator->fails()) {
+            return $this->apiVersionValidationError($request);
+        }
+
+        $mappingIdentity = $mappingValidator->validated();
+        $mapping = app(ManagedCacheControlService::class)->resolveActiveMapping(
+            $effectivePlaylist->user,
+            $mappingIdentity['integration_id'],
+            $mappingIdentity['mapping_uuid'],
+            $mappingIdentity['revision'],
+        );
+        if (! $mapping) {
+            return $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
+        }
+
         $validator = Validator::make($request->all(), [
             'api_version' => ['required', 'integer', 'in:1'],
             'integration_id' => ['required', 'integer', 'min:1'],
@@ -3795,16 +3816,6 @@ class XtreamApiController extends Controller
 
             $validated = [...$validated, ...$releaseValidator->validated()];
         }
-        $mapping = app(ManagedCacheControlService::class)->resolveActiveMapping(
-            $effectivePlaylist->user,
-            $validated['integration_id'],
-            $validated['mapping_uuid'],
-            $validated['revision'],
-        );
-        if (! $mapping) {
-            return $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
-        }
-
         $control = app(ManagedCacheControlService::class);
         $resolvedTargets = [];
         foreach ($validated['targets'] as $target) {
