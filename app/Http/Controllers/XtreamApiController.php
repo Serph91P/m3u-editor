@@ -50,6 +50,7 @@ use App\Services\EmbyPublicationCatalogService;
 use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
+use App\Services\ManagedCacheControlService;
 use App\Services\TmdbService;
 use App\Services\VodFileNameService;
 use App\Services\WatchProgressLinker;
@@ -3746,6 +3747,27 @@ class XtreamApiController extends Controller
 
         if (! app(CachedContentDispatchService::class)->isEnabled()) {
             return $this->requestError('cache_disabled', 'Caching is disabled.', 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'api_version' => ['required', 'integer', 'in:1'],
+            'integration_id' => ['required', 'integer', 'min:1'],
+            'mapping_uuid' => ['required', 'uuid'],
+            'revision' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
+        ]);
+        if ($validator->fails()) {
+            return $this->apiVersionValidationError($request);
+        }
+
+        $validated = $validator->validated();
+        $mapping = app(ManagedCacheControlService::class)->resolveActiveMapping(
+            $effectivePlaylist->user,
+            $validated['integration_id'],
+            $validated['mapping_uuid'],
+            $validated['revision'],
+        );
+        if (! $mapping) {
+            return $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
         }
 
         return $this->requestError('invalid_request', 'The request parameters are invalid.', 422);

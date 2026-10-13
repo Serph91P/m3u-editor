@@ -109,6 +109,32 @@ it('requires POST and refuses cache actions while global caching is disabled', f
         ->assertJsonPath('error.code', 'cache_disabled');
 });
 
+it('rejects a cache action for a mapping outside the authenticated owner catalog', function () {
+    $settings = app(GeneralSettings::class);
+    $settings->enable_cache = true;
+
+    $otherUser = User::factory()->create(['permissions' => ['use_integrations']]);
+    $foreignIntegration = MediaServerIntegration::factory()->for($otherUser)->createQuietly(['type' => 'emby']);
+    $foreignMapping = EmbyLibraryMapping::factory()
+        ->for($otherUser)
+        ->for($foreignIntegration, 'integration')
+        ->create([
+            'last_planned_revision' => str_repeat('a', 64),
+            'last_applied_revision' => str_repeat('a', 64),
+        ]);
+
+    $this->postJson('/player_api.php', [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+        'integration_id' => $foreignIntegration->id,
+        'mapping_uuid' => $foreignMapping->uuid,
+        'revision' => str_repeat('a', 64),
+    ])->assertNotFound()
+        ->assertJsonPath('error.code', 'mapping_not_found');
+});
+
 it('resolves only an active managed mapping owned by the requesting user at its applied revision', function () {
     $this->mapping->update([
         'is_managed' => true,
