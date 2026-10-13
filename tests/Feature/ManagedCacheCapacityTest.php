@@ -34,6 +34,15 @@ it('atomically reserves one managed prefetch per account group until it is relea
     expect($service->reserve($snapshot))->not->toBeNull();
 });
 
+it('rejects a stale reservation when the snapshot group or capacity no longer matches', function () {
+    $service = app(ManagedCacheCapacityService::class);
+    $reservation = $service->reserve(new ManagedCacheCapacitySnapshot('group-a', limit: 3, live: 1, background: 0));
+
+    expect($service->canUseReservation($reservation, new ManagedCacheCapacitySnapshot('group-b', limit: 3, live: 1, background: 0)))->toBeFalse()
+        ->and($service->canUseReservation($reservation, new ManagedCacheCapacitySnapshot('group-a', limit: 3, live: 2, background: 0)))->toBeFalse()
+        ->and($service->canUseReservation($reservation, new ManagedCacheCapacitySnapshot('group-a', limit: 3, live: 1, background: 0)))->toBeTrue();
+});
+
 it('keeps a file reservation available for the downloader until it releases the matching token', function () {
     $service = app(ManagedCacheCapacityService::class);
     $snapshot = new ManagedCacheCapacitySnapshot('opaque-group', limit: 3, live: 1, background: 0);

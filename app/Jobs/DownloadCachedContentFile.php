@@ -10,6 +10,7 @@ use App\Models\Episode;
 use App\Models\Playlist;
 use App\Services\M3uProxyService;
 use App\Services\ManagedCacheCapacityService;
+use App\Services\ManagedCacheCapacitySnapshotSource;
 use App\Settings\GeneralSettings;
 use App\Support\PrivateNetworkGuard;
 use App\Traits\ProviderRequestDelay;
@@ -182,9 +183,11 @@ class DownloadCachedContentFile implements ShouldQueue
         }
 
         if ($file->managed_by === CachedContentManagedBy::ManagedPublishing) {
-            $this->managedCapacityReservation = app(ManagedCacheCapacityService::class)->reservationForFile($file->id);
-            if ($this->managedCapacityReservation === null) {
-                $this->markFailed($file, 'Managed cache capacity reservation expired before request open.');
+            $capacity = app(ManagedCacheCapacityService::class);
+            $this->managedCapacityReservation = $capacity->reservationForFile($file->id);
+            $snapshot = app(ManagedCacheCapacitySnapshotSource::class)->snapshotFor($item);
+            if ($snapshot === null || ! $capacity->canUseReservation($this->managedCapacityReservation, $snapshot)) {
+                $this->markFailed($file, 'Managed cache capacity reservation is no longer current before request open.');
 
                 return;
             }

@@ -74,6 +74,23 @@ class ManagedCacheCapacityService
         return is_string($reservation) ? $reservation : null;
     }
 
+    public function canUseReservation(?string $reservation, ManagedCacheCapacitySnapshot $snapshot): bool
+    {
+        if ($reservation === null || ! str_contains($reservation, ':')) {
+            return false;
+        }
+
+        [$group, $token] = explode(':', $reservation, 2);
+        if (! hash_equals($group, $snapshot->group)
+            || $this->availability($snapshot->limit, $snapshot->live, $snapshot->background) !== CacheDispatchResult::Queued) {
+            return false;
+        }
+
+        $active = Cache::get('managed-cache-capacity:'.hash('sha256', $group).':active');
+
+        return is_string($active) && hash_equals($active, $token);
+    }
+
     /**
      * Releases only the matching reservation so a stale worker cannot clear a
      * later prefetch's slot.
