@@ -27,6 +27,7 @@ use App\Models\Epg;
 use App\Models\EpgProgramme;
 use App\Models\Episode;
 use App\Models\Group;
+use App\Models\ManagedCacheEvent;
 use App\Models\MediaServerIntegration;
 use App\Models\MergedPlaylist;
 use App\Models\Network;
@@ -65,6 +66,7 @@ use Carbon\Carbon;
 use Dedoc\Scramble\Attributes\Group as ApiGroup;
 use Dedoc\Scramble\Attributes\QueryParameter;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Collection;
@@ -3754,6 +3756,11 @@ class XtreamApiController extends Controller
             'integration_id' => ['required', 'integer', 'min:1'],
             'mapping_uuid' => ['required', 'uuid'],
             'revision' => ['required', 'string', 'regex:/^[a-f0-9]{64}$/'],
+            'request_id' => ['required', 'uuid'],
+            'targets' => ['required', 'array', 'list', 'min:1', 'max:100'],
+            'targets.*.canonical_id' => ['required', 'string', 'max:255'],
+            'targets.*.variant_key' => ['required', 'string', 'max:255'],
+            'targets.*.consumer_id' => ['required', 'string', 'max:255'],
         ]);
         if ($validator->fails()) {
             return $this->apiVersionValidationError($request);
@@ -3770,7 +3777,68 @@ class XtreamApiController extends Controller
             return $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
         }
 
-        return $this->requestError('invalid_request', 'The request parameters are invalid.', 422);
+        foreach ($validated['targets'] as $target) {
+            if (! app(ManagedCacheControlService::class)->resolveCatalogTarget(
+                $mapping,
+                $target['canonical_id'],
+                $target['variant_key'],
+            )) {
+                return $this->requestError('target_not_found', 'The managed catalog target was not found.', 404);
+            }
+        }
+
+        $action = (string) $request->input('action');
+        $payloadHash = hash('sha256', json_encode([
+            'mapping_uuid' => $validated['mapping_uuid'],
+            'revision' => $validated['revision'],
+            'targets' => $validated['targets'],
+        ], JSON_THROW_ON_ERROR));
+
+        $findEvent = fn (): ?ManagedCacheEvent => ManagedCacheEvent::query()
+            ->where('user_id', $effectivePlaylist->user_id)
+            ->where('integration_id', $validated['integration_id'])
+            ->where('action', $action)
+            ->where('request_id', $validated['request_id'])
+            ->first();
+
+        $existing = $findEvent();
+        if ($existing) {
+            if (! hash_equals($existing->payload_hash, $payloadHash)) {
+                return $this->requestError('idempotency_conflict', 'The request ID was already used with a different payload.', 409);
+            }
+
+            return $this->requestSuccess($existing->redacted_response);
+        }
+
+        $response = ['status' => 'deferred'];
+        try {
+            $event = DB::transaction(function () use ($findEvent, $effectivePlaylist, $validated, $action, $payloadHash, $response): ManagedCacheEvent {
+                $existing = $findEvent();
+                if ($existing) {
+                    return $existing;
+                }
+
+                return ManagedCacheEvent::create([
+                    'user_id' => $effectivePlaylist->user_id,
+                    'integration_id' => $validated['integration_id'],
+                    'action' => $action,
+                    'request_id' => $validated['request_id'],
+                    'payload_hash' => $payloadHash,
+                    'redacted_response' => $response,
+                ]);
+            });
+        } catch (UniqueConstraintViolationException $e) {
+            $event = $findEvent();
+            if (! $event) {
+                throw $e;
+            }
+        }
+
+        if (! hash_equals($event->payload_hash, $payloadHash)) {
+            return $this->requestError('idempotency_conflict', 'The request ID was already used with a different payload.', 409);
+        }
+
+        return $this->requestSuccess($event->redacted_response);
     }
 
     /**
