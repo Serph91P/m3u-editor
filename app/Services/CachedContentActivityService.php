@@ -34,11 +34,25 @@ class CachedContentActivityService
             'lease_id' => $leaseId,
         ]);
 
-        if ($lease->exists && ($sequence <= $lease->sequence || $lease->terminal_until?->isFuture())) {
+        if ($lease->exists && $lease->terminal_until?->isFuture()) {
+            return $lease;
+        }
+
+        if ($lease->exists && $sequence < $lease->sequence) {
             return $lease;
         }
 
         $now = now();
+        if ($lease->exists && $sequence === $lease->sequence) {
+            if ($lease->expires_at?->isFuture()) {
+                $lease->update([
+                    'expires_at' => $now->copy()->addSeconds(self::PLAYBACK_TTL_SECONDS),
+                    'last_activity_at' => $now,
+                ]);
+            }
+
+            return $lease;
+        }
         $lease->fill([
             'user_id' => $user->id,
             'mapping_uuid' => $target['mapping_uuid'],

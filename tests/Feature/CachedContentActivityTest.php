@@ -59,6 +59,26 @@ it('does not revive a terminal playback session from a late heartbeat', function
     expect($service->hasActivePlayback($target))->toBeFalse();
 });
 
+it('renews an active playback lease for a duplicate heartbeat sequence', function () {
+    $user = User::factory()->create();
+    $integration = MediaServerIntegration::factory()->for($user)->create();
+    $service = app(CachedContentActivityService::class);
+    $target = [
+        'mapping_uuid' => (string) Str::uuid(),
+        'revision' => str_repeat('a', 64),
+        'canonical_id' => 'episode:tmdb:550',
+        'variant_key' => '1080p',
+    ];
+
+    $lease = $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
+    $lease->update(['expires_at' => now()->addSecond()]);
+    $expiryBeforeRetry = $lease->fresh()->expires_at;
+
+    $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
+
+    expect($lease->fresh()->expires_at->greaterThan($expiryBeforeRetry))->toBeTrue();
+});
+
 it('acquires a reader lease and considers it active for the target', function () {
     $user = User::factory()->create();
     $integration = MediaServerIntegration::factory()->for($user)->create();
