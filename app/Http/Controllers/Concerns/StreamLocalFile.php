@@ -76,6 +76,9 @@ class StreamLocalFile
         ?string $range,
         array $extraHeaders = [],
         int $chunkSize = self::CHUNK_SIZE,
+        ?\Closure $onStart = null,
+        ?\Closure $onProgress = null,
+        ?\Closure $onFinish = null,
     ): StreamedResponse {
         $headers = [
             'Content-Type' => $mimeType,
@@ -92,14 +95,14 @@ class StreamLocalFile
             }
 
             return response()->stream(
-                static fn () => static::streamBytes($fullPath, $start, $length, $chunkSize),
+                static fn () => static::streamBytes($fullPath, $start, $length, $chunkSize, $onStart, $onProgress, $onFinish),
                 206,
                 [...$headers, 'Content-Length' => $length, 'Content-Range' => "bytes {$start}-{$end}/{$fileSize}"],
             );
         }
 
         return response()->stream(
-            static fn () => static::streamBytes($fullPath, 0, $fileSize, $chunkSize),
+            static fn () => static::streamBytes($fullPath, 0, $fileSize, $chunkSize, $onStart, $onProgress, $onFinish),
             200,
             [...$headers, 'Content-Length' => $fileSize],
         );
@@ -109,28 +112,40 @@ class StreamLocalFile
      * Echo $length bytes of the file starting at $start, flushing each chunk
      * and stopping early once the client disconnects.
      */
-    private static function streamBytes(string $fullPath, int $start, int $length, int $chunkSize): void
-    {
+    private static function streamBytes(
+        string $fullPath,
+        int $start,
+        int $length,
+        int $chunkSize,
+        ?\Closure $onStart,
+        ?\Closure $onProgress,
+        ?\Closure $onFinish,
+    ): void {
         $handle = fopen($fullPath, 'rb');
         if ($handle === false) {
             return;
         }
 
-        fseek($handle, $start);
-        $remaining = $length;
+        try {
+            $onStart?->__invoke();
+            fseek($handle, $start);
+            $remaining = $length;
 
-        while ($remaining > 0 && ! feof($handle) && connection_status() === CONNECTION_NORMAL) {
-            $data = fread($handle, min($chunkSize, $remaining));
-            if ($data === false || $data === '') {
-                break;
+            while ($remaining > 0 && ! feof($handle) && connection_status() === CONNECTION_NORMAL) {
+                $data = fread($handle, min($chunkSize, $remaining));
+                if ($data === false || $data === '') {
+                    break;
+                }
+
+                echo $data;
+                flush();
+                $remaining -= strlen($data);
+                $onProgress?->__invoke();
             }
-
-            echo $data;
-            flush();
-            $remaining -= strlen($data);
+        } finally {
+            fclose($handle);
+            $onFinish?->__invoke();
         }
-
-        fclose($handle);
     }
 
     /**
