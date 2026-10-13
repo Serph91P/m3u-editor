@@ -91,6 +91,33 @@ class ManagedCacheCapacityService
         return is_string($active) && hash_equals($active, $token);
     }
 
+    public function renew(?string $reservation): bool
+    {
+        if ($reservation === null || ! str_contains($reservation, ':')) {
+            return false;
+        }
+
+        [$group, $token] = explode(':', $reservation, 2);
+        $group = hash('sha256', $group);
+        $lock = Cache::lock("managed-cache-capacity:{$group}:lock", 10);
+        if (! $lock->get()) {
+            return false;
+        }
+
+        try {
+            $activeKey = "managed-cache-capacity:{$group}:active";
+            if (! hash_equals((string) Cache::get($activeKey), $token)) {
+                return false;
+            }
+
+            Cache::put($activeKey, $token, now()->addSeconds(self::RESERVATION_TTL_SECONDS));
+
+            return true;
+        } finally {
+            $lock->release();
+        }
+    }
+
     /**
      * Releases only the matching reservation so a stale worker cannot clear a
      * later prefetch's slot.

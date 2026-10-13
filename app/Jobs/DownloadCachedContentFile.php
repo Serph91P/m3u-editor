@@ -434,6 +434,13 @@ class DownloadCachedContentFile implements ShouldQueue
             return;
         }
 
+        if ($this->managedCapacityReservation !== null
+            && ! app(ManagedCacheCapacityService::class)->renew($this->managedCapacityReservation)) {
+            $this->cancelled = true;
+
+            return;
+        }
+
         $this->checkCancellation();
 
         if ($downloaded <= 0 || $downloaded === $this->lastReportedBytes) {

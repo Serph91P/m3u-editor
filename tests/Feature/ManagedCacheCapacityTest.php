@@ -34,6 +34,17 @@ it('atomically reserves one managed prefetch per account group until it is relea
     expect($service->reserve($snapshot))->not->toBeNull();
 });
 
+it('renews an active reservation heartbeat without reviving a released token', function () {
+    $service = app(ManagedCacheCapacityService::class);
+    $reservation = $service->reserve(new ManagedCacheCapacitySnapshot('group-a', limit: 3, live: 1, background: 0));
+
+    expect($service->renew($reservation))->toBeTrue();
+
+    $service->release($reservation);
+
+    expect($service->renew($reservation))->toBeFalse();
+});
+
 it('rejects a stale reservation when the snapshot group or capacity no longer matches', function () {
     $service = app(ManagedCacheCapacityService::class);
     $reservation = $service->reserve(new ManagedCacheCapacitySnapshot('group-a', limit: 3, live: 1, background: 0));
