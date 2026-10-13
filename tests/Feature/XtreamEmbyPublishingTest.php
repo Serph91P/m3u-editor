@@ -8,6 +8,7 @@ use App\Models\MediaServerIntegration;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Services\ManagedCacheControlService;
 use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -105,6 +106,35 @@ it('requires POST and refuses cache actions while global caching is disabled', f
     $this->postJson('/player_api.php', $payload)
         ->assertForbidden()
         ->assertJsonPath('error.code', 'cache_disabled');
+});
+
+it('resolves only an active managed mapping owned by the requesting user at its applied revision', function () {
+    $this->mapping->update([
+        'is_managed' => true,
+        'last_planned_revision' => str_repeat('a', 64),
+        'last_applied_revision' => str_repeat('a', 64),
+    ]);
+
+    $service = app(ManagedCacheControlService::class);
+
+    $activeMapping = $service->resolveActiveMapping(
+        $this->user,
+        $this->integration->id,
+        $this->mapping->uuid,
+        str_repeat('a', 64),
+    );
+
+    expect($activeMapping)->not->toBeNull()
+        ->and($activeMapping->id)->toBe($this->mapping->id);
+
+    $this->mapping->update(['is_managed' => false]);
+    expect($service->resolveActiveMapping($this->user, $this->integration->id, $this->mapping->uuid, str_repeat('a', 64)))->toBeNull();
+
+    $this->mapping->update(['is_managed' => true, 'enabled' => false]);
+    expect($service->resolveActiveMapping($this->user, $this->integration->id, $this->mapping->uuid, str_repeat('a', 64)))->toBeNull();
+
+    $this->mapping->update(['enabled' => true, 'last_applied_revision' => str_repeat('b', 64)]);
+    expect($service->resolveActiveMapping($this->user, $this->integration->id, $this->mapping->uuid, str_repeat('a', 64)))->toBeNull();
 });
 
 it('advertises publisher registration before the first mapping exists', function () {
