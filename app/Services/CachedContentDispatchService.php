@@ -83,7 +83,7 @@ class CachedContentDispatchService
      * `$viaArr` false keeps the provider even when a caching Radarr/Sonarr
      * is set up.
      */
-    public function dispatch(Channel|Episode $item, bool $automatic = false, bool $viaArr = true): CacheDispatchResult
+    public function dispatch(Channel|Episode $item, bool $automatic = false, bool $viaArr = true, ?CachedContentManagedBy $managedBy = null): CacheDispatchResult
     {
         if (! $this->isEnabled()) {
             return CacheDispatchResult::Disabled;
@@ -140,6 +140,7 @@ class CachedContentDispatchService
                 'user_id' => $playlist->user_id,
                 'playlist_id' => $playlist->id,
                 ...CachedContentFile::buildAttributes($item, $automatic),
+                'managed_by' => $managedBy,
                 'status' => CachedContentFileStatus::Pending,
             ]);
         } catch (UniqueConstraintViolationException) {
@@ -150,6 +151,16 @@ class CachedContentDispatchService
         dispatch(new DownloadCachedContentFile($file->id));
 
         return CacheDispatchResult::Queued;
+    }
+
+    /**
+     * Queue a provider download for the managed-publishing cache contract.
+     * Existing cache rows retain their original ownership so shared, manual,
+     * dynamic-group and Arr files are never reclassified by this path.
+     */
+    public function dispatchManaged(Channel|Episode $item): CacheDispatchResult
+    {
+        return $this->dispatch($item, viaArr: false, managedBy: CachedContentManagedBy::ManagedPublishing);
     }
 
     /**
