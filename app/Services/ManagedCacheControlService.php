@@ -34,6 +34,52 @@ class ManagedCacheControlService
         ]);
     }
 
+    /**
+     * Record a watched/undo decision for one consumer interest. Only a
+     * complete cohort with watched=true makes the interest releasable;
+     * watched=false cancels any pending release.
+     */
+    public function releaseWatched(
+        User $user,
+        MediaServerIntegration $integration,
+        string $mappingUuid,
+        string $canonicalId,
+        string $variantKey,
+        string $consumerId,
+        bool $watched,
+        int $deleteAfterHours,
+        bool $cohortComplete,
+    ): void {
+        $interest = ManagedCacheInterest::query()
+            ->where('integration_id', $integration->id)
+            ->where('mapping_uuid', $mappingUuid)
+            ->where('canonical_id', $canonicalId)
+            ->where('variant_key', $variantKey)
+            ->where('consumer_id', $consumerId)
+            ->first();
+
+        if ($interest === null) {
+            return;
+        }
+
+        if (! $watched || ! $cohortComplete) {
+            $interest->update([
+                'watched_at' => null,
+                'release_after' => null,
+            ]);
+
+            return;
+        }
+
+        $earliest = now()->copy()->addMinutes(15);
+        $releaseAfter = now()->copy()->addHours(max(0, min(168, $deleteAfterHours)));
+
+        $interest->update([
+            'watched_at' => now(),
+            'release_after' => $releaseAfter->greaterThan($earliest) ? $releaseAfter : $earliest,
+        ]);
+    }
+
     public function resolveActiveMapping(
         User $user,
         int $integrationId,
