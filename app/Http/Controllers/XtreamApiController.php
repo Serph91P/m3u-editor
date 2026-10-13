@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Casts\UtcDateTime;
+use App\Enums\CacheDispatchResult;
 use App\Enums\ChannelLogoType;
 use App\Enums\DvrMatchMode;
 use App\Enums\DvrRecordingStatus;
@@ -53,6 +54,8 @@ use App\Services\EmbyPublicationCatalogService;
 use App\Services\EpgCacheService;
 use App\Services\LogoCacheService;
 use App\Services\M3uProxyService;
+use App\Services\ManagedCacheCapacityService;
+use App\Services\ManagedCacheCapacitySnapshotSource;
 use App\Services\ManagedCacheControlService;
 use App\Services\TmdbService;
 use App\Services\VodFileNameService;
@@ -3948,10 +3951,59 @@ class XtreamApiController extends Controller
                             ];
                         }
 
+                        if ($action !== 'm3u_editor_cache_prefetch') {
+                            return [
+                                'canonical_id' => $target['canonical_id'],
+                                'variant_key' => $target['variant_key'],
+                                'status' => 'deferred',
+                            ];
+                        }
+
+                        $snapshot = app(ManagedCacheCapacitySnapshotSource::class)->snapshotFor($resolved['cacheable']);
+                        if ($snapshot === null) {
+                            return [
+                                'canonical_id' => $target['canonical_id'],
+                                'variant_key' => $target['variant_key'],
+                                'status' => 'deferred',
+                            ];
+                        }
+
+                        $capacity = app(ManagedCacheCapacityService::class);
+                        $reservation = $capacity->reserve($snapshot);
+                        if ($reservation === null) {
+                            return [
+                                'canonical_id' => $target['canonical_id'],
+                                'variant_key' => $target['variant_key'],
+                                'status' => 'deferred',
+                            ];
+                        }
+
+                        $dispatch = app(CachedContentDispatchService::class)->dispatchManaged($resolved['cacheable']);
+                        $file = $resolved['cacheable']->cachedContentFile()->first();
+                        if ($file && in_array($dispatch, [CacheDispatchResult::Queued, CacheDispatchResult::AlreadyQueued], true)) {
+                            $capacity->attachToFile($file->id, $reservation);
+                            $control->recordInterest(
+                                $file,
+                                $mapping->integration,
+                                $mapping->uuid,
+                                $target['canonical_id'],
+                                $target['variant_key'],
+                                $validated['consumer_id'],
+                            );
+
+                            return [
+                                'canonical_id' => $target['canonical_id'],
+                                'variant_key' => $target['variant_key'],
+                                'status' => $dispatch->value,
+                            ];
+                        }
+
+                        $capacity->release($reservation);
+
                         return [
                             'canonical_id' => $target['canonical_id'],
                             'variant_key' => $target['variant_key'],
-                            'status' => 'deferred',
+                            'status' => $dispatch->value === CacheDispatchResult::AlreadyCached->value ? 'already_cached' : 'deferred',
                         ];
                     }, $resolvedTargets),
                 ];

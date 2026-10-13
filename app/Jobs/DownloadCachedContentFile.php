@@ -3,11 +3,13 @@
 namespace App\Jobs;
 
 use App\Enums\CachedContentFileStatus;
+use App\Enums\CachedContentManagedBy;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
 use App\Models\Episode;
 use App\Models\Playlist;
 use App\Services\M3uProxyService;
+use App\Services\ManagedCacheCapacityService;
 use App\Settings\GeneralSettings;
 use App\Support\PrivateNetworkGuard;
 use App\Traits\ProviderRequestDelay;
@@ -97,6 +99,8 @@ class DownloadCachedContentFile implements ShouldQueue
 
     private ?Carbon $lastCancellationCheckAt = null;
 
+    private ?string $managedCapacityReservation = null;
+
     private bool $cancelled = false;
 
     public function __construct(public int $cachedContentFileId)
@@ -175,6 +179,15 @@ class DownloadCachedContentFile implements ShouldQueue
         $file = $this->claim($file);
         if ($file === null) {
             return;
+        }
+
+        if ($file->managed_by === CachedContentManagedBy::ManagedPublishing) {
+            $this->managedCapacityReservation = app(ManagedCacheCapacityService::class)->reservationForFile($file->id);
+            if ($this->managedCapacityReservation === null) {
+                $this->markFailed($file, 'Managed cache capacity reservation expired before request open.');
+
+                return;
+            }
         }
 
         $this->progressFile = $file;
@@ -271,6 +284,7 @@ class DownloadCachedContentFile implements ShouldQueue
             'last_failed_at' => null,
             'last_error_message' => null,
         ])->save();
+        $this->releaseManagedCapacityReservation();
     }
 
     /**
@@ -490,6 +504,8 @@ class DownloadCachedContentFile implements ShouldQueue
             Log::warning("DownloadCachedContentFile failed for row {$file->id}: {$reason}");
         } catch (Throwable $e) {
             Log::error("DownloadCachedContentFile: markFailed itself failed for {$file->id}: {$e->getMessage()}");
+        } finally {
+            $this->releaseManagedCapacityReservation();
         }
     }
 
@@ -506,6 +522,17 @@ class DownloadCachedContentFile implements ShouldQueue
             'last_failed_at' => now(),
             'last_error_message' => mb_substr($reason, 0, 8000),
         ]);
+        $this->releaseManagedCapacityReservation();
+    }
+
+    private function releaseManagedCapacityReservation(): void
+    {
+        if ($this->managedCapacityReservation === null) {
+            return;
+        }
+
+        app(ManagedCacheCapacityService::class)->release($this->managedCapacityReservation);
+        $this->managedCapacityReservation = null;
     }
 
     /**

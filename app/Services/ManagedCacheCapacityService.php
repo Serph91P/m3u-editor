@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Enums\CacheDispatchResult;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 
 /**
  * Decides whether a managed-publishing prefetch may consume a provider slot.
@@ -13,6 +15,8 @@ use App\Enums\CacheDispatchResult;
  */
 class ManagedCacheCapacityService
 {
+    private const RESERVATION_TTL_SECONDS = 600;
+
     public function availability(?int $limit, ?int $live, ?int $background): CacheDispatchResult
     {
         if ($limit === null || $limit < 1 || $live === null || $background === null) {
@@ -24,5 +28,76 @@ class ManagedCacheCapacityService
         }
 
         return CacheDispatchResult::Queued;
+    }
+
+    /**
+     * Atomically reserve the one allowed managed-prefetch slot for an opaque
+     * provider account group. The TTL makes worker crashes fail closed until a
+     * later attempt can safely retry.
+     */
+    public function reserve(ManagedCacheCapacitySnapshot $snapshot): ?string
+    {
+        if ($this->availability($snapshot->limit, $snapshot->live, $snapshot->background) !== CacheDispatchResult::Queued) {
+            return null;
+        }
+
+        $group = hash('sha256', $snapshot->group);
+        $lock = Cache::lock("managed-cache-capacity:{$group}:lock", 10);
+        if (! $lock->get()) {
+            return null;
+        }
+
+        try {
+            $activeKey = "managed-cache-capacity:{$group}:active";
+            if (Cache::has($activeKey)) {
+                return null;
+            }
+
+            $reservation = (string) Str::uuid();
+            Cache::put($activeKey, $reservation, now()->addSeconds(self::RESERVATION_TTL_SECONDS));
+
+            return $snapshot->group.':'.$reservation;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    public function attachToFile(int $fileId, string $reservation): void
+    {
+        Cache::put("managed-cache-capacity:file:{$fileId}", $reservation, now()->addSeconds(self::RESERVATION_TTL_SECONDS));
+    }
+
+    public function reservationForFile(int $fileId): ?string
+    {
+        $reservation = Cache::get("managed-cache-capacity:file:{$fileId}");
+
+        return is_string($reservation) ? $reservation : null;
+    }
+
+    /**
+     * Releases only the matching reservation so a stale worker cannot clear a
+     * later prefetch's slot.
+     */
+    public function release(?string $reservation): void
+    {
+        if ($reservation === null || ! str_contains($reservation, ':')) {
+            return;
+        }
+
+        [$group, $token] = explode(':', $reservation, 2);
+        $group = hash('sha256', $group);
+        $lock = Cache::lock("managed-cache-capacity:{$group}:lock", 10);
+        if (! $lock->get()) {
+            return;
+        }
+
+        try {
+            $activeKey = "managed-cache-capacity:{$group}:active";
+            if (hash_equals((string) Cache::get($activeKey), $token)) {
+                Cache::forget($activeKey);
+            }
+        } finally {
+            $lock->release();
+        }
     }
 }
