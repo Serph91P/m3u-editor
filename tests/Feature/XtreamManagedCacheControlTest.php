@@ -4,6 +4,7 @@ use App\Models\CachedContentActivityLease;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
 use App\Models\EmbyLibraryMapping;
+use App\Models\Episode;
 use App\Models\Group;
 use App\Models\ManagedCacheEvent;
 use App\Models\ManagedCacheInterest;
@@ -12,6 +13,8 @@ use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\User;
 use App\Services\EmbyPublicationCatalogService;
+use App\Services\ManagedCacheCapacitySnapshot;
+use App\Services\ManagedCacheCapacitySnapshotSource;
 use App\Settings\GeneralSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -114,6 +117,43 @@ it('returns deferred when managed cache capacity is unknown', function () {
         ->assertJsonPath('data.results.0.canonical_id', $item['canonical_id'])
         ->assertJsonPath('data.results.0.variant_key', $item['variants'][0]['key'])
         ->assertJsonPath('data.results.0.status', 'deferred');
+});
+
+it('queues a managed prefetch only with an injected authoritative capacity snapshot', function () {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    app()->instance(ManagedCacheCapacitySnapshotSource::class, new class implements ManagedCacheCapacitySnapshotSource
+    {
+        public function snapshotFor(Channel|Episode $item): ?ManagedCacheCapacitySnapshot
+        {
+            return new ManagedCacheCapacitySnapshot('synthetic-account', limit: 3, live: 1, background: 0);
+        }
+    });
+
+    $item = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping)['items'][0];
+
+    $this->postJson(managedCacheActionUrl([
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+    ]))->assertOk()
+        ->assertJsonPath('data.results.0.status', 'queued');
+
+    expect(CachedContentFile::query()->where('managed_by', 'managed_publishing')->exists())->toBeTrue()
+        ->and(ManagedCacheInterest::query()->where('consumer_id', 'profile-a')->exists())->toBeTrue();
 });
 
 it('accepts the companion form contract with one global consumer id', function () {
