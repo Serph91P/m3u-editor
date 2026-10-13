@@ -42,6 +42,7 @@ use App\Models\ViewerWatchProgress;
 use App\Providers\VersionServiceProvider;
 use App\Services\AIOStreamsAuthorizationService;
 use App\Services\ChannelNumberSequence;
+use App\Services\CachedContentDispatchService;
 use App\Services\ContentRequestService;
 use App\Services\DvrAccessScope;
 use App\Services\DvrRecorderService;
@@ -2258,6 +2259,12 @@ class XtreamApiController extends Controller
             return $this->managedLibraryCatalog($request, $playlist, $authMethod, $playlistAuth);
         } elseif ($action === 'm3u_editor_sync_result') {
             return $this->managedLibrarySyncResult($request, $playlist, $authMethod, $playlistAuth);
+        } elseif (in_array($action, [
+            'm3u_editor_cache_prefetch',
+            'm3u_editor_cache_playback',
+            'm3u_editor_cache_release',
+        ], true)) {
+            return $this->managedCacheControl($request, $playlist, $authMethod, $playlistAuth);
         } elseif (in_array($action, self::DVR_ACTIONS, true)) {
             $dvrPlaylist = $this->resolveDvrPlaylist($playlist);
 
@@ -3720,6 +3727,28 @@ class XtreamApiController extends Controller
             'mapping_uuid' => $result['mapping']->uuid,
             'revision' => $result['mapping']->last_applied_revision,
         ]);
+    }
+
+    private function managedCacheControl(
+        Request $request,
+        mixed $playlist,
+        string $authMethod,
+        ?PlaylistAuth $playlistAuth,
+    ): JsonResponse {
+        if (! $request->isMethod('POST')) {
+            return $this->requestError('method_not_allowed', 'Cache control actions require POST.', 405);
+        }
+
+        $effectivePlaylist = $this->resolveEffectivePlaylist($playlist);
+        if (! $effectivePlaylist || ! $this->libraryPublishingAuthorized($effectivePlaylist, $authMethod, $playlistAuth)) {
+            return $this->libraryPublishingUnavailableError();
+        }
+
+        if (! app(CachedContentDispatchService::class)->isEnabled()) {
+            return $this->requestError('cache_disabled', 'Caching is disabled.', 403);
+        }
+
+        return $this->requestError('invalid_request', 'The request parameters are invalid.', 422);
     }
 
     /**

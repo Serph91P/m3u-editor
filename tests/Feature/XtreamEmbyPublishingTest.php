@@ -91,6 +91,22 @@ it('advertises the versioned managed library publishing contract to authenticate
         ->not->toContain('/srv/emby');
 });
 
+it('requires POST and refuses cache actions while global caching is disabled', function () {
+    $payload = [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+    ];
+
+    $this->getJson('/player_api.php?'.http_build_query($payload))
+        ->assertMethodNotAllowed();
+
+    $this->postJson('/player_api.php', $payload)
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'cache_disabled');
+});
+
 it('advertises publisher registration before the first mapping exists', function () {
     $this->mapping->delete();
 
