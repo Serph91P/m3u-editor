@@ -15,7 +15,7 @@ use Illuminate\Support\Str;
  */
 class ManagedCacheCapacityService
 {
-    private const RESERVATION_TTL_SECONDS = 600;
+    private const RESERVATION_TTL_SECONDS = 120;
 
     public function availability(?int $limit, ?int $live, ?int $background): CacheDispatchResult
     {
