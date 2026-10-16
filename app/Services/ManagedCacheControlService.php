@@ -54,6 +54,7 @@ class ManagedCacheControlService
     ): void {
         $interest = ManagedCacheInterest::query()
             ->where('integration_id', $integration->id)
+            ->whereHas('integration', fn ($query) => $query->where('user_id', $user->id))
             ->where('mapping_uuid', $mappingUuid)
             ->where('canonical_id', $canonicalId)
             ->where('variant_key', $variantKey)
