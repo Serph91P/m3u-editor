@@ -140,6 +140,25 @@ it('defers a cache item whose source URL is not owned by its Xtream account', fu
     Http::assertNothingSent();
 });
 
+it('defers a cache item configured with a non-HTTP Xtream origin', function () {
+    $playlist = new Playlist([
+        'xtream' => true,
+        'xtream_config' => [
+            'url' => 'ftp://provider.test',
+            'username' => 'account-42',
+            'password' => 'synthetic-secret',
+        ],
+    ]);
+    $channel = new Channel(['url' => 'ftp://provider.test/movie/account-42/synthetic-secret/1']);
+    $channel->setRelation('playlist', $playlist);
+
+    Http::fake();
+
+    expect(app(XtreamManagedCacheCapacitySnapshotSource::class)->snapshotFor($channel))->toBeNull();
+
+    Http::assertNothingSent();
+});
+
 it('encodes Xtream credentials when requesting a fresh capacity snapshot', function () {
     $username = 'account&other=attacker';
     $password = 'secret?x=1';

@@ -69,6 +69,10 @@ final class XtreamManagedCacheCapacitySnapshotSource implements ManagedCacheCapa
             return false;
         }
 
+        if (! in_array(strtolower($sourceParts['scheme']), ['http', 'https'], true)) {
+            return false;
+        }
+
         $sourceOrigin = strtolower($sourceParts['scheme'].'://'.$sourceParts['host'].
             (isset($sourceParts['port']) ? ':'.$sourceParts['port'] : ''));
         $configuredOrigins = array_map(function (string $url): string {
