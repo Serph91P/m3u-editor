@@ -28,6 +28,10 @@ final class XtreamManagedCacheCapacitySnapshotSource implements ManagedCacheCapa
             return null;
         }
 
+        if (! $this->isTrustedSource($item->cacheSourceUrl(), $playlist, $username, $password)) {
+            return null;
+        }
+
         try {
             $response = XtreamService::make($playlist, retryLimit: 1)->userInfo(timeout: 5);
         } catch (Throwable) {
@@ -46,24 +50,45 @@ final class XtreamManagedCacheCapacitySnapshotSource implements ManagedCacheCapa
         }
 
         return new ManagedCacheCapacitySnapshot(
-            $this->groups->for($this->accountOrigin($playlist, $server), $username."\n".$password),
+            $this->groups->for($this->accountOrigin(), $username."\n".$password),
             limit: $limit,
             live: $activeConnections,
             background: 0,
         );
     }
 
-    private function accountOrigin(Playlist $playlist, string $server): string
+    private function accountOrigin(): string
     {
-        $urls = $playlist->getOrderedXtreamUrls();
-        $urls[] = $server;
-        $urls = array_values(array_unique(array_filter(array_map(
-            fn (mixed $url): string => strtolower(rtrim(trim((string) $url), '/')),
-            $urls,
-        ))));
-        sort($urls, SORT_STRING);
+        return 'xtream';
+    }
 
-        return implode("\n", $urls);
+    private function isTrustedSource(string $source, Playlist $playlist, string $username, string $password): bool
+    {
+        $sourceParts = parse_url($source);
+        if (! is_array($sourceParts) || ! isset($sourceParts['scheme'], $sourceParts['host'], $sourceParts['path'])) {
+            return false;
+        }
+
+        $sourceOrigin = strtolower($sourceParts['scheme'].'://'.$sourceParts['host'].
+            (isset($sourceParts['port']) ? ':'.$sourceParts['port'] : ''));
+        $configuredOrigins = array_map(function (string $url): string {
+            $parts = parse_url($url);
+
+            return is_array($parts) && isset($parts['scheme'], $parts['host'])
+                ? strtolower($parts['scheme'].'://'.$parts['host'].(isset($parts['port']) ? ':'.$parts['port'] : ''))
+                : '';
+        }, $playlist->getOrderedXtreamUrls());
+        if (! in_array($sourceOrigin, $configuredOrigins, true)) {
+            return false;
+        }
+
+        $segments = array_values(array_filter(explode('/', trim($sourceParts['path'], '/')), 'strlen'));
+        if (count($segments) !== 4 || ! in_array($segments[0], ['live', 'movie', 'series'], true)) {
+            return false;
+        }
+
+        return hash_equals($username, urldecode($segments[1]))
+            && hash_equals($password, urldecode($segments[2]));
     }
 
     private function isAuthenticated(mixed $value): bool

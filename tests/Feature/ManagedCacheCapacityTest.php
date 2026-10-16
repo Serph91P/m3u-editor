@@ -37,7 +37,7 @@ it('rejects Xtream counters when active connections exceed the configured limit'
             'password' => 'synthetic-secret',
         ],
     ]);
-    $channel = new Channel;
+    $channel = new Channel(['url' => 'https://provider.test/movie/account-42/synthetic-secret/1']);
     $channel->setRelation('playlist', $playlist);
 
     Http::fake([
@@ -62,9 +62,9 @@ it('returns a fresh opaque Xtream account snapshot for configured channels and e
             'password' => 'synthetic-secret',
         ],
     ]);
-    $channel = new Channel;
+    $channel = new Channel(['url' => 'https://provider.test/movie/account-42/synthetic-secret/1']);
     $channel->setRelation('playlist', $playlist);
-    $episode = new Episode;
+    $episode = new Episode(['url' => 'https://provider.test/series/account-42/synthetic-secret/2']);
     $episode->setRelation('playlist', $playlist);
 
     Http::fake([
@@ -90,6 +90,79 @@ it('returns a fresh opaque Xtream account snapshot for configured channels and e
         ->and($channelSnapshot->group)->not->toContain('provider.test');
 
     Http::assertSentCount(2);
+});
+
+it('shares an Xtream account group when one playlist adds a fallback URL', function () {
+    $config = [
+        'url' => 'https://provider.test',
+        'username' => 'account-42',
+        'password' => 'synthetic-secret',
+    ];
+    $primaryOnly = new Playlist(['xtream' => true, 'xtream_config' => $config]);
+    $withFallback = new Playlist([
+        'xtream' => true,
+        'xtream_config' => $config,
+        'xtream_fallback_urls' => ['https://fallback.provider.test'],
+    ]);
+    $primaryChannel = new Channel(['url' => 'https://provider.test/movie/account-42/synthetic-secret/1']);
+    $fallbackChannel = new Channel(['url' => 'https://provider.test/movie/account-42/synthetic-secret/2']);
+    $primaryChannel->setRelation('playlist', $primaryOnly);
+    $fallbackChannel->setRelation('playlist', $withFallback);
+
+    Http::fake([
+        'https://provider.test/player_api.php?username=account-42&password=synthetic-secret' => Http::response([
+            'user_info' => ['auth' => 1, 'max_connections' => 3, 'active_cons' => 1],
+        ]),
+    ]);
+
+    $source = app(XtreamManagedCacheCapacitySnapshotSource::class);
+
+    expect($source->snapshotFor($primaryChannel)?->group)
+        ->toBe($source->snapshotFor($fallbackChannel)?->group);
+});
+
+it('defers a cache item whose source URL is not owned by its Xtream account', function () {
+    $playlist = new Playlist([
+        'xtream' => true,
+        'xtream_config' => [
+            'url' => 'https://provider.test',
+            'username' => 'account-42',
+            'password' => 'synthetic-secret',
+        ],
+    ]);
+    $channel = new Channel(['url_custom' => 'https://foreign-provider.test/movie/other-account/other-secret/1']);
+    $channel->setRelation('playlist', $playlist);
+
+    Http::fake();
+
+    expect(app(XtreamManagedCacheCapacitySnapshotSource::class)->snapshotFor($channel))->toBeNull();
+
+    Http::assertNothingSent();
+});
+
+it('encodes Xtream credentials when requesting a fresh capacity snapshot', function () {
+    $username = 'account&other=attacker';
+    $password = 'secret?x=1';
+    $playlist = new Playlist([
+        'xtream' => true,
+        'xtream_config' => [
+            'url' => 'https://provider.test',
+            'username' => $username,
+            'password' => $password,
+        ],
+    ]);
+    $channel = new Channel([
+        'url' => 'https://provider.test/movie/'.rawurlencode($username).'/'.rawurlencode($password).'/1',
+    ]);
+    $channel->setRelation('playlist', $playlist);
+
+    Http::fake([
+        'https://provider.test/player_api.php?username=account%26other%3Dattacker&password=secret%3Fx%3D1' => Http::response([
+            'user_info' => ['auth' => 1, 'max_connections' => 3, 'active_cons' => 1],
+        ]),
+    ]);
+
+    expect(app(XtreamManagedCacheCapacitySnapshotSource::class)->snapshotFor($channel))->not->toBeNull();
 });
 
 it('reserves one provider slot for live playback and one for managed background work', function () {
