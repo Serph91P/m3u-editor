@@ -65,22 +65,34 @@ class ManagedCacheControlService
             return;
         }
 
-        if (! $watched || ! $cohortComplete) {
-            $interest->update([
-                'watched_at' => null,
-                'release_after' => null,
-            ]);
-
+        $file = $interest->cachedContentFile;
+        if ($file === null) {
             return;
         }
 
-        $earliest = now()->copy()->addMinutes(15);
-        $releaseAfter = now()->copy()->addHours(max(0, min(168, $deleteAfterHours)));
+        app(CachedContentActivityService::class)->withFileActivityLock($file, function () use ($interest, $watched, $deleteAfterHours, $cohortComplete): void {
+            $interest = $interest->fresh();
+            if ($interest === null) {
+                return;
+            }
 
-        $interest->update([
-            'watched_at' => now(),
-            'release_after' => $releaseAfter->greaterThan($earliest) ? $releaseAfter : $earliest,
-        ]);
+            if (! $watched || ! $cohortComplete) {
+                $interest->update([
+                    'watched_at' => null,
+                    'release_after' => null,
+                ]);
+
+                return;
+            }
+
+            $earliest = now()->copy()->addMinutes(15);
+            $releaseAfter = now()->copy()->addHours(max(0, min(168, $deleteAfterHours)));
+
+            $interest->update([
+                'watched_at' => now(),
+                'release_after' => $releaseAfter->greaterThan($earliest) ? $releaseAfter : $earliest,
+            ]);
+        });
     }
 
     public function resolveActiveMapping(

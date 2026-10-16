@@ -135,6 +135,45 @@ it('cancels release when watched is false', function () {
         ->and($interest->release_after)->toBeNull();
 });
 
+it('serializes a watched undo with deletion for its managed file', function () {
+    $file = makeManagedFile($this->playlist);
+    $interest = ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => '123e4567-e89b-12d3-a456-426614174000',
+        'canonical_id' => 'episode:fixture:s01e01',
+        'variant_key' => '1080p',
+        'consumer_id' => 'profile-a',
+        'watched_at' => now()->subHour(),
+        'release_after' => now()->subHour(),
+    ]);
+    $activity = Mockery::mock(CachedContentActivityService::class);
+    $activity->shouldReceive('withFileActivityLock')
+        ->once()
+        ->with(
+            Mockery::on(fn (CachedContentFile $lockedFile): bool => $lockedFile->is($file)),
+            Mockery::type('callable'),
+        )
+        ->andReturnUsing(fn (CachedContentFile $_, callable $callback): mixed => $callback());
+    app()->instance(CachedContentActivityService::class, $activity);
+
+    app(ManagedCacheControlService::class)->releaseWatched(
+        $this->user,
+        $this->integration,
+        $interest->mapping_uuid,
+        $interest->canonical_id,
+        $interest->variant_key,
+        $interest->consumer_id,
+        watched: false,
+        deleteAfterHours: 24,
+        cohortComplete: true,
+    );
+
+    $interest->refresh();
+    expect($interest->watched_at)->toBeNull()
+        ->and($interest->release_after)->toBeNull();
+});
+
 it('does not delete a managed file while a reader lease is active', function () {
     $file = makeManagedFile($this->playlist);
     Storage::disk('cache')->put('managed/movie.mp4', 'video-bytes');
