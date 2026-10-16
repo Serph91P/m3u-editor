@@ -3,13 +3,13 @@
 namespace App\Services;
 
 use App\Models\MediaServerIntegration;
-use App\Support\PrivateNetworkGuard;
-use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Http;
+use App\Traits\GuardsEmbyCompanionOrigin;
 use Throwable;
 
 class EmbyManagedSetupService
 {
+    use GuardsEmbyCompanionOrigin;
+
     private const int CONTRACT_VERSION = 1;
 
     private const string ORIGIN_BLOCKED_MESSAGE = 'Emby managed setup was blocked by the integration security policy.';
@@ -36,14 +36,7 @@ class EmbyManagedSetupService
         }
 
         try {
-            $response = Http::baseUrl($integration->base_url)
-                ->connectTimeout(5)
-                ->timeout(15)
-                ->withoutRedirecting()
-                ->withHeaders([
-                    'X-Emby-Token' => $integration->api_key,
-                    'Accept' => 'application/json',
-                ])
+            $response = $this->companionRequest($integration)
                 ->put('/M3uEditor/Managed/Setup/V1', [
                     'IntegrationId' => $integration->id,
                 ]);
@@ -103,62 +96,6 @@ class EmbyManagedSetupService
             'success' => true,
             'message' => 'Ready',
         ];
-    }
-
-    private function originIsAllowed(MediaServerIntegration $integration): bool
-    {
-        $host = trim((string) $integration->host, '[]');
-        if (! $this->hostIsValid($host)) {
-            return false;
-        }
-
-        if ($integration->ssl) {
-            return true;
-        }
-
-        if (! filter_var($host, FILTER_VALIDATE_IP)) {
-            return ! str_contains($host, '.')
-                && preg_match('/^(?:\d+|0x[0-9a-f]+)$/i', $host) !== 1;
-        }
-
-        return PrivateNetworkGuard::ipIsPrivate($host);
-    }
-
-    private function hostIsValid(string $host): bool
-    {
-        if ($host === '' || preg_match('/[\x00-\x20\x7F@\/?#]/', $host) === 1) {
-            return false;
-        }
-
-        if (filter_var($host, FILTER_VALIDATE_IP)) {
-            return true;
-        }
-
-        return filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
-    }
-
-    private function responseOriginIsValid(Response $response, MediaServerIntegration $integration): bool
-    {
-        $effectiveUrl = $response->handlerStats()['url'] ?? null;
-
-        return $effectiveUrl === null || $this->originsMatch($integration->base_url, $effectiveUrl);
-    }
-
-    private function originsMatch(string $expectedUrl, string $effectiveUrl): bool
-    {
-        $expected = parse_url($expectedUrl);
-        $effective = parse_url($effectiveUrl);
-        if (! is_array($expected) || ! is_array($effective)) {
-            return false;
-        }
-
-        $defaultPort = fn (string $scheme): int => $scheme === 'https' ? 443 : 80;
-        $expectedScheme = strtolower((string) ($expected['scheme'] ?? ''));
-        $effectiveScheme = strtolower((string) ($effective['scheme'] ?? ''));
-
-        return $expectedScheme === $effectiveScheme
-            && strtolower((string) ($expected['host'] ?? '')) === strtolower((string) ($effective['host'] ?? ''))
-            && ($expected['port'] ?? $defaultPort($expectedScheme)) === ($effective['port'] ?? $defaultPort($effectiveScheme));
     }
 
     /** @return array{success: false, message: string} */

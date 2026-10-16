@@ -8,6 +8,7 @@ use App\Models\DynamicGroup;
 use App\Models\EmbyLibraryMapping;
 use App\Models\Group;
 use App\Models\MediaServerIntegration;
+use App\Services\EmbyManagedLibraryProvisioningService;
 use App\Services\EmbyManagedSetupService;
 use App\Services\EmbyPublicationCatalogService;
 use App\Services\MediaServerService;
@@ -937,7 +938,20 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             ]);
         }
 
-        $path = $this->managedLibraryPath($root, $name);
+        // Emby rejects a virtual folder whose path does not exist on the server, and
+        // M3U Editor never touches the companion's filesystem itself. Ask the companion
+        // to prepare the library root folder first and publish into the folder it
+        // actually created. An older companion without this contract falls back to the
+        // derived path so a folder that already exists there keeps working.
+        $provisioning = app(EmbyManagedLibraryProvisioningService::class);
+        $prepared = $provisioning->prepare($this->ownerRecord, $name, $collectionType);
+        if (! $prepared['success'] && $prepared['supported']) {
+            throw ValidationException::withMessages([
+                'destination' => __($prepared['message']),
+            ]);
+        }
+
+        $path = $prepared['success'] ? $prepared['path'] : $this->managedLibraryPath($root, $name);
         if (! MediaServerIntegration::isSafeWritablePath($path)) {
             throw ValidationException::withMessages([
                 'destination' => __('Choose a valid new Emby library.'),
@@ -951,9 +965,24 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         );
         $libraryId = $result['library']['id'] ?? null;
         if (! $result['success']) {
+            // The prepared folder is intentionally left in place: the companion resumes
+            // the same operation on retry, whereas an aborted folder blocks that name.
             throw ValidationException::withMessages([
-                'destination' => __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.'),
+                'destination' => $prepared['success']
+                    ? __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.')
+                    : __('Emby could not create the managed library. Update the Emby companion so it can prepare the library folder, then retry.'),
             ]);
+        }
+
+        if ($prepared['success']) {
+            $committed = $provisioning->commit($this->ownerRecord, $prepared['operation_id']);
+            if (! $committed['success']) {
+                // Nothing has been persisted yet; a retry resumes the prepared operation,
+                // finds the library Emby already created, and commits again.
+                throw ValidationException::withMessages([
+                    'destination' => __($committed['message']),
+                ]);
+            }
         }
 
         return [

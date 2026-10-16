@@ -261,6 +261,23 @@ class MediaServerIntegration extends Model
     }
 
     /**
+     * True when $path is exactly one segment below $writableRoot (the shape the
+     * Emby companion promises for a prepared managed library folder).
+     */
+    public static function isDirectChildOfWritableRoot(string $path, string $writableRoot): bool
+    {
+        $parsedPath = static::parseRemoteAbsolutePath($path);
+        $parsedRoot = static::parseRemoteAbsolutePath($writableRoot);
+
+        if ($parsedPath === null || $parsedRoot === null || $parsedPath['style'] !== $parsedRoot['style']) {
+            return false;
+        }
+
+        return count($parsedPath['segments']) === count($parsedRoot['segments']) + 1
+            && array_slice($parsedPath['segments'], 0, count($parsedRoot['segments'])) === $parsedRoot['segments'];
+    }
+
+    /**
      * @return array{style: 'unix'|'windows', segments: list<string>}|null
      */
     private static function parseRemoteAbsolutePath(string $path): ?array

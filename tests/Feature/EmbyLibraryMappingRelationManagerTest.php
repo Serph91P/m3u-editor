@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Services\EmbyPublicationCatalogService;
 use Filament\Actions\Action as FilamentAction;
 use Filament\Actions\Testing\TestAction;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
@@ -77,6 +78,32 @@ function embyBulkSourceDescriptions($component, ?string $collectionType): array
     $method->setAccessible(true);
 
     return $method->invoke($instance, $collectionType);
+}
+
+/**
+ * Fakes the companion's managed library directory contract (V1): Prepare echoes
+ * the operation and reports $preparedPath, Commit confirms the same folder.
+ *
+ * @return array<string, callable>
+ */
+function embyCompanionLibraryFakes(MediaServerIntegration $integration, string $preparedPath): array
+{
+    $envelope = fn (Request $request, string $state): PromiseInterface => Http::response([
+        'CapabilityVersion' => 1,
+        'IntegrationId' => $integration->id,
+        'OperationId' => $request->data()['OperationId'],
+        'PreparedPath' => $preparedPath,
+        'State' => $state,
+        'Success' => true,
+        'Duplicate' => false,
+        'ErrorClass' => null,
+        'Message' => null,
+    ]);
+
+    return [
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => fn (Request $request) => $envelope($request, 'prepared'),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Commit' => fn (Request $request) => $envelope($request, 'committed'),
+    ];
 }
 
 it('shows managed library mappings only on authorized Emby integrations', function () {
@@ -314,6 +341,17 @@ it('publishes a first-time movie source to a new Emby library with safe derived 
             ]);
         }
 
+        if (str_contains($request->url(), '/M3uEditor/Managed/Libraries/V1/')) {
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $managedPath,
+                'State' => str_ends_with($request->url(), '/Commit') ? 'committed' : 'prepared',
+                'Success' => true,
+            ]);
+        }
+
         $libraryRequestCount++;
 
         return match ($libraryRequestCount) {
@@ -498,6 +536,7 @@ it('creates one managed Emby library for a bulk selection', function () {
             'Ready' => true,
             'Result' => 'Ready',
         ]),
+        ...embyCompanionLibraryFakes($integration, $libraryRoot),
         'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
             ->push([], 200)
             ->push([], 204)
@@ -827,6 +866,7 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
             'Ready' => true,
             'Result' => 'Ready',
         ]),
+        ...embyCompanionLibraryFakes($integration, '/config/plugins/m3u-editor/managed-publishing/movies-0123456789abcdef01234567'),
         'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
             ->push([], 200)
             ->push([], 401)
@@ -864,7 +904,354 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
         ->and($integration->getEmbyPublisherWritablePaths())
         ->toBe(['/config/plugins/m3u-editor/managed-publishing']);
 
+    // The prepared folder stays with the companion so a retry resumes the same
+    // operation; neither Commit nor Abort is sent after an Emby rejection.
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Managed/Libraries/V1/Commit')
+        || str_contains($request->url(), '/Managed/Libraries/V1/Abort'));
+
     $component->assertMountedActionModalSee('Publish to Emby');
+});
+
+it('publishes a new managed library into the folder the companion prepared before Emby creates it', function () {
+    // Regression for m3ue/m3u-editor#1595: Emby rejects POST /Library/VirtualFolders
+    // with "The specified path does not exist" unless the library root folder already
+    // exists, so the companion must prepare it first and Emby must be pointed at the
+    // folder the companion actually created (a hash-based child, not a name slug).
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create(['name' => 'Trending Now', 'type' => 'vod']);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    $root = '/config/plugins/Emby.M3uEditor.Plugin/managed-publishing';
+    $preparedPath = $root.'/movies-9f2c1d7e0a4b6c8d1e3f5a7b';
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => $root,
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+        ...embyCompanionLibraryFakes($integration, $preparedPath),
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([[
+                'ItemId' => 'trending-library',
+                'Name' => 'Trending',
+                'CollectionType' => 'movies',
+                'Locations' => [$preparedPath],
+            ]], 200),
+    ]);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Trending',
+    ])->assertHasNoActionErrors();
+
+    $requests = collect(Http::recorded())->map(fn (array $pair): Request => $pair[0]);
+    $steps = $requests->map(fn (Request $request): string => $request->method().' '.parse_url($request->url(), PHP_URL_PATH))->all();
+    expect($steps)->toBe([
+        'PUT /M3uEditor/Managed/Setup/V1',
+        'PUT /M3uEditor/Managed/Libraries/V1/Prepare',
+        'GET /Library/VirtualFolders',
+        'POST /Library/VirtualFolders',
+        'GET /Library/VirtualFolders',
+        'POST /M3uEditor/Managed/Libraries/V1/Commit',
+    ]);
+
+    $prepare = $requests[1];
+    $create = $requests[3];
+    $commit = $requests[5];
+    expect($prepare->data())->toBe([
+        'IntegrationId' => $integration->id,
+        'OperationId' => $prepare->data()['OperationId'],
+        'Name' => 'Trending',
+        'CollectionType' => 'movies',
+    ])
+        ->and($create->data()['Paths'])->toBe([$preparedPath])
+        ->and($create->data()['Paths'])->not->toBe([$root.'/trending'])
+        ->and($commit->data())->toBe([
+            'IntegrationId' => $integration->id,
+            'OperationId' => $prepare->data()['OperationId'],
+        ]);
+
+    expect(EmbyLibraryMapping::query()->sole())
+        ->target_library_id->toBe('trending-library')
+        ->target_library_name->toBe('Trending')
+        ->output_path->toStartWith($preparedPath.'/')
+        ->is_managed->toBeTrue()
+        ->status->toBe('planned');
+});
+
+it('shows a sanitized error and creates nothing in Emby when the companion cannot prepare the library folder', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create(['name' => 'Action', 'type' => 'vod']);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => fn (Request $request) => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'OperationId' => $request->data()['OperationId'],
+            'Success' => false,
+            'ErrorClass' => 'collision',
+            'Message' => 'The managed library destination /config/plugins/m3u-editor/managed-publishing/movies-x already exists.',
+        ]),
+    ]);
+
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasActionErrors();
+
+    $errors = $component->instance()->getErrorBag()->all();
+    expect($errors)->toHaveCount(1)
+        ->and($errors[0])->toBe('A managed library folder for this name already exists on the Emby server. Choose a different library name, then retry.')
+        ->and($errors[0])->not->toContain('emby-secret', '/config/plugins', 'movies-x')
+        ->and(EmbyLibraryMapping::query()->count())->toBe(0);
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Library/VirtualFolders'));
+    $component->assertMountedActionModalSee('Publish to Emby');
+});
+
+it('falls back to the derived folder for a companion without library preparation', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create(['name' => 'Action', 'type' => 'vod']);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    $derivedPath = '/srv/emby/managed/managed-movies';
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => Http::response('', 404),
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([[
+                'ItemId' => 'managed-library',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => [$derivedPath],
+            ]], 200),
+    ]);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasNoActionErrors();
+
+    $createRequests = Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders'))->values();
+    expect($createRequests)->toHaveCount(1)
+        ->and($createRequests[0][0]['Paths'])->toBe([$derivedPath])
+        ->and(EmbyLibraryMapping::query()->sole()->output_path)->toStartWith($derivedPath.'/');
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Managed/Libraries/V1/Commit'));
+});
+
+it('asks for a companion update when an older companion cannot prepare the folder and Emby rejects the library', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create(['name' => 'Action', 'type' => 'vod']);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => Http::response('', 404),
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push('The specified path does not exist: /srv/emby/managed/managed-movies', 400),
+    ]);
+
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasActionErrors();
+
+    $errors = $component->instance()->getErrorBag()->all();
+    expect($errors)->toHaveCount(1)
+        ->and($errors[0])->toBe('Emby could not create the managed library. Update the Emby companion so it can prepare the library folder, then retry.')
+        ->and($errors[0])->not->toContain('/srv/emby')
+        ->and(EmbyLibraryMapping::query()->count())->toBe(0);
+});
+
+it('retries a publication whose companion commit failed by resuming the prepared folder without a second Emby create', function () {
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create(['name' => 'Action', 'type' => 'vod']);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    $preparedPath = '/srv/emby/managed/movies-9f2c1d7e0a4b6c8d1e3f5a7b';
+    $library = [[
+        'ItemId' => 'managed-library',
+        'Name' => 'Managed Movies',
+        'CollectionType' => 'movies',
+        'Locations' => [$preparedPath],
+    ]];
+    $commitAttempts = 0;
+    $prepareOperationIds = [];
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/M3uEditor/Managed/Setup/V1' => Http::response([
+            'CapabilityVersion' => 1,
+            'IntegrationId' => $integration->id,
+            'ConfirmedRoot' => '/srv/emby/managed',
+            'Ready' => true,
+            'Result' => 'Ready',
+        ]),
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Prepare' => function (Request $request) use ($integration, $preparedPath, &$prepareOperationIds) {
+            $prepareOperationIds[] = $request->data()['OperationId'];
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $preparedPath,
+                'State' => 'prepared',
+                'Success' => true,
+                'Duplicate' => count($prepareOperationIds) > 1,
+            ]);
+        },
+        'https://emby.test:8096/M3uEditor/Managed/Libraries/V1/Commit' => function (Request $request) use ($integration, $preparedPath, &$commitAttempts) {
+            $commitAttempts++;
+
+            return Http::response($commitAttempts === 1
+                ? [
+                    'CapabilityVersion' => 1,
+                    'IntegrationId' => $integration->id,
+                    'OperationId' => $request->data()['OperationId'],
+                    'Success' => false,
+                    'ErrorClass' => 'persistence',
+                    'Message' => 'The managed library operation could not be persisted.',
+                ]
+                : [
+                    'CapabilityVersion' => 1,
+                    'IntegrationId' => $integration->id,
+                    'OperationId' => $request->data()['OperationId'],
+                    'PreparedPath' => $preparedPath,
+                    'State' => 'committed',
+                    'Success' => true,
+                ]);
+        },
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push($library, 200)
+            ->push($library, 200),
+    ]);
+
+    $first = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasActionErrors();
+
+    expect($first->instance()->getErrorBag()->all())
+        ->toBe(['Emby created the managed library, but the companion could not confirm its folder. Retry to complete the publication.'])
+        ->and(EmbyLibraryMapping::query()->count())->toBe(0);
+
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasNoActionErrors();
+
+    $createRequests = Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders'))->values();
+    expect($createRequests)->toHaveCount(1)
+        ->and($commitAttempts)->toBe(2)
+        ->and($prepareOperationIds)->toHaveCount(2)
+        ->and($prepareOperationIds[0])->toBe($prepareOperationIds[1])
+        ->and(EmbyLibraryMapping::query()->sole())
+        ->target_library_id->toBe('managed-library')
+        ->output_path->toStartWith($preparedPath.'/')
+        ->status->toBe('planned');
 });
 
 it('creates an owned mapping from eligible unified source and destination choices', function () {
@@ -1153,6 +1540,7 @@ it('creates a managed library from only its required destination choices', funct
             'Ready' => true,
             'Result' => 'Ready',
         ]),
+        ...embyCompanionLibraryFakes($integration, '/srv/emby/managed/managed-movies'),
         'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
             ->push([], 200)
             ->push([], 204)
@@ -1907,6 +2295,7 @@ it('persists a pending mapping when a newly created library is not immediately i
             'Ready' => true,
             'Result' => 'Ready',
         ]),
+        ...embyCompanionLibraryFakes($integration, '/srv/emby/managed/managed-movies'),
         'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
             ->push([], 200)
             ->push([], 204)
@@ -1941,7 +2330,8 @@ it('persists a pending mapping when a newly created library is not immediately i
     expect($mapping->refresh()->target_library_id)->toBe('managed-library')
         ->and($mapping->library_create_requested_at)->toBeNull()
         ->and($mapping->status)->toBe('planned')
-        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'))->toHaveCount(1);
+        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/Library/VirtualFolders')))->toHaveCount(1);
 });
 
 it('still creates a managed library the companion catalog marked pending before any create request', function () {
