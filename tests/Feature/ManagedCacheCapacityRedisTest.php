@@ -71,3 +71,22 @@ it('does not renew a released Redis reservation token', function () {
 
     expect($service->renew($reservation))->toBeFalse();
 });
+
+it('does not let a stale owner renew or release a replacement Redis reservation', function () {
+    $service = app(ManagedCacheCapacityService::class);
+    $snapshot = new ManagedCacheCapacitySnapshot('t_3e712143_'.Str::uuid(), limit: 3, live: 1, background: 0);
+    $staleReservation = $service->reserve($snapshot);
+
+    expect($staleReservation)->not->toBeNull();
+
+    $service->release($staleReservation);
+    $replacementReservation = $service->reserve($snapshot);
+
+    expect($replacementReservation)->not->toBeNull()
+        ->and($replacementReservation)->not->toBe($staleReservation)
+        ->and($service->renew($staleReservation))->toBeFalse();
+
+    $service->release($staleReservation);
+
+    expect($service->canUseReservation($replacementReservation, $snapshot))->toBeTrue();
+});
