@@ -12,8 +12,10 @@ use App\Services\CachedContentActivityService;
 use App\Services\CachedContentRetentionService;
 use App\Services\ManagedCacheControlService;
 use App\Settings\GeneralSettings;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
@@ -310,4 +312,20 @@ it('retains managed metadata when the storage delete reports failure', function 
 
     expect(CachedContentFile::find($file->id))->not->toBeNull()
         ->and(ManagedCacheInterest::query()->where('cached_content_file_id', $file->id)->exists())->toBeTrue();
+});
+
+it('schedules watched managed cache release every minute without overlapping', function () {
+    $schedule = new Schedule;
+
+    app()->instance(Schedule::class, $schedule);
+    Facade::clearResolvedInstance(Schedule::class);
+
+    require base_path('routes/console.php');
+
+    $event = collect($schedule->events())
+        ->firstWhere('description', ReleaseWatchedManagedCache::class);
+
+    expect($event)->not->toBeNull()
+        ->and($event->expression)->toBe('* * * * *')
+        ->and($event->withoutOverlapping)->toBeTrue();
 });

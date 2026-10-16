@@ -27,6 +27,7 @@ beforeEach(function () {
     Storage::fake('cache');
     config(['cache.default' => 'array']);
     $settings = Mockery::mock(GeneralSettings::class);
+    $settings->shouldReceive('refresh')->zeroOrMoreTimes()->andReturnSelf();
     $settings->enable_cache = true;
     app()->instance(GeneralSettings::class, $settings);
 
