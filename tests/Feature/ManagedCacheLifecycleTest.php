@@ -77,7 +77,7 @@ it('removes only a watched completed episode while retaining an active next epis
     lifecycleInterest($episodeTwo, $this->integration, 's01e02', 'profile-a', now()->subMinute());
     lifecycleInterest($episodeThree, $this->integration, 's01e03', 'profile-a', null);
 
-    app(CachedContentActivityService::class)->acquireReaderForFile($this->user, $this->integration, 'episode-two-reader', $episodeTwo);
+    app(CachedContentActivityService::class)->acquireReaderForFile($this->user, $this->integration, '44444444-4444-4444-8444-444444444444', $episodeTwo);
 
     app(ReleaseWatchedManagedCache::class)->handle(app(CachedContentRetentionService::class));
 

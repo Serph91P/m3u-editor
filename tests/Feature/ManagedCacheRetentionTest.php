@@ -115,7 +115,7 @@ it('does not delete a managed file while a reader lease is active', function () 
     app(CachedContentActivityService::class)->acquireReaderForFile(
         $this->user,
         $this->integration,
-        'reader-1',
+        '33333333-3333-4333-8333-333333333333',
         $file,
     );
 
@@ -162,7 +162,7 @@ it('does not delete a managed file while a playback lease for its interest targe
     app(CachedContentActivityService::class)->acquirePlayback(
         $this->user,
         $this->integration,
-        'playback-session-1',
+        '55555555-5555-4555-8555-555555555555',
         1,
         [
             'mapping_uuid' => $interest->mapping_uuid,

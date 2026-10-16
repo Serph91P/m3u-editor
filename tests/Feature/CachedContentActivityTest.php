@@ -27,8 +27,8 @@ it('keeps independent playback sessions active and stops only the named lease', 
         'variant_key' => '1080p',
     ];
 
-    $first = $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
-    $second = $service->acquirePlayback($user, $integration, 'session-b', 1, $target);
+    $first = $service->acquirePlayback($user, $integration, '11111111-1111-4111-8111-111111111111', 1, $target);
+    $second = $service->acquirePlayback($user, $integration, '22222222-2222-4222-8222-222222222222', 1, $target);
 
     expect($service->hasActivePlayback($target))->toBeTrue();
 
@@ -52,9 +52,9 @@ it('does not revive a terminal playback session from a late heartbeat', function
         'variant_key' => '1080p',
     ];
 
-    $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
-    $service->stopPlayback($integration, 'session-a', 2);
-    $service->acquirePlayback($user, $integration, 'session-a', 3, $target);
+    $service->acquirePlayback($user, $integration, '11111111-1111-4111-8111-111111111111', 1, $target);
+    $service->stopPlayback($integration, '11111111-1111-4111-8111-111111111111', 2);
+    $service->acquirePlayback($user, $integration, '11111111-1111-4111-8111-111111111111', 3, $target);
 
     expect($service->hasActivePlayback($target))->toBeFalse();
 });
@@ -70,11 +70,11 @@ it('renews an active playback lease for a duplicate heartbeat sequence', functio
         'variant_key' => '1080p',
     ];
 
-    $lease = $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
+    $lease = $service->acquirePlayback($user, $integration, '11111111-1111-4111-8111-111111111111', 1, $target);
     $lease->update(['expires_at' => now()->addSecond()]);
     $expiryBeforeRetry = $lease->fresh()->expires_at;
 
-    $service->acquirePlayback($user, $integration, 'session-a', 1, $target);
+    $service->acquirePlayback($user, $integration, '11111111-1111-4111-8111-111111111111', 1, $target);
 
     expect($lease->fresh()->expires_at->greaterThan($expiryBeforeRetry))->toBeTrue();
 });
@@ -90,7 +90,7 @@ it('acquires a reader lease and considers it active for the target', function ()
         'variant_key' => '1080p',
     ];
 
-    $lease = $service->acquireReader($user, $integration, 'reader-1', $target);
+    $lease = $service->acquireReader($user, $integration, '33333333-3333-4333-8333-333333333333', $target);
 
     expect($lease->kind)->toBe('reader')
         ->and($lease->expires_at->isFuture())->toBeTrue()
@@ -108,7 +108,7 @@ it('releases a reader lease on finish', function () {
         'variant_key' => '1080p',
     ];
 
-    $lease = $service->acquireReader($user, $integration, 'reader-1', $target);
+    $lease = $service->acquireReader($user, $integration, '33333333-3333-4333-8333-333333333333', $target);
     $service->releaseReader($lease);
 
     expect($service->hasActiveReader($target))->toBeFalse();
@@ -131,7 +131,7 @@ it('serialises reader acquire and delete check under the same file lock', functi
         'variant_key' => '1080p',
     ];
 
-    $service->acquireReader($user, $integration, 'reader-1', $target, $file);
+    $service->acquireReader($user, $integration, '33333333-3333-4333-8333-333333333333', $target, $file);
 
     expect($service->hasActiveReaderForFile($file))->toBeTrue()
         ->and($service->isSafeToDelete($file))->toBeFalse();
