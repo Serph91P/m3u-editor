@@ -75,6 +75,36 @@ it('sets release_after when cohort is complete and watched', function () {
         ->and($interest->release_after->isFuture())->toBeTrue();
 });
 
+it('does not let another user undo a watched managed cache interest', function () {
+    $file = makeManagedFile($this->playlist);
+    $interest = ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => '123e4567-e89b-12d3-a456-426614174000',
+        'canonical_id' => 'episode:fixture:s01e01',
+        'variant_key' => '1080p',
+        'consumer_id' => 'profile-a',
+        'watched_at' => now()->subHour(),
+        'release_after' => now()->addMinutes(15),
+    ]);
+
+    app(ManagedCacheControlService::class)->releaseWatched(
+        User::factory()->create(),
+        $this->integration,
+        $interest->mapping_uuid,
+        $interest->canonical_id,
+        $interest->variant_key,
+        $interest->consumer_id,
+        watched: false,
+        deleteAfterHours: 24,
+        cohortComplete: true,
+    );
+
+    $interest->refresh();
+    expect($interest->watched_at)->not->toBeNull()
+        ->and($interest->release_after)->not->toBeNull();
+});
+
 it('cancels release when watched is false', function () {
     $file = makeManagedFile($this->playlist);
     $interest = ManagedCacheInterest::create([
