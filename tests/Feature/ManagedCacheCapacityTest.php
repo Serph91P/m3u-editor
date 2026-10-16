@@ -5,6 +5,11 @@ use App\Services\ManagedCacheAccountGroupIdentity;
 use App\Services\ManagedCacheCapacityService;
 use App\Services\ManagedCacheCapacitySnapshot;
 
+beforeEach(function (): void {
+    config()->set('cache.default', 'array');
+    app()->forgetInstance('cache.store');
+});
+
 it('fails closed when managed cache capacity is unknown', function () {
     expect(app(ManagedCacheCapacityService::class)->availability(null, null, null))
         ->toBe(CacheDispatchResult::Deferred);
