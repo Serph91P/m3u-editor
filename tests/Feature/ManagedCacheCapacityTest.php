@@ -1,18 +1,95 @@
 <?php
 
 use App\Enums\CacheDispatchResult;
+use App\Models\Channel;
+use App\Models\Episode;
+use App\Models\Playlist;
 use App\Services\ManagedCacheAccountGroupIdentity;
 use App\Services\ManagedCacheCapacityService;
 use App\Services\ManagedCacheCapacitySnapshot;
+use App\Services\ManagedCacheCapacitySnapshotSource;
+use App\Services\XtreamManagedCacheCapacitySnapshotSource;
+use Illuminate\Support\Facades\Http;
 
 beforeEach(function (): void {
     config()->set('cache.default', 'array');
+    config()->set('app.key', 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
     app()->forgetInstance('cache.store');
+    Http::preventStrayRequests();
 });
 
 it('fails closed when managed cache capacity is unknown', function () {
     expect(app(ManagedCacheCapacityService::class)->availability(null, null, null))
         ->toBe(CacheDispatchResult::Deferred);
+});
+
+it('binds the managed cache capacity interface to the Xtream source', function () {
+    expect(app(ManagedCacheCapacitySnapshotSource::class))
+        ->toBeInstanceOf(XtreamManagedCacheCapacitySnapshotSource::class);
+});
+
+it('rejects Xtream counters when active connections exceed the configured limit', function () {
+    $playlist = new Playlist([
+        'xtream' => true,
+        'xtream_config' => [
+            'url' => 'https://provider.test',
+            'username' => 'account-42',
+            'password' => 'synthetic-secret',
+        ],
+    ]);
+    $channel = new Channel;
+    $channel->setRelation('playlist', $playlist);
+
+    Http::fake([
+        'https://provider.test/player_api.php?username=account-42&password=synthetic-secret' => Http::response([
+            'user_info' => [
+                'auth' => 1,
+                'max_connections' => 3,
+                'active_cons' => 4,
+            ],
+        ]),
+    ]);
+
+    expect(app(XtreamManagedCacheCapacitySnapshotSource::class)->snapshotFor($channel))->toBeNull();
+});
+
+it('returns a fresh opaque Xtream account snapshot for configured channels and episodes', function () {
+    $playlist = new Playlist([
+        'xtream' => true,
+        'xtream_config' => [
+            'url' => 'https://provider.test',
+            'username' => 'account-42',
+            'password' => 'synthetic-secret',
+        ],
+    ]);
+    $channel = new Channel;
+    $channel->setRelation('playlist', $playlist);
+    $episode = new Episode;
+    $episode->setRelation('playlist', $playlist);
+
+    Http::fake([
+        'https://provider.test/player_api.php?username=account-42&password=synthetic-secret' => Http::response([
+            'user_info' => [
+                'auth' => 1,
+                'max_connections' => 3,
+                'active_cons' => 1,
+            ],
+        ]),
+    ]);
+
+    $source = app(XtreamManagedCacheCapacitySnapshotSource::class);
+    $channelSnapshot = $source->snapshotFor($channel);
+    $episodeSnapshot = $source->snapshotFor($episode);
+
+    expect($channelSnapshot)->not->toBeNull()
+        ->and($channelSnapshot->limit)->toBe(3)
+        ->and($channelSnapshot->live)->toBe(1)
+        ->and($channelSnapshot->background)->toBe(0)
+        ->and($channelSnapshot->group)->toBe($episodeSnapshot?->group)
+        ->and($channelSnapshot->group)->not->toContain('account-42')
+        ->and($channelSnapshot->group)->not->toContain('provider.test');
+
+    Http::assertSentCount(2);
 });
 
 it('reserves one provider slot for live playback and one for managed background work', function () {
