@@ -47,6 +47,8 @@ class EmbyLibraryMapping extends Model
         'output_path',
         'is_managed',
         'library_create_requested_at',
+        'managed_library_creation_confirmed_at',
+        'library_options_applied_at',
         'options',
         'last_planned_revision',
         'last_applied_revision',
@@ -114,6 +116,8 @@ class EmbyLibraryMapping extends Model
             'options' => 'array',
             'last_success_at' => 'datetime',
             'library_create_requested_at' => 'datetime',
+            'managed_library_creation_confirmed_at' => 'datetime',
+            'library_options_applied_at' => 'datetime',
         ];
     }
 

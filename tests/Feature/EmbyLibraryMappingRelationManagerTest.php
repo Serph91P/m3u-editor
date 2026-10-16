@@ -336,7 +336,20 @@ it('publishes a first-time movie source to a new Emby library with safe derived 
             ]);
         }
 
-        $libraryRequestCount++;
+        if (str_contains($request->url(), '/Libraries/AvailableOptions')) {
+            return Http::response([
+                'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+                'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+            ]);
+        }
+
+        if (str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')) {
+            return Http::response([], 200);
+        }
+
+        if (str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            $libraryRequestCount++;
+        }
 
         return match ($libraryRequestCount) {
             1 => Http::response([]),
@@ -549,6 +562,11 @@ it('creates one managed Emby library for a bulk selection', function () {
                 'CollectionType' => 'movies',
                 'Locations' => [$libraryRoot],
             ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
     ]);
 
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
@@ -790,6 +808,8 @@ it('publishes to an existing compatible library using only source and destinatio
         ->toBeTrue()
         ->and($integration->refresh()->getImportLibraryIdsForType('movies'))
         ->toBe([]);
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Libraries/AvailableOptions')
+        || str_contains($request->url(), '/Library/VirtualFolders/LibraryOptions'));
 });
 
 it('publishes to an existing Mixed Content library, taking collection_type from the source', function () {
@@ -905,6 +925,11 @@ it('keeps confirmed setup while rolling back mapping state when Emby rejects lib
 
             return Http::response([], 200);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
     ]);
 
     $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
@@ -1003,6 +1028,11 @@ it('durably retries cleanup after Emby rejects creation and the first abort fail
                 'Success' => true,
             ]);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
         'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createRequests) {
             if ($request->method() === 'POST') {
                 $createRequests++;
@@ -1124,6 +1154,11 @@ it('rejects another source while managed library cleanup is pending and allows i
                 'Success' => true,
             ]);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
         'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createRequests, &$inventoryRequests, $preparedPath) {
             if ($request->method() === 'POST') {
                 $createRequests++;
@@ -1539,6 +1574,11 @@ it('creates a managed library from only its required destination choices', funct
                 'Locations' => [$preparedPath],
             ]] : [], 200);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
     ]);
 
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
@@ -1619,6 +1659,11 @@ it('persists managed create intent before the Emby post and reconciles in a fres
 
             return Http::response([], 500);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
         'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$inventoryReady, &$createRequests, &$intentObservedBeforePost, $preparedPath) {
             if ($request->method() === 'POST') {
                 $createRequests++;
@@ -1802,6 +1847,11 @@ it('does not repeat an ambiguous Emby create when another source joins the same 
                 'Success' => true,
             ]);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
         'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createRequests, &$inventoryReady, $preparedPath) {
             if ($request->method() === 'POST') {
                 $createRequests++;
@@ -1886,6 +1936,11 @@ it('retries the Emby create on reconcile when an ambiguous create left no librar
                 'Success' => true,
             ]);
         },
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
         'https://emby.test:8096/Library/VirtualFolders' => function (Request $request) use (&$createdPaths, $preparedPath) {
             if ($request->method() === 'POST') {
                 $createdPaths[] = $request->data()['Paths'] ?? null;
@@ -2388,10 +2443,17 @@ it('defers reconcile with a generic pending result while the managed library is 
         'last_planned_revision' => 'unsafe-revision',
     ]);
     Http::preventStrayRequests();
-    Http::fakeSequence('https://emby.test:8096/Library/VirtualFolders')
-        ->push([], 200)
-        ->push([], 204)
-        ->push([], 200);
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
+    ]);
 
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
@@ -2433,16 +2495,23 @@ it('resolves a pending managed library from a later exact listing without duplic
         'last_planned_revision' => null,
     ]);
     Http::preventStrayRequests();
-    Http::fakeSequence('https://emby.test:8096/Library/VirtualFolders')
-        ->push([], 200)
-        ->push([], 204)
-        ->push([], 200)
-        ->push([[
-            'ItemId' => 'managed-library-1',
-            'Name' => 'Managed Movies',
-            'CollectionType' => 'movies',
-            'Locations' => ['/srv/emby/managed/movies'],
-        ]], 200);
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([], 200)
+            ->push([[
+                'ItemId' => 'managed-library-1',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/managed/movies'],
+            ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
+    ]);
 
     $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
@@ -2463,7 +2532,8 @@ it('resolves a pending managed library from a later exact listing without duplic
         ->and($mapping->status)->toBe('planned')
         ->and($mapping->last_planned_revision)->toBe($currentPlan['revision'])
         ->and(EmbyLibraryMapping::query()->count())->toBe(1)
-        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'))->toHaveCount(1);
+        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/Library/VirtualFolders')))->toHaveCount(1);
     Http::assertNotSent(fn (Request $request): bool => $request->method() === 'DELETE');
 });
 
@@ -2490,15 +2560,22 @@ it('creates a managed Emby library and plans a bounded manual reconcile', functi
         'last_planned_revision' => null,
     ]);
     Http::preventStrayRequests();
-    Http::fakeSequence('https://emby.test:8096/Library/VirtualFolders')
-        ->push([], 200)
-        ->push([], 204)
-        ->push([[
-            'ItemId' => 'managed-library-1',
-            'Name' => 'Managed Movies',
-            'CollectionType' => 'movies',
-            'Locations' => ['/srv/emby/managed/movies'],
-        ]], 200);
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([[
+                'ItemId' => 'managed-library-1',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/managed/movies'],
+            ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
+    ]);
 
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
@@ -2842,6 +2919,11 @@ it('persists a pending mapping when a newly created library is not immediately i
                 'CollectionType' => 'movies',
                 'Locations' => [$preparedPath],
             ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
     ]);
 
     $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
@@ -2867,7 +2949,7 @@ it('persists a pending mapping when a newly created library is not immediately i
         ->and($mapping->library_create_requested_at)->toBeNull()
         ->and($mapping->status)->toBe('planned')
         ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
-            && $request->url() === 'https://emby.test:8096/Library/VirtualFolders'))->toHaveCount(1);
+&& $request->url() === 'https://emby.test:8096/Library/VirtualFolders'))->toHaveCount(1);
 });
 
 it('still creates a managed library the companion catalog marked pending before any create request', function () {
@@ -2897,15 +2979,22 @@ it('still creates a managed library the companion catalog marked pending before 
         ->and($mapping->library_create_requested_at)->toBeNull();
 
     Http::preventStrayRequests();
-    Http::fakeSequence('https://emby.test:8096/Library/VirtualFolders')
-        ->push([], 200)
-        ->push([], 204)
-        ->push([[
-            'ItemId' => 'managed-library-1',
-            'Name' => 'Managed Movies',
-            'CollectionType' => 'movies',
-            'Locations' => ['/srv/emby/managed/movies'],
-        ]], 200);
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([[
+                'ItemId' => 'managed-library-1',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/managed/movies'],
+            ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
+    ]);
 
     Livewire::test(EmbyLibraryMappingsRelationManager::class, [
         'ownerRecord' => $integration,
@@ -2915,7 +3004,8 @@ it('still creates a managed library the companion catalog marked pending before 
 
     expect($mapping->refresh()->target_library_id)->toBe('managed-library-1')
         ->and($mapping->status)->toBe('planned')
-        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'))->toHaveCount(1);
+        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/Library/VirtualFolders')))->toHaveCount(1);
 });
 
 it('does not re-send a create request after a failed reconcile of an already requested library', function () {
@@ -3072,22 +3162,30 @@ it('sends a fresh create request after an edit changes an already requested libr
         ->and($mapping->output_path)->toBe($expectedPath);
 
     Http::preventStrayRequests();
-    Http::fakeSequence('https://emby.test:8096/Library/VirtualFolders')
-        ->push([], 200)
-        ->push([], 204)
-        ->push([[
-            'ItemId' => 'managed-library-2',
-            'Name' => $expectedName,
-            'CollectionType' => 'movies',
-            'Locations' => [$expectedPath],
-        ]], 200);
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([[
+                'ItemId' => 'managed-library-2',
+                'Name' => $expectedName,
+                'CollectionType' => 'movies',
+                'Locations' => [$expectedPath],
+            ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
+    ]);
 
     $component->callAction(TestAction::make('reconcile')->table($mapping))
         ->assertNotified();
 
     expect($mapping->refresh()->target_library_id)->toBe('managed-library-2')
         ->and($mapping->status)->toBe('planned')
-        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'))->toHaveCount(1);
+        ->and(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/Library/VirtualFolders')))->toHaveCount(1);
 })->with([
     'renamed library' => [
         ['target_library_name' => 'Renamed Movies'],
@@ -3269,4 +3367,154 @@ it('hides dynamic group sources from the create flow when the feature is disable
     ])->assertHasActionErrors();
 
     expect(EmbyLibraryMapping::query()->count())->toBe(0);
+});
+
+it('persists an owned mapping when managed library options fail and reconciles without recreating it', function () {
+    config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
+    $user = User::factory()->create(['permissions' => ['use_integrations']]);
+    $this->actingAs($user);
+    $playlist = Playlist::factory()->for($user)->createQuietly();
+    $group = Group::factory()->for($user)->for($playlist)->create([
+        'name' => 'Action',
+        'type' => 'vod',
+    ]);
+    $integration = MediaServerIntegration::factory()->for($user)->createQuietly([
+        'type' => 'emby',
+        'host' => 'emby.test',
+        'port' => 8096,
+        'ssl' => true,
+        'api_key' => 'emby-secret',
+        'emby_publisher_writable_paths' => null,
+    ]);
+    $inventoryRequests = 0;
+    $availableOptionsRequests = 0;
+    $virtualFolderCreateRequests = 0;
+    $libraryOptionsRequests = 0;
+    Http::preventStrayRequests();
+    Http::fake(function (Request $request) use (
+        $integration,
+        &$inventoryRequests,
+        &$availableOptionsRequests,
+        &$virtualFolderCreateRequests,
+        &$libraryOptionsRequests,
+    ) {
+        if (str_ends_with($request->url(), '/M3uEditor/Managed/Setup/V1')) {
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+                'Ready' => true,
+                'Result' => 'Ready',
+            ]);
+        }
+
+        if (str_contains($request->url(), '/M3uEditor/Managed/Libraries/V1/')) {
+            $isCommit = str_ends_with($request->url(), '/Commit');
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => '/config/plugins/m3u-editor/managed-publishing/movies-0123456789abcdef01234567',
+                'State' => $isCommit ? 'committed' : 'prepared',
+                'Success' => true,
+            ]);
+        }
+
+        if ($request->method() === 'GET' && str_contains($request->url(), '/Libraries/AvailableOptions')) {
+            $availableOptionsRequests++;
+
+            return Http::response([
+                'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+                'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+            ]);
+        }
+
+        if ($request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')) {
+            $libraryOptionsRequests++;
+
+            return Http::response([], $libraryOptionsRequests === 1 ? 500 : 200);
+        }
+
+        if (str_ends_with($request->url(), '/Library/VirtualFolders') && $request->method() === 'GET') {
+            $inventoryRequests++;
+
+            return $inventoryRequests === 1
+                ? Http::response([])
+                : Http::response([[
+                    'ItemId' => 'managed-library-1',
+                    'Name' => 'Managed Movies',
+                    'CollectionType' => 'movies',
+                    'Locations' => ['/config/plugins/m3u-editor/managed-publishing/movies-0123456789abcdef01234567'],
+                ]]);
+        }
+
+        if (str_ends_with($request->url(), '/Library/VirtualFolders') && $request->method() === 'POST') {
+            $virtualFolderCreateRequests++;
+
+            return Http::response([], 204);
+        }
+
+        return Http::response([], 500);
+    });
+
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$group->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasNoActionErrors();
+
+    $mapping = EmbyLibraryMapping::query()->sole();
+    expect($mapping)
+        ->target_library_id->toBe('managed-library-1')
+        ->is_managed->toBeTrue()
+        ->managed_library_creation_confirmed_at->not->toBeNull()
+        ->library_options_applied_at->toBeNull()
+        ->status->toBe('failed')
+        ->last_planned_revision->toBeNull()
+        ->error_summary->toBe('Emby library options could not be applied.')
+        ->and($mapping->status_summary.$mapping->error_summary)->not->toContain('emby-secret', '/config/plugins')
+        ->and(app(EmbyPublicationCatalogService::class)->buildForUser($user)['mappings'])->toBe([])
+        ->and($mapping->refresh()->status)->toBe('failed')
+        ->and($virtualFolderCreateRequests)->toBe(1)
+        ->and($availableOptionsRequests)->toBe(1)
+        ->and($libraryOptionsRequests)->toBe(1);
+
+    $virtualFolderCreates = Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders'))->values();
+    expect($virtualFolderCreates)->toHaveCount(1)
+        ->and($virtualFolderCreates[0][1]->status())->toBe(204);
+
+    $component->callAction(TestAction::make('reconcile')->table($mapping))
+        ->assertNotified();
+
+    expect($mapping->refresh())
+        ->target_library_id->toBe('managed-library-1')
+        ->is_managed->toBeTrue()
+        ->managed_library_creation_confirmed_at->not->toBeNull()
+        ->library_options_applied_at->not->toBeNull()
+        ->status->toBe('planned')
+        ->error_summary->toBeNull()
+        ->last_planned_revision->not->toBeNull()
+        ->and($virtualFolderCreateRequests)->toBe(1)
+        ->and($availableOptionsRequests)->toBe(2)
+        ->and($libraryOptionsRequests)->toBe(2);
+
+    $component->callAction(TestAction::make('reconcile')->table($mapping))->assertNotified();
+
+    expect($libraryOptionsRequests)->toBe(2)
+        ->and($virtualFolderCreateRequests)->toBe(1);
+
+    $virtualFolderCreates = Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders'))->values();
+    $libraryOptionsApplications = Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions'))->values();
+    expect($virtualFolderCreates)->toHaveCount(1)
+        ->and($libraryOptionsApplications)->toHaveCount(2)
+        ->and($libraryOptionsApplications[0][1]->status())->toBe(500)
+        ->and($libraryOptionsApplications[1][1]->status())->toBe(200);
 });

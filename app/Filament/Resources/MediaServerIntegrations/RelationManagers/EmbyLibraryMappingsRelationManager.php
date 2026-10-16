@@ -726,6 +726,8 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                             'collection_type' => $mappingDestination['collection_type'],
                             'output_path' => $mappingDestination['path'],
                             'is_managed' => $mappingDestination['managed'],
+                            'managed_library_creation_confirmed_at' => ($destination['created'] ?? false) ? now() : null,
+                            'library_options_applied_at' => ($destination['library_options_applied'] ?? false) ? now() : null,
                             'options' => EmbyLibraryMapping::DEFAULT_OPTIONS,
                             'status' => 'idle',
                         ];
@@ -736,7 +738,14 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                 $this->ownerRecord->embyLibraryMappings()->findOrFail($intentId),
                                 fn (EmbyLibraryMapping $intent) => $intent->updateQuietly($attributes),
                             );
-                        if ($mappingDestination['pending']) {
+                        if ($destination['error_summary'] ?? null) {
+                            $mapping->updateQuietly([
+                                'last_planned_revision' => null,
+                                'status' => 'failed',
+                                'status_summary' => __('Emby library options could not be applied.'),
+                                'error_summary' => $destination['error_summary'],
+                            ]);
+                        } elseif ($mappingDestination['pending']) {
                             $mapping->updateQuietly([
                                 'library_create_requested_at' => $mapping->library_create_requested_at ?? now(),
                                 'last_planned_revision' => null,
@@ -750,7 +759,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                                 'library_create_requested_at' => null,
                                 'last_planned_revision' => $catalog['revision'],
                                 'status' => 'planned',
-                                'status_summary' => __('Revision planned for companion sync.'),
+                                'status_summary' => trim(__('Revision planned for companion sync.').' '.($destination['library_options_summary'] ?? '')),
                                 'error_summary' => null,
                             ]);
                         }
@@ -896,7 +905,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
     /**
      * @param  array<string, mixed>  $data
      * @param  list<array{kind: string, identifier: string, label: string, collection_type: string|null}>  $sources
-     * @return array{library_id: string|null, name: string, collection_type: string, path: string, managed: bool, pending: bool, intent_ids?: list<int>}
+     * @return array{library_id: string|null, name: string, collection_type: string, path: string, managed: bool, pending: bool, intent_ids?: list<int>, created?: bool, library_options_applied?: bool, library_options_summary?: string|null, error_summary?: string|null}
      */
     private function resolveSimpleDestination(array $data, ?string $sourceCollectionType, array $sources): array
     {
@@ -968,13 +977,17 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         }
 
         $path = $prepared['path'];
+        $lifecycleOwnsLibrary = ($prepared['state'] ?? null) === 'committed';
         $matchingManagedMappings = $this->ownerRecord->embyLibraryMappings()
             ->where('is_managed', true)
             ->where('target_library_name', $name)
             ->where('collection_type', $collectionType);
-        $knownLibraryId = (clone $matchingManagedMappings)
+        $ownedLibrary = (clone $matchingManagedMappings)
             ->whereNotNull('target_library_id')
-            ->value('target_library_id');
+            ->whereNotNull('managed_library_creation_confirmed_at')
+            ->latest('id')
+            ->first(['target_library_id', 'library_options_applied_at']);
+        $knownLibraryId = $ownedLibrary?->target_library_id;
         $createWasAlreadyRequested = $knownLibraryId !== null
             || (clone $matchingManagedMappings)->whereNotNull('library_create_requested_at')->exists();
         $intentIds = $this->persistManagedCreateIntents($sources, $name, $collectionType, $path);
@@ -985,10 +998,19 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             false,
             $knownLibraryId,
             createIfMissing: ! $createWasAlreadyRequested,
+            managed: true,
+            libraryOptionsApplied: $ownedLibrary?->library_options_applied_at !== null || $lifecycleOwnsLibrary,
+            libraryOwnershipConfirmed: $ownedLibrary !== null || $lifecycleOwnsLibrary,
         );
         $libraryId = $result['library']['id'] ?? null;
         $createIsAmbiguous = ! $result['success'] && $result['created'];
-        if (! $result['success'] && ! $createIsAmbiguous) {
+        $matchedUnownedLibrary = $result['success']
+            && ! $result['created']
+            && $knownLibraryId === null
+            && ! $lifecycleOwnsLibrary
+            && is_string($libraryId)
+            && $libraryId !== '';
+        if ((! $result['success'] && ! $createIsAmbiguous) || $matchedUnownedLibrary) {
             $originalError = EmbyLibraryMapping::redactSummary($result['message']);
             EmbyLibraryMapping::query()->whereKey($intentIds)->update([
                 'status' => 'cleanup_pending',
@@ -1001,10 +1023,14 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 $prepared['operation_id'],
                 $path,
             );
-            $message = $aborted['success']
-                ? __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.')
-                : __('Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.');
-            if ($aborted['success']) {
+            $message = $matchedUnownedLibrary
+                ? ($aborted['success']
+                    ? __('An existing Emby library matches this managed destination. Choose a different library name.')
+                    : __('An existing Emby library matches this managed destination. Companion cleanup is still pending and will be retried with the same operation.'))
+                : ($aborted['success']
+                    ? __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.')
+                    : __('Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.'));
+            if ($aborted['success'] || $matchedUnownedLibrary) {
                 EmbyLibraryMapping::query()->whereKey($intentIds)->delete();
             }
             throw ValidationException::withMessages([
@@ -1029,6 +1055,12 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             'managed' => true,
             'pending' => ! $libraryIsConfirmed || ! $committed['success'],
             'intent_ids' => $intentIds,
+            'created' => ($result['created'] ?? false) || $knownLibraryId !== null,
+            'library_options_applied' => $result['library_options_applied'] ?? false,
+            'library_options_summary' => $result['library_options_summary'] ?? null,
+            'error_summary' => ! $result['success'] && $libraryIsConfirmed
+                ? EmbyLibraryMapping::redactSummary($result['message'])
+                : null,
         ];
     }
 
@@ -1562,6 +1594,8 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             $data['output_path'] = $outputPath;
             $data['is_managed'] = false;
             $data['library_create_requested_at'] = null;
+            $data['managed_library_creation_confirmed_at'] = null;
+            $data['library_options_applied_at'] = null;
         } elseif ($destinationMode === 'new') {
             $writablePaths = $this->ownerRecord->getEmbyPublisherWritablePaths();
             if (! in_array($data['output_path'] ?? null, $writablePaths, true)) {
@@ -1579,6 +1613,10 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 && ($data['target_library_name'] ?? null) === $record->target_library_name
                 && ($data['collection_type'] ?? null) === $record->collection_type
                 && ($data['output_path'] ?? null) === $record->output_path;
+            if ($data['target_library_id'] === null && ! $isUnchangedPendingLibrary) {
+                $data['managed_library_creation_confirmed_at'] = null;
+                $data['library_options_applied_at'] = null;
+            }
             $data['library_create_requested_at'] = $isUnchangedPendingLibrary
                 ? $record->library_create_requested_at
                 : null;
@@ -1615,12 +1653,27 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             false,
             $mapping->target_library_id,
             createIfMissing: $mapping->library_create_requested_at === null || $preparedPath !== null,
+            managed: $mapping->is_managed && ($mapping->managed_library_creation_confirmed_at !== null
+                || ($mapping->target_library_id === null && $mapping->library_create_requested_at === null)),
+            libraryOptionsApplied: $mapping->library_options_applied_at !== null,
+            libraryOwnershipConfirmed: $mapping->managed_library_creation_confirmed_at !== null,
         );
+
+        if ($result['created']) {
+            $mapping->updateQuietly(['managed_library_creation_confirmed_at' => now()]);
+        }
+        if (($result['library_options_applied'] ?? false) && $mapping->library_options_applied_at === null) {
+            $mapping->updateQuietly(['library_options_applied_at' => now()]);
+        }
 
         if (! $result['success']) {
             $error = EmbyLibraryMapping::redactSummary($result['message']);
             $mapping->updateQuietly([
                 'status' => 'failed',
+                'target_library_id' => $mapping->is_managed && $mapping->managed_library_creation_confirmed_at !== null
+                    ? ($result['library']['id'] ?? $mapping->target_library_id)
+                    : $mapping->target_library_id,
+                'last_planned_revision' => null,
                 'status_summary' => __('Reconcile failed.'),
                 'error_summary' => $error,
             ]);
@@ -1654,6 +1707,24 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             Notification::make()
                 ->warning()
                 ->title(__('Pending'))
+                ->send();
+
+            return;
+        }
+
+        if ($mapping->is_managed
+            && $mapping->managed_library_creation_confirmed_at !== null
+            && $mapping->library_options_applied_at === null) {
+            $mapping->updateQuietly([
+                'last_planned_revision' => null,
+                'status' => 'failed',
+                'status_summary' => __('Reconcile failed.'),
+                'error_summary' => __('Emby library options could not be applied.'),
+            ]);
+            Notification::make()
+                ->danger()
+                ->title(__('Managed library reconcile failed'))
+                ->body(__('Emby library options could not be applied.'))
                 ->send();
 
             return;

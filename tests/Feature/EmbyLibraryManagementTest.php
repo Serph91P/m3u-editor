@@ -421,21 +421,29 @@ it('rejects an unsupported managed companion before making a library lifecycle r
 
 it('creates an Emby library through the official virtual folders endpoint', function () {
     Http::preventStrayRequests();
-    Http::fakeSequence('https://emby.test:8096/Library/VirtualFolders')
-        ->push([], 200)
-        ->push([], 204)
-        ->push([[
-            'ItemId' => 'library-1',
-            'Name' => 'Managed Movies',
-            'CollectionType' => 'movies',
-            'Locations' => ['/srv/emby/managed/movies'],
-        ]], 200);
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::sequence()
+            ->push([], 200)
+            ->push([], 204)
+            ->push([[
+                'ItemId' => 'library-1',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/managed/movies'],
+            ]], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
+        'https://emby.test:8096/Library/VirtualFolders/LibraryOptions' => Http::response([], 200),
+    ]);
 
     $result = MediaServerService::make($this->integration)->createLibrary(
         name: 'Managed Movies',
         collectionType: 'movies',
         paths: ['/srv/emby/managed/movies'],
         refreshLibrary: false,
+        managed: true,
     );
 
     expect($result['success'])->toBeTrue()
@@ -528,6 +536,7 @@ it('rejects a managed library path already owned by a different Emby library', f
         collectionType: 'movies',
         paths: ['/srv/emby/managed/movies'],
         refreshLibrary: false,
+        managed: true,
     );
 
     expect($result['success'])->toBeFalse();
@@ -546,6 +555,7 @@ it('does not create a library when the managed inventory request fails', functio
         collectionType: 'movies',
         paths: ['/srv/emby/managed/movies'],
         refreshLibrary: false,
+        managed: true,
     );
 
     expect($result['success'])->toBeFalse();
@@ -889,6 +899,10 @@ it('fails closed for movie imports while a created managed library is unresolved
             ->push([], 200)
             ->push([], 204)
             ->push([], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
+            'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+            'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+        ]),
         'https://emby.test:8096/Items*' => Http::response(['Items' => []], 200),
     ]);
 
@@ -898,6 +912,7 @@ it('fails closed for movie imports while a created managed library is unresolved
         collectionType: 'movies',
         paths: ['/srv/emby/managed/movies'],
         refreshLibrary: false,
+        managed: true,
     );
 
     expect($result['success'])->toBeTrue()
@@ -970,4 +985,310 @@ it('preserves unfiltered imports for media types without selected libraries', fu
 
     expect($this->integration->getImportLibraryIdsForType('movies'))->toBeNull()
         ->and($this->integration->getImportLibraryIdsForType('tvshows'))->toBe(['series-library']);
+});
+
+it('discovers and applies only the advertised local NFO reader for new movie and TV libraries', function (string $collectionType, string $name, string $path) {
+    Http::preventStrayRequests();
+    $inventoryRequests = 0;
+    Http::fake(function (Request $request) use ($collectionType, $name, $path, &$inventoryRequests) {
+        return match (true) {
+            $request->method() === 'GET' && str_ends_with($request->url(), '/Library/VirtualFolders')
+                && ! str_contains($request->url(), 'AvailableOptions') => match (++$inventoryRequests) {
+                    1 => Http::response([]),
+                    default => Http::response([[
+                        'ItemId' => 'managed-library',
+                        'Name' => $name,
+                        'CollectionType' => $collectionType,
+                        'Locations' => [$path],
+                    ]]),
+                },
+            $request->method() === 'GET' && str_contains($request->url(), '/Libraries/AvailableOptions') => Http::response([
+                'MetadataReaders' => [
+                    ['Name' => 'TheMovieDb', 'DefaultEnabled' => true],
+                    ['Name' => 'NFO', 'DefaultEnabled' => true],
+                ],
+                'DefaultLibraryOptions' => [[
+                    'DisabledLocalMetadataReaders' => [],
+                    'PreferredMetadataLanguage' => 'en',
+                    'MetadataCountryCode' => 'US',
+                    'LocalMetadataReaderOrder' => ['NFO', 'Custom Local Reader'],
+                    'DisabledSubtitleFetchers' => ['OpenSubtitles'],
+                    'EnableInternetProviders' => false,
+                ]],
+            ]),
+            $request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders') => Http::response([], 204),
+            $request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions') => Http::response([], 200),
+            default => Http::response([], 500),
+        };
+    });
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: $name,
+        collectionType: $collectionType,
+        paths: [$path],
+        refreshLibrary: false,
+        managed: true,
+    );
+
+    expect($result['success'])->toBeTrue()
+        ->and($result['library_options_applied'])->toBeTrue()
+        ->and($result['library_options_summary'])->toContain('Metadata language: en; region: US.');
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
+        && str_contains($request->url(), '/Libraries/AvailableOptions?')
+        && str_contains($request->url(), 'LibraryContentType='.$collectionType)
+        && str_contains($request->url(), 'IsNewLibrary=true'));
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')
+                && $request->data() === [
+                    'Id' => 'managed-library',
+                    'LibraryOptions' => [
+                        'DisabledLocalMetadataReaders' => [],
+                        'PreferredMetadataLanguage' => 'en',
+                        'MetadataCountryCode' => 'US',
+                        'LocalMetadataReaderOrder' => ['NFO', 'Custom Local Reader'],
+                        'DisabledSubtitleFetchers' => ['OpenSubtitles'],
+                        'EnableInternetProviders' => false,
+                    ],
+                ]);
+    Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders')
+        && $request->data()['CollectionType'] !== $collectionType);
+})->with([
+    'movies' => ['movies', 'Managed Movies', '/srv/emby/movies'],
+    'TV shows' => ['tvshows', 'Managed TV', '/srv/emby/tv'],
+]);
+
+it('fails closed before creating a new library when safe NFO capability is unavailable', function (mixed $body, int $status) {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::response([], 200),
+        'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response($body, $status),
+    ]);
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/movies'],
+        refreshLibrary: false,
+        managed: true,
+    );
+
+    expect($result['success'])->toBeFalse()
+        ->and($result['message'])->toBe('Emby did not advertise a safe local NFO metadata reader.');
+    Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+})->with([
+    'unauthorized' => [[], 401],
+    'server failure' => [[], 500],
+    'malformed list' => [['MetadataReaders' => 'NFO'], 200],
+    'provider-only readers' => [['MetadataReaders' => [['Name' => 'TheMovieDb']]], 200],
+    'missing defaults' => [['MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]]], 200],
+    'advertised disabled reader' => [[
+        'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => false]],
+        'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+    ], 200],
+    'invalid disabled readers' => [[
+        'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+        'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => 'NFO'],
+    ], 200],
+]);
+
+it('removes only the selected NFO reader from server-disabled local readers', function () {
+    Http::preventStrayRequests();
+    $inventoryRequests = 0;
+    Http::fake(function (Request $request) use (&$inventoryRequests) {
+        if ($request->method() === 'GET' && str_contains($request->url(), '/Libraries/AvailableOptions')) {
+            return Http::response([
+                'MetadataReaders' => [
+                    ['Name' => 'NFO', 'DefaultEnabled' => true],
+                    ['Name' => 'Other Local Reader', 'DefaultEnabled' => true],
+                ],
+                'DefaultLibraryOptions' => [
+                    'DisabledLocalMetadataReaders' => ['NFO', 'Other Local Reader'],
+                    'LocalMetadataReaderOrder' => ['NFO', 'Custom Local Reader'],
+                    'DisabledSubtitleFetchers' => ['OpenSubtitles'],
+                    'EnableInternetProviders' => false,
+                ],
+            ]);
+        }
+
+        if ($request->method() === 'GET' && str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            return ++$inventoryRequests === 1
+                ? Http::response([])
+                : Http::response([[
+                    'ItemId' => 'managed-library',
+                    'Name' => 'Managed Movies',
+                    'CollectionType' => 'movies',
+                    'Locations' => ['/srv/emby/movies'],
+                ]]);
+        }
+
+        if ($request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            return Http::response([], 204);
+        }
+
+        return Http::response([], 200);
+    });
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/movies'],
+        refreshLibrary: false,
+        managed: true,
+    );
+
+    expect($result['success'])->toBeTrue();
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')
+        && $request->data()['LibraryOptions'] === [
+            'DisabledLocalMetadataReaders' => ['Other Local Reader'],
+            'LocalMetadataReaderOrder' => ['NFO', 'Custom Local Reader'],
+            'DisabledSubtitleFetchers' => ['OpenSubtitles'],
+            'EnableInternetProviders' => false,
+        ]);
+});
+
+it('does not mutate an unproven matching user library during managed creation', function () {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::response([[
+            'ItemId' => 'existing-library',
+            'Name' => 'Existing Movies',
+            'CollectionType' => 'movies',
+            'Locations' => ['/srv/emby/movies'],
+        ]]),
+    ]);
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Existing Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/movies'],
+        refreshLibrary: false,
+        managed: true,
+    );
+
+    expect($result['success'])->toBeTrue()
+        ->and($result['created'])->toBeFalse()
+        ->and($result['library_options_applied'])->toBeFalse();
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Libraries/AvailableOptions'));
+    Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+});
+
+it('retries failed option application without creating a second library', function () {
+    Http::preventStrayRequests();
+    $inventoryRequests = 0;
+    $optionRequests = 0;
+    Http::fake(function (Request $request) use (&$inventoryRequests, &$optionRequests) {
+        if ($request->method() === 'GET' && str_contains($request->url(), '/Libraries/AvailableOptions')) {
+            return Http::response([
+                'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+                'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+            ]);
+        }
+
+        if ($request->method() === 'GET' && str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            return match (++$inventoryRequests) {
+                1 => Http::response([], 200),
+                default => Http::response([[
+                    'ItemId' => 'managed-library',
+                    'Name' => 'Managed Movies',
+                    'CollectionType' => 'movies',
+                    'Locations' => ['/srv/emby/movies'],
+                ]]),
+            };
+        }
+
+        if ($request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            return Http::response([], 204);
+        }
+
+        if ($request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')) {
+            return Http::response([], ++$optionRequests === 1 ? 500 : 200);
+        }
+
+        return Http::response([], 500);
+    });
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/movies'],
+        refreshLibrary: false,
+        managed: true,
+    );
+
+    expect($result['success'])->toBeFalse()
+        ->and($result['created'])->toBeTrue();
+    $retry = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/movies'],
+        refreshLibrary: false,
+        managed: true,
+        libraryId: 'managed-library',
+    );
+
+    expect($retry['success'])->toBeTrue()
+        ->and($retry['created'])->toBeFalse()
+        ->and($retry['library_options_applied'])->toBeTrue();
+    expect(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders')))->toHaveCount(1);
+    expect(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')))->toHaveCount(2);
+});
+
+it('keeps a transport-failed managed create unpublishable when inventory finds it but options fail', function () {
+    Http::preventStrayRequests();
+    $inventoryRequests = 0;
+    $createRequests = 0;
+    Http::fake(function (Request $request) use (&$inventoryRequests, &$createRequests) {
+        if ($request->method() === 'GET' && str_contains($request->url(), '/Libraries/AvailableOptions')) {
+            return Http::response([
+                'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
+                'DefaultLibraryOptions' => ['DisabledLocalMetadataReaders' => []],
+            ]);
+        }
+
+        if ($request->method() === 'GET' && str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            $inventoryRequests++;
+
+            return $inventoryRequests === 1
+                ? Http::response([])
+                : Http::response([[
+                    'ItemId' => 'managed-library',
+                    'Name' => 'Managed Movies',
+                    'CollectionType' => 'movies',
+                    'Locations' => ['/srv/emby/movies'],
+                ]]);
+        }
+
+        if ($request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders')) {
+            $createRequests++;
+
+            throw new ConnectionException('simulated transport failure');
+        }
+
+        if ($request->method() === 'POST' && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')) {
+            return Http::response([], 500);
+        }
+
+        return Http::response([], 500);
+    });
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Managed Movies',
+        collectionType: 'movies',
+        paths: ['/srv/emby/movies'],
+        refreshLibrary: false,
+        managed: true,
+    );
+
+    expect($result['success'])->toBeFalse()
+        ->and($result['created'])->toBeTrue()
+        ->and($result['library']['id'])->toBe('managed-library')
+        ->and($result['library_options_applied'])->toBeFalse();
+    expect($createRequests)->toBe(1);
+    expect(Http::recorded(fn (Request $request): bool => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/Library/VirtualFolders/LibraryOptions')))->toHaveCount(1);
+    expect($inventoryRequests)->toBe(2);
 });

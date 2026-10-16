@@ -11,7 +11,7 @@ trait DoesNotSupportLibraryCreation
 {
     /**
      * @param  list<string>  $paths
-     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool}
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool, library_options_applied: bool, library_options_summary: string|null}
      */
     public function createLibrary(
         string $name,
@@ -20,6 +20,8 @@ trait DoesNotSupportLibraryCreation
         bool $refreshLibrary = true,
         ?string $libraryId = null,
         bool $createIfMissing = true,
+        bool $managed = false,
+        bool $libraryOptionsApplied = false,
     ): array {
         return [
             'success' => false,
@@ -27,6 +29,8 @@ trait DoesNotSupportLibraryCreation
             'message' => 'Library creation is not supported by this media server.',
             'library' => null,
             'drift' => false,
+            'library_options_applied' => false,
+            'library_options_summary' => null,
         ];
     }
 }

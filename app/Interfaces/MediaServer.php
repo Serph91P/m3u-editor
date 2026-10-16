@@ -22,7 +22,7 @@ interface MediaServer
 
     /**
      * @param  list<string>  $paths
-     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool}
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool, library_options_applied: bool, library_options_summary: string|null}
      */
     public function createLibrary(
         string $name,
@@ -31,6 +31,9 @@ interface MediaServer
         bool $refreshLibrary = true,
         ?string $libraryId = null,
         bool $createIfMissing = true,
+        bool $managed = false,
+        bool $libraryOptionsApplied = false,
+        bool $libraryOwnershipConfirmed = false,
     ): array;
 
     public function fetchMovies(): Collection;

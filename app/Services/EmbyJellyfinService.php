@@ -229,7 +229,7 @@ class EmbyJellyfinService implements MediaServer
 
     /**
      * @param  list<string>  $paths
-     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool}
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool, library_options_applied: bool, library_options_summary: string|null}
      */
     public function createLibrary(
         string $name,
@@ -238,6 +238,9 @@ class EmbyJellyfinService implements MediaServer
         bool $refreshLibrary = true,
         ?string $libraryId = null,
         bool $createIfMissing = true,
+        bool $managed = false,
+        bool $libraryOptionsApplied = false,
+        bool $libraryOwnershipConfirmed = false,
     ): array {
         if (! $this->integration->isEmby()) {
             return $this->libraryResult(false, false, 'Managed library creation is supported only for Emby.');
@@ -303,6 +306,7 @@ class EmbyJellyfinService implements MediaServer
             && $containsRequestedPaths($library);
 
         $createAttempted = false;
+        $libraryOptions = null;
 
         try {
             $existingLibraries = $this->fetchLibraries(withoutRedirecting: true, failClosed: true);
@@ -312,6 +316,10 @@ class EmbyJellyfinService implements MediaServer
 
             if ($existingLibrary !== null) {
                 $drift = ! $matchesRequest($existingLibrary);
+
+                if ($managed && ! $libraryOptionsApplied && ! $drift) {
+                    return $this->applyManagedLibraryOptions($existingLibrary, $collectionType);
+                }
 
                 return $this->libraryResult(true, false, 'Existing Emby library found by ID.', $existingLibrary, $drift);
             }
@@ -323,6 +331,10 @@ class EmbyJellyfinService implements MediaServer
             $existingLibrary = $existingLibraries->first($matchesRequest);
 
             if ($existingLibrary !== null) {
+                if ($managed && $libraryOwnershipConfirmed && ! $libraryOptionsApplied) {
+                    return $this->applyManagedLibraryOptions($existingLibrary, $collectionType);
+                }
+
                 return $this->libraryResult(true, false, 'Existing managed Emby library found.', $existingLibrary);
             }
 
@@ -354,6 +366,13 @@ class EmbyJellyfinService implements MediaServer
                 return $this->libraryResult(true, false, 'Managed Emby library is pending inventory.');
             }
 
+            $libraryOptions ??= $managed
+                ? $this->discoverManagedLibraryOptions($collectionType)
+                : null;
+            if ($managed && $libraryOptions === null) {
+                return $this->libraryResult(false, false, 'Emby did not advertise a safe local NFO metadata reader.');
+            }
+
             $createAttempted = true;
             $response = $this->client(withoutRedirecting: true)->post('/Library/VirtualFolders', [
                 'Name' => $name,
@@ -366,17 +385,39 @@ class EmbyJellyfinService implements MediaServer
                 $reconciledLibrary = $this->fetchLibraries(withoutRedirecting: true, failClosed: true)
                     ->first($matchesRequest);
 
-                return $reconciledLibrary === null
-                    ? $this->libraryResult(
-                        false,
-                        true,
-                        'Emby library request has an unknown outcome.',
-                    )
-                    : $this->libraryResult(
+                if ($reconciledLibrary === null) {
+                    return $this->libraryResult(false, true, 'Emby library request has an unknown outcome.');
+                }
+
+                if (! $managed) {
+                    return $this->libraryResult(
                         true,
                         true,
                         'Emby library creation was confirmed from inventory.',
                         $reconciledLibrary,
+                    );
+                }
+
+                $optionsResult = $this->applyLibraryOptions($reconciledLibrary, $libraryOptions);
+
+                return $optionsResult['success']
+                    ? $this->libraryResult(
+                        true,
+                        true,
+                        'Emby library creation was confirmed from inventory.',
+                        $reconciledLibrary,
+                        false,
+                        true,
+                        $libraryOptions['summary'],
+                    )
+                    : $this->libraryResult(
+                        false,
+                        true,
+                        'Emby library options could not be applied.',
+                        $reconciledLibrary,
+                        false,
+                        false,
+                        $libraryOptions['summary'],
                     );
             }
 
@@ -384,14 +425,22 @@ class EmbyJellyfinService implements MediaServer
                 return $this->libraryResult(false, false, 'Emby rejected the library request.');
             }
 
-            $createdLibrary = $this->fetchLibraries(withoutRedirecting: true, failClosed: true)->first($matchesRequest);
+            $library = $this->fetchLibraries(withoutRedirecting: true, failClosed: true)->first($matchesRequest);
+            if ($library === null || ! is_string($library['id'] ?? null) || trim($library['id']) === '') {
+                return $this->libraryResult(true, true, 'Emby library creation is pending.');
+            }
 
-            return $this->libraryResult(
-                true,
-                true,
-                'Emby library created.',
-                $createdLibrary,
-            );
+            if (! $managed) {
+                return $this->libraryResult(true, true, 'Emby library created.', $library);
+            }
+
+            $optionsResult = $this->applyLibraryOptions($library, $libraryOptions);
+
+            if (! $optionsResult['success']) {
+                return $this->libraryResult(false, true, 'Emby library options could not be applied.', $library, false, false, $libraryOptions['summary']);
+            }
+
+            return $this->libraryResult(true, true, 'Emby library created.', $library, false, true, $libraryOptions['summary']);
         } catch (Exception $exception) {
             Log::warning('EmbyJellyfinService: Library creation failed', [
                 'integration_id' => $this->integration->id,
@@ -403,12 +452,41 @@ class EmbyJellyfinService implements MediaServer
                     $reconciledLibrary = $this->fetchLibraries(withoutRedirecting: true, failClosed: true)
                         ->first($matchesRequest);
                     if ($reconciledLibrary !== null) {
-                        return $this->libraryResult(
-                            true,
-                            true,
-                            'Emby library creation was confirmed from inventory.',
-                            $reconciledLibrary,
-                        );
+                        if (! $managed) {
+                            return $this->libraryResult(
+                                true,
+                                true,
+                                'Emby library creation was confirmed from inventory.',
+                                $reconciledLibrary,
+                            );
+                        }
+
+                        $libraryOptions ??= $this->discoverManagedLibraryOptions($collectionType);
+                        if ($libraryOptions === null) {
+                            return $this->libraryResult(false, true, 'Emby did not advertise a safe local NFO metadata reader.', $reconciledLibrary);
+                        }
+
+                        $optionsResult = $this->applyLibraryOptions($reconciledLibrary, $libraryOptions);
+
+                        return $optionsResult['success']
+                            ? $this->libraryResult(
+                                true,
+                                true,
+                                'Emby library creation was confirmed from inventory.',
+                                $reconciledLibrary,
+                                false,
+                                true,
+                                $libraryOptions['summary'],
+                            )
+                            : $this->libraryResult(
+                                false,
+                                true,
+                                'Emby library options could not be applied.',
+                                $reconciledLibrary,
+                                false,
+                                false,
+                                $libraryOptions['summary'],
+                            );
                     }
                 } catch (Exception) {
                     // The create outcome remains ambiguous until a later inventory reconcile.
@@ -426,12 +504,60 @@ class EmbyJellyfinService implements MediaServer
     }
 
     /**
+     * @param  array<string, mixed>  $library
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool, library_options_applied: bool, library_options_summary: string|null}
+     */
+    private function applyManagedLibraryOptions(array $library, string $collectionType): array
+    {
+        $libraryOptions = $this->discoverManagedLibraryOptions($collectionType);
+        if ($libraryOptions === null) {
+            return $this->libraryResult(false, false, 'Emby did not advertise a safe local NFO metadata reader.', $library);
+        }
+
+        $optionsResult = $this->applyLibraryOptions($library, $libraryOptions);
+        if (! $optionsResult['success']) {
+            return $this->libraryResult(false, false, 'Emby library options could not be applied.', $library, false, false, $libraryOptions['summary']);
+        }
+
+        return $this->libraryResult(true, false, 'Managed Emby library options applied.', $library, false, true, $libraryOptions['summary']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $library
+     * @param  array{options: array<string, mixed>, summary: string}  $libraryOptions
+     * @return array{success: bool}
+     */
+    private function applyLibraryOptions(array $library, array $libraryOptions): array
+    {
+        $libraryId = $library['id'] ?? null;
+        if (! is_string($libraryId) || trim($libraryId) === '') {
+            return ['success' => false];
+        }
+
+        try {
+            $response = $this->client(withoutRedirecting: true)->post('/Library/VirtualFolders/LibraryOptions', [
+                'Id' => $libraryId,
+                'LibraryOptions' => $libraryOptions['options'],
+            ]);
+        } catch (Exception $exception) {
+            Log::warning('EmbyJellyfinService: Library options application failed', [
+                'integration_id' => $this->integration->id,
+                'exception' => $exception::class,
+            ]);
+
+            return ['success' => false];
+        }
+
+        return ['success' => $response->successful()];
+    }
+
+    /**
      * Build the standard createLibrary() result shape, so every return path
      * carries the same keys (including 'drift') instead of each branch
      * assembling its own array and risking an omitted key.
      *
      * @param  array<string, mixed>|null  $library
-     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool}
+     * @return array{success: bool, created: bool, message: string, library: array<string, mixed>|null, drift: bool, library_options_applied: bool, library_options_summary: string|null}
      */
     private function libraryResult(
         bool $success,
@@ -439,6 +565,8 @@ class EmbyJellyfinService implements MediaServer
         string $message,
         ?array $library = null,
         bool $drift = false,
+        bool $libraryOptionsApplied = false,
+        ?string $libraryOptionsSummary = null,
     ): array {
         return [
             'success' => $success,
@@ -446,6 +574,101 @@ class EmbyJellyfinService implements MediaServer
             'message' => $message,
             'library' => $library,
             'drift' => $drift,
+            'library_options_applied' => $libraryOptionsApplied,
+            'library_options_summary' => $libraryOptionsSummary,
+        ];
+    }
+
+    /**
+     * Discover a server-advertised local NFO reader without depending on a
+     * provider/plugin name. Unknown or incomplete metadata is rejected before
+     * a managed library is created.
+     *
+     * @return array{options: array<string, mixed>, summary: string}|null
+     */
+    private function discoverManagedLibraryOptions(string $collectionType): ?array
+    {
+        try {
+            $response = $this->client(withoutRedirecting: true)->get('/Libraries/AvailableOptions', [
+                'LibraryContentType' => $collectionType,
+                'IsNewLibrary' => 'true',
+            ]);
+        } catch (Exception $exception) {
+            Log::warning('EmbyJellyfinService: Library options discovery failed', [
+                'integration_id' => $this->integration->id,
+                'exception' => $exception::class,
+            ]);
+
+            return null;
+        }
+
+        $data = $response->json();
+        if (! $response->successful() || ! is_array($data) || ! is_array($data['MetadataReaders'] ?? null)) {
+            return null;
+        }
+
+        $reader = collect($data['MetadataReaders'])
+            ->filter(fn (mixed $candidate): bool => is_array($candidate))
+            ->first(function (array $candidate): bool {
+                $name = is_string($candidate['Name'] ?? null) ? trim($candidate['Name']) : '';
+
+                return $name !== ''
+                    && ($candidate['DefaultEnabled'] ?? null) === true
+                    && preg_match('/(?:^|[^a-z])nfo(?:$|[^a-z])/i', $name) === 1;
+            });
+
+        if (! is_array($reader) || ! is_string($reader['Name'] ?? null) || trim($reader['Name']) === '') {
+            return null;
+        }
+
+        $readerName = trim($reader['Name']);
+        $defaults = $data['DefaultLibraryOptions'] ?? null;
+        $defaults = is_array($defaults) && array_is_list($defaults) ? ($defaults[0] ?? []) : $defaults;
+        if (! is_array($defaults)
+            || ! array_key_exists('DisabledLocalMetadataReaders', $defaults)
+            || ! is_array($defaults['DisabledLocalMetadataReaders'])
+            || ! array_is_list($defaults['DisabledLocalMetadataReaders'])
+            || collect($defaults['DisabledLocalMetadataReaders'])->contains(
+                fn (mixed $name): bool => ! is_string($name) || trim($name) === '',
+            )) {
+            return null;
+        }
+
+        $disabledReaders = array_values(array_filter(
+            $defaults['DisabledLocalMetadataReaders'],
+            fn (string $name): bool => strcasecmp(trim($name), $readerName) !== 0,
+        ));
+        $language = is_string($defaults['PreferredMetadataLanguage'] ?? null)
+            ? trim($defaults['PreferredMetadataLanguage'])
+            : '';
+        $region = is_string($defaults['MetadataCountryCode'] ?? null)
+            ? trim($defaults['MetadataCountryCode'])
+            : '';
+        $languageRegion = $language !== '' || $region !== ''
+            ? __('Metadata language: :language; region: :region.', [
+                'language' => $language !== '' ? $language : __('server default'),
+                'region' => $region !== '' ? $region : __('server default'),
+            ])
+            : __('Metadata language and region: server defaults.');
+        $providerHint = collect($data['TypeOptions'] ?? [])
+            ->filter(fn (mixed $typeOption): bool => is_array($typeOption))
+            ->flatMap(fn (array $typeOption): array => is_array($typeOption['MetadataFetchers'] ?? null)
+                ? $typeOption['MetadataFetchers']
+                : [])
+            ->contains(fn (mixed $fetcher): bool => is_array($fetcher)
+                && ($fetcher['DefaultEnabled'] ?? false) === true)
+            ? __('Provider metadata fetchers remain at their server defaults; tune them in Emby if needed.')
+            : null;
+
+        return [
+            'options' => array_replace($defaults, [
+                'DisabledLocalMetadataReaders' => $disabledReaders,
+            ]),
+            'summary' => trim(implode(' ', array_filter([
+                __('Local NFO metadata reader enabled.'),
+                $languageRegion,
+                $providerHint,
+            ]))),
         ];
     }
 

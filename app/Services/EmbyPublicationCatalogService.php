@@ -36,6 +36,13 @@ class EmbyPublicationCatalogService
                 continue;
             }
 
+            if ($mapping->is_managed
+                && $mapping->managed_library_creation_confirmed_at !== null
+                && $mapping->target_library_id !== null
+                && $mapping->library_options_applied_at === null) {
+                continue;
+            }
+
             if ($mapping->is_managed && $mapping->target_library_id === null) {
                 $mapping->updateQuietly([
                     'last_planned_revision' => null,
