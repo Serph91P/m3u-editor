@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Services\CachedContentActivityService;
 use App\Services\CachedContentRetentionService;
 use App\Services\ManagedCacheControlService;
+use App\Settings\GeneralSettings;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
@@ -20,6 +21,10 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     Storage::fake('cache');
     config(['cache.default' => 'array']);
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->shouldReceive('refresh')->zeroOrMoreTimes()->andReturnSelf();
+    $settings->enable_cache = true;
+    app()->instance(GeneralSettings::class, $settings);
 
     $this->user = User::factory()->create();
     $this->playlist = Playlist::factory()->for($this->user)->createQuietly();
@@ -173,6 +178,31 @@ it('does not delete a managed file while a playback lease for its interest targe
     );
 
     dispatch_sync(new ReleaseWatchedManagedCache);
+
+    expect(CachedContentFile::find($file->id))->not->toBeNull()
+        ->and(Storage::disk('cache')->exists('managed/movie.mp4'))->toBeTrue();
+});
+
+it('does not delete a releasable managed file while cache is disabled at execution', function () {
+    $settings = Mockery::mock(GeneralSettings::class);
+    $settings->shouldReceive('refresh')->once()->andReturnSelf();
+    $settings->enable_cache = false;
+    app()->instance(GeneralSettings::class, $settings);
+
+    $file = makeManagedFile($this->playlist);
+    Storage::disk('cache')->put('managed/movie.mp4', 'video-bytes');
+    ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => '123e4567-e89b-12d3-a456-426614174000',
+        'canonical_id' => 'episode:fixture:s01e01',
+        'variant_key' => '1080p',
+        'consumer_id' => 'profile-a',
+        'watched_at' => now()->subHour(),
+        'release_after' => now()->subHour(),
+    ]);
+
+    app(ReleaseWatchedManagedCache::class)->handle(app(CachedContentRetentionService::class));
 
     expect(CachedContentFile::find($file->id))->not->toBeNull()
         ->and(Storage::disk('cache')->exists('managed/movie.mp4'))->toBeTrue();
