@@ -4028,8 +4028,7 @@ class XtreamApiController extends Controller
                         }
 
                         $capacity = app(ManagedCacheCapacityService::class);
-                        $reservation = $capacity->reserve($snapshot);
-                        if ($reservation === null) {
+                        if ($capacity->availability($snapshot->limit, $snapshot->live, $snapshot->background) !== CacheDispatchResult::Queued) {
                             return [
                                 'canonical_id' => $target['canonical_id'],
                                 'variant_key' => $target['variant_key'],
@@ -4037,10 +4036,16 @@ class XtreamApiController extends Controller
                             ];
                         }
 
+                        // A batch may queue several next episodes, but only one
+                        // may own the account's download slot. Waiting jobs acquire
+                        // their own reservation from fresh counters when they run.
+                        $reservation = $capacity->reserve($snapshot);
                         $dispatch = app(CachedContentDispatchService::class)->dispatchManaged($resolved['cacheable']);
                         $file = $resolved['cacheable']->cachedContentFile()->first();
                         if ($file && in_array($dispatch, [CacheDispatchResult::Queued, CacheDispatchResult::AlreadyQueued], true)) {
-                            $capacity->attachToFile($file->id, $reservation);
+                            if ($reservation !== null) {
+                                $capacity->attachToFile($file->id, $reservation);
+                            }
                             $control->recordInterest(
                                 $file,
                                 $mapping->integration,
