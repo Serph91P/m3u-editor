@@ -8,10 +8,10 @@ use App\Models\CachedContentFile;
 use App\Models\Channel;
 use App\Models\Episode;
 use App\Models\Playlist;
+use App\Services\CachedContentDispatchService;
 use App\Services\M3uProxyService;
 use App\Services\ManagedCacheCapacityService;
 use App\Services\ManagedCacheCapacitySnapshotSource;
-use App\Settings\GeneralSettings;
 use App\Support\PrivateNetworkGuard;
 use App\Traits\ProviderRequestDelay;
 use Illuminate\Bus\Queueable;
@@ -151,7 +151,7 @@ class DownloadCachedContentFile implements ShouldQueue
             return;
         }
 
-        if (! (bool) (app(GeneralSettings::class)->enable_cache ?? false)) {
+        if (! app(CachedContentDispatchService::class)->isEnabled()) {
             $this->markFailed($file, 'Caching is disabled.');
 
             return;
