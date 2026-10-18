@@ -287,6 +287,9 @@ class MapPlaylistChannelsToEpgChunk implements ShouldQueue
         }
 
         return [
+            // Custom channels have no source_id/playlist_id, so MapEpgToChannels
+            // updates them by id instead of upserting on that pair.
+            'id' => $channel->id,
             'title' => $this->sanitizeUtf8($channel->title),
             'name' => $this->sanitizeUtf8($channel->name),
             'group_internal' => $this->sanitizeUtf8($channel->group_internal),

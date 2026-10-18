@@ -98,6 +98,7 @@ class ManageAlertSettings extends BaseSettingsPage
                                             ->helperText(__('When enabled, error-level log entries will be forwarded to your Discord channel.'))
                                             ->live(),
                                         TextInput::make('discord_webhook_url')
+                                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                             ->label(__('Discord Webhook URL'))
                                             ->url()
                                             ->placeholder(__('https://discord.com/api/webhooks/...'))
@@ -206,6 +207,7 @@ HTML))
                                             ->visible(fn (Get $get): bool => (bool) $get('slack_alerts_enabled'))
                                             ->columnSpanFull(),
                                         TextInput::make('slack_webhook_url')
+                                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                             ->label(__('Slack Webhook URL'))
                                             ->url()
                                             ->hintAction(

@@ -51,20 +51,8 @@ class PlaylistsRelationManager extends RelationManager
                     ->sortable(),
                 TextColumn::make('live_channels_count')
                     ->label(__('Live'))
-                    ->state(function (Playlist $record): int {
-                        if (! $record->pivot->include_live) {
-                            return 0;
-                        }
-
-                        return $record->is_network_playlist ? $record->networks()->count() : $record->live_channels_count;
-                    })
-                    ->description(function (Playlist $record): string {
-                        if (! $record->pivot->include_live) {
-                            return __('Excluded from merge');
-                        }
-
-                        return $record->is_network_playlist ? 'Enabled: '.($record->networks()->get()->filter(fn ($n) => $n->isBroadcasting())->count()) : "Enabled: {$record->enabled_live_channels_count}";
-                    })
+                    ->state(fn (Playlist $record): int => $record->pivot->include_live ? $record->live_channels_count : 0)
+                    ->description(fn (Playlist $record): string => $record->pivot->include_live ? "Enabled: {$record->enabled_live_channels_count}" : __('Excluded from merge'))
                     ->sortable(),
                 TextColumn::make('vod_channels_count')
                     ->label(__('VOD'))

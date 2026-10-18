@@ -109,6 +109,7 @@ class ArrIntegrationResource extends Resource
                         ]),
 
                         TextInput::make('url')
+                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Server URL'))
                             ->placeholder('http://192.168.1.42:8989')
                             ->required()
@@ -259,6 +260,7 @@ class ArrIntegrationResource extends Resource
                     ->afterHeader(self::getWebhookActions())
                     ->schema([
                         TextInput::make('webhook_url')
+                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Webhook URL'))
                             ->formatStateUsing(fn (?ArrIntegration $record): ?string => $record?->webhook_url)
                             ->disabled()
@@ -332,6 +334,7 @@ class ArrIntegrationResource extends Resource
                     ->sortable(),
 
                 TextColumn::make('url')
+                    ->extraAttributes(['class' => 'privacy-sensitive'])
                     ->label(__('URL'))
                     ->searchable()
                     ->copyable()

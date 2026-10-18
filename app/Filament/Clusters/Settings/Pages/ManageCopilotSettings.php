@@ -104,6 +104,7 @@ class ManageCopilotSettings extends BaseSettingsPage
                                 ? __('Your Unsloth Studio API key (starts with sk-unsloth-), created in Studio under Settings > API. Leave blank if keyless API access is enabled in Studio.')
                                 : __('Your API key for the selected provider. Stored in the database.')),
                         TextInput::make('copilot_url')
+                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Base URL'))
                             ->url()
                             ->placeholder(fn (Get $get): string => CopilotProvider::defaultUrl($get('copilot_provider')))

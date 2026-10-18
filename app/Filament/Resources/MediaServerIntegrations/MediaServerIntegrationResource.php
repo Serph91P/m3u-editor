@@ -259,6 +259,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                         // Network server configuration (hidden for local media)
                         Grid::make(3)->schema([
                             TextInput::make('host')
+                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                 ->label(__('Host / IP Address'))
                                 ->prefix(fn (callable $get) => $get('ssl') ? 'https://' : 'http://')
                                 ->placeholder(fn (callable $get) => $get('type') === 'webdav'
@@ -304,6 +305,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
 
                         // AIOStreams manifest URL
                         TextInput::make('manifest_url')
+                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Manifest URL'))
                             ->url()
                             ->placeholder('https://your-aiostreams-instance.com/stremio/uuid/token/manifest.json')
@@ -320,6 +322,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                         // WebDAV authentication (username/password)
                         Grid::make(2)->schema([
                             TextInput::make('webdav_username')
+                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                 ->label(__('WebDAV Username'))
                                 ->placeholder(__('username'))
                                 ->afterStateHydrated(fn ($component, $record) => $component->state($record?->webdav_username))
@@ -978,10 +981,12 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                                                     return $playlist && $value !== 'number';
                                                 }),
                                             TextInput::make('hdhr_base_url')
+                                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                                 ->label(__('HDHR Base URL'))
                                                 ->helperText(__('This URL must be reachable from your Plex server. Uses the Proxy URL Override or APP_URL. Adjust if Plex reaches m3u-editor via a different address (e.g. Docker internal IP).'))
                                                 ->required(),
                                             TextInput::make('epg_url')
+                                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                                 ->label(__('EPG URL'))
                                                 ->helperText(__('XMLTV EPG guide URL. Must also be reachable from Plex. Adjust if needed.'))
                                                 ->required(),
@@ -1191,6 +1196,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                     ->description(__('Create live TV channels from your media server content'))
                     ->schema([
                         TextInput::make('networks_playlist_url')
+                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Networks Playlist URL'))
                             ->disabled()
                             ->dehydrated(false)
@@ -1213,6 +1219,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                             ->helperText(__('M3U playlist containing all your Networks as live channels')),
 
                         TextInput::make('networks_epg_url')
+                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Networks EPG URL'))
                             ->disabled()
                             ->dehydrated(false)
@@ -1335,6 +1342,7 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                     }),
 
                 TextColumn::make('host')
+                    ->extraAttributes(['class' => 'privacy-sensitive'])
                     ->label(__('Server'))
                     ->getStateUsing(function ($record): string {
                         if ($record->type === 'local') {

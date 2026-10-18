@@ -545,6 +545,7 @@ class NetworkResource extends Resource implements CopilotResource
                         ->description('')
                         ->schema([
                             TextInput::make('epg_url')
+                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                 ->label(__('EPG URL'))
                                 ->disabled()
                                 ->dehydrated(false)
@@ -590,6 +591,7 @@ class NetworkResource extends Resource implements CopilotResource
                         ->description('')
                         ->schema([
                             TextInput::make('stream_url')
+                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                 ->label(__('Stream URL'))
                                 ->disabled()
                                 ->dehydrated(false)
@@ -608,6 +610,7 @@ class NetworkResource extends Resource implements CopilotResource
                                 ->hint(fn ($record) => $record?->stream_url ? view('components.copy-to-clipboard', ['text' => $record->stream_url, 'position' => 'left']) : null),
 
                             TextInput::make('m3u_url')
+                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                 ->label(__('M3U Playlist URL'))
                                 ->disabled()
                                 ->dehydrated(false)
@@ -881,6 +884,7 @@ class NetworkResource extends Resource implements CopilotResource
                                         ->formatStateUsing(fn ($record) => $record?->broadcast_started_at?->format('M j, Y H:i:s') ?? '-'),
 
                                     TextInput::make('hls_url')
+                                        ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                         ->label(__('HLS Playlist URL'))
                                         ->disabled()
                                         ->dehydrated(false)

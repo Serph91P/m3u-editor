@@ -9,7 +9,7 @@
         <p>{{ $body }}</p>
         <div class="flex items-center justify-center">
             <div
-                class="qr-code overflow-hidden rounded-lg ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10"
+                class="qr-code privacy-sensitive overflow-hidden rounded-lg ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10"
                 data-text="{{ $text }}"
                 data-size="250"
             ></div>

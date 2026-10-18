@@ -25,7 +25,7 @@
                     <x-slot name="prefix">
                         <x-copy-to-clipboard :text="$url" />
                     </x-slot>
-                    <x-filament::input type="text" :value="$url" readonly />
+                    <x-filament::input type="text" class="privacy-sensitive" :value="$url" readonly />
                 </x-filament::input.wrapper>
                 <x-qr-modal :title="$this->record->name" body="Xtream API URL" :text="$url" />
             </div>
@@ -42,7 +42,7 @@
                         <x-slot name="prefix">
                             <x-copy-to-clipboard :text="$username" />
                         </x-slot>
-                        <x-filament::input type="text" :value="$username" readonly />
+                        <x-filament::input type="text" class="privacy-sensitive" :value="$username" readonly />
                     </x-filament::input.wrapper>
                     <x-qr-modal :title="$this->record->name" body="Xtream API Username" :text="$username" />
                 </div>
@@ -52,6 +52,7 @@
                             <x-copy-to-clipboard :text="$password" />
                         </x-slot>
                         <x-filament::input
+                            class="privacy-sensitive"
                             type="text"
                             :value="$password === 'YOUR_M3U_EDITOR_PASSWORD' ? '' : $password"
                             :placeholder="$password === 'YOUR_M3U_EDITOR_PASSWORD' ? $password : ''"
@@ -105,7 +106,12 @@
                             <x-slot name="prefix">
                                 <x-copy-to-clipboard :text="$auth->username" />
                             </x-slot>
-                            <x-filament::input type="text" :value="$auth->username" readonly />
+                            <x-filament::input
+                                type="text"
+                                class="privacy-sensitive"
+                                :value="$auth->username"
+                                readonly
+                            />
                         </x-filament::input.wrapper>
                         <x-qr-modal :title="$this->record->name" body="Xtream API Username" :text="$auth->username" />
                     </div>
@@ -115,6 +121,7 @@
                                 <x-copy-to-clipboard :text="$auth->password" />
                             </x-slot>
                             <x-filament::input
+                                class="privacy-sensitive"
                                 type="text"
                                 :value="$auth->password"
                                 :placeholder="$auth->password"

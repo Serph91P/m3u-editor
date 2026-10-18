@@ -268,6 +268,7 @@ class VodResource extends Resource
                     })
                     ->toggleable(isToggledHiddenByDefault: true),
                 Tables\Columns\TextColumn::make('url')
+                    ->extraAttributes(['class' => 'privacy-sensitive'])
                     ->label(__('Default URL'))
                     ->sortable()
                     ->searchable(query: function (Builder $query, string $search): Builder {

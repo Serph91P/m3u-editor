@@ -32,7 +32,7 @@
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$publicUrl" />
                 </x-slot>
-                <x-filament::input type="text" :value="$publicUrl" readonly />
+                <x-filament::input type="text" class="privacy-sensitive" :value="$publicUrl" readonly />
             </x-filament::input.wrapper>
             <x-qr-modal :title="$this->record->name" body="Public URL" :text="$publicUrl" />
         </div>

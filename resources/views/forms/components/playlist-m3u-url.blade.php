@@ -9,7 +9,7 @@
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$m3uUrl" />
                 </x-slot>
-                <x-filament::input type="text" :value="$m3uUrl" readonly />
+                <x-filament::input type="text" class="privacy-sensitive" :value="$m3uUrl" readonly />
                 <x-slot name="suffix">.m3u</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$record->name" body="M3U URL" :text="$m3uUrl" />
@@ -19,7 +19,7 @@
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$hdhrUrl" />
                 </x-slot>
-                <x-filament::input type="text" :value="$hdhrUrl" readonly />
+                <x-filament::input type="text" class="privacy-sensitive" :value="$hdhrUrl" readonly />
                 <x-slot name="suffix">hdhr</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$record->name" body="HDHR URL" :text="$hdhrUrl" />

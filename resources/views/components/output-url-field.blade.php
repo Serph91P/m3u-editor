@@ -12,7 +12,7 @@
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$url" />
                 </x-slot>
-                <x-filament::input type="text" :value="$url" readonly />
+                <x-filament::input type="text" class="privacy-sensitive" :value="$url" readonly />
                 <x-slot name="suffix">{{ $suffix }}</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$recordName" :body="$qrBody" :text="$url" />

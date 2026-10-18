@@ -1903,6 +1903,20 @@ class XtreamApiController extends Controller
                 $allProgrammes = array_merge($allProgrammes, $tomorrowProgrammes[$channel->epgChannel->channel_id]);
             }
 
+            // A positive shift moves programmes from earlier dates into today, so fetch those too
+            $tvgShift = (int) ($channel->tvg_shift ?? 0);
+            if ($tvgShift > 0) {
+                $earlierProgrammes = $cacheService->getCachedProgrammesRange(
+                    $epg,
+                    Carbon::now()->subHours($tvgShift)->format('Y-m-d'),
+                    Carbon::now()->subDay()->format('Y-m-d'),
+                    [$channel->epgChannel->channel_id]
+                );
+                $allProgrammes = array_merge($earlierProgrammes[$channel->epgChannel->channel_id] ?? [], $allProgrammes);
+            }
+
+            $allProgrammes = EpgCacheService::shiftProgrammes($allProgrammes, $tvgShift);
+
             // Check if channel is currently playing
             $isNowPlaying = $proxyEnabled ? M3uProxyService::isChannelActive($channel) : false;
 
@@ -1992,6 +2006,7 @@ class XtreamApiController extends Controller
                     $allProgrammes = array_merge($allProgrammes, $programmes[$channel->epgChannel->channel_id]);
                 }
             }
+            $allProgrammes = EpgCacheService::shiftProgrammes($allProgrammes, (int) ($channel->tvg_shift ?? 0));
 
             $epgListings = [];
             if (! empty($allProgrammes)) {
@@ -2086,9 +2101,39 @@ class XtreamApiController extends Controller
                     $programmes[$channelId] = array_merge($programmes[$channelId], $progs);
                 }
 
+                // A positive shift moves programmes from earlier dates into the requested day,
+                // so fetch those for the positively shifted channels only
+                $positiveShifts = [];
                 foreach ($group['channelMap'] as $streamId => $epgChannelId) {
-                    $channelProgrammes = $programmes[$epgChannelId] ?? [];
+                    $tvgShift = (int) ($channels[$streamId]->tvg_shift ?? 0);
+                    if ($tvgShift > 0) {
+                        $positiveShifts[$epgChannelId] = max($tvgShift, $positiveShifts[$epgChannelId] ?? 0);
+                    }
+                }
+                $earlierProgrammes = [];
+                if (! empty($positiveShifts)) {
+                    $earlierProgrammes = $cacheService->getCachedProgrammesRange(
+                        $epg,
+                        Carbon::parse($date)->subHours(max($positiveShifts))->format('Y-m-d'),
+                        Carbon::parse($date)->subDay()->format('Y-m-d'),
+                        array_keys($positiveShifts)
+                    );
+                }
+                $dayStart = Carbon::parse($date)->startOfDay();
+
+                foreach ($group['channelMap'] as $streamId => $epgChannelId) {
                     $channel = $channels[$streamId];
+                    $tvgShift = (int) ($channel->tvg_shift ?? 0);
+                    $channelProgrammes = EpgCacheService::shiftProgrammes($programmes[$epgChannelId] ?? [], $tvgShift);
+
+                    // Keep only the earlier-dated programmes that now reach into the requested day
+                    if ($tvgShift > 0 && ! empty($earlierProgrammes[$epgChannelId])) {
+                        $shiftedIn = array_filter(
+                            EpgCacheService::shiftProgrammes($earlierProgrammes[$epgChannelId], $tvgShift),
+                            fn ($programme) => ! empty($programme['stop']) && Carbon::parse($programme['stop'])->gt($dayStart)
+                        );
+                        $channelProgrammes = array_merge(array_values($shiftedIn), $channelProgrammes);
+                    }
 
                     // Fill gaps in EPG
                     if (empty($channelProgrammes)) {
@@ -2357,12 +2402,12 @@ class XtreamApiController extends Controller
             ->get();
 
         // Build a mapping of group name -> stable category ID
-        $categoryMap = $this->buildNetworkCategoryMap($networks);
+        $categoryMap = $this->buildNetworkCategoryMap($playlist, $networks);
 
         $liveStreams = [];
         foreach ($networks as $network) {
             $streamIcon = $network->logo ?: $baseUrl.'/placeholder.png';
-            $categoryId = $categoryMap[$network->effective_group_name] ?? 'networks';
+            $categoryId = $categoryMap[$network->effective_group_name] ?? 0;
 
             $liveStreams[] = [
                 'num' => $network->channel_number ?? $network->id,
@@ -2391,15 +2436,18 @@ class XtreamApiController extends Controller
      */
     private function getNetworkLiveCategories(Playlist $playlist): \Illuminate\Http\JsonResponse
     {
-        $networks = $playlist->networks()->where('enabled', true)->get();
+        $networks = $playlist->networks()
+            ->where('enabled', true)
+            ->orderBy('channel_number')
+            ->get();
 
         if ($networks->isEmpty()) {
             return response()->json([]);
         }
 
-        $categoryMap = $this->buildNetworkCategoryMap($networks);
+        $categoryMap = $this->buildNetworkCategoryMap($playlist, $networks);
 
-        $categories = collect($categoryMap)->map(fn (string $id, string $name) => [
+        $categories = collect($categoryMap)->map(fn (int $id, string $name) => [
             'category_id' => $id,
             'category_name' => $name,
             'parent_id' => 0,
@@ -2411,17 +2459,22 @@ class XtreamApiController extends Controller
     /**
      * Build a consistent mapping of network group name to category ID.
      *
+     * The IDs are the primary keys of the Group rows NetworkChannelSyncService
+     * projects for each network: numeric (so Xtream consumers like
+     * ProcessM3uImport can bind them against bigint source group columns,
+     * issue #1303) and stable across requests.
+     *
      * @param  Collection<int, Network>  $networks
-     * @return array<string, string>
+     * @return array<string, int>
      */
-    private function buildNetworkCategoryMap(Collection $networks): array
+    private function buildNetworkCategoryMap(Playlist $playlist, Collection $networks): array
     {
-        $index = 1;
+        $names = $networks->map(fn (Network $network) => $network->effective_group_name)->unique()->values();
+        $groupIds = $playlist->groups()->whereIn('name', $names)->pluck('id', 'name');
 
-        return $networks
-            ->map(fn (Network $network) => $network->effective_group_name)
-            ->unique()
-            ->mapWithKeys(fn (string $name) => [$name => 'network-group-'.($index++)])
+        return $names
+            ->filter(fn (string $name) => $groupIds->has($name))
+            ->mapWithKeys(fn (string $name) => [$name => (int) $groupIds[$name]])
             ->all();
     }
 

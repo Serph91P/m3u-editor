@@ -952,8 +952,14 @@ class AppServiceProvider extends ServiceProvider
                     $network->schedule_type = 'sequential';
                 }
             });
+            // Keep the network's channel projection current (issue #1303).
+            Network::created(fn (Network $network) => app(NetworkChannelSyncService::class)->syncNetwork($network));
             Network::updated(function (Network $network) {
-                app(NetworkChannelSyncService::class)->refreshNetworkChannel($network);
+                // Broadcast state saves don't touch any projected attribute, so
+                // they skip this entirely.
+                if ($network->wasChanged(NetworkChannelSyncService::PROJECTED_ATTRIBUTES)) {
+                    app(NetworkChannelSyncService::class)->syncNetwork($network);
+                }
             });
             Network::deleting(function (Network $network) {
                 // Ensure any running broadcast is stopped and HLS files are removed
@@ -966,7 +972,7 @@ class AppServiceProvider extends ServiceProvider
                     ]);
                 }
 
-                Channel::where('network_id', $network->id)->delete();
+                app(NetworkChannelSyncService::class)->removeNetwork($network);
             });
 
             // ChannelScrubber
@@ -1029,6 +1035,20 @@ class AppServiceProvider extends ServiceProvider
         FilamentView::registerRenderHook(
             PanelsRenderHook::FOOTER,
             fn () => view('footer')
+        );
+
+        // Privacy mode: blur URLs and credentials marked with .privacy-sensitive
+        FilamentView::registerRenderHook(
+            PanelsRenderHook::HEAD_END,
+            function (): string {
+                try {
+                    return app(GeneralSettings::class)->privacy_mode
+                        ? view('components.privacy-mode-styles')->render()
+                        : '';
+                } catch (Throwable $e) {
+                    return '';
+                }
+            }
         );
     }
 

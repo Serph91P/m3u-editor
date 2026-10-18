@@ -16,6 +16,7 @@ use App\Models\StreamProfile;
 use App\Services\EpgCacheService;
 use App\Services\M3uProxyService;
 use App\Services\PlaylistUrlService;
+use App\Settings\GeneralSettings;
 use Carbon\Carbon;
 use Exception;
 use Filament\Actions\Action;
@@ -894,6 +895,7 @@ class M3uProxyStreamMonitor extends Page implements HasActions, HasSchemas
             'refreshInterval' => $this->refreshInterval,
             'lastUpdatedAt' => $this->lastUpdatedAt,
             'connectionError' => $this->connectionError,
+            'privacyMode' => (bool) app(GeneralSettings::class)->privacy_mode,
         ];
     }
 }

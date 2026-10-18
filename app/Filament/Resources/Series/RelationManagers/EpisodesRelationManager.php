@@ -427,6 +427,7 @@ class EpisodesRelationManager extends RelationManager
                             }),
 
                         TextEntry::make('url')
+                            ->extraAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Stream URL'))
                             ->columnSpanFull()
                             ->copyable()
