@@ -156,6 +156,54 @@ it('queues a managed prefetch only with an injected authoritative capacity snaps
         ->and(ManagedCacheInterest::query()->where('consumer_id', 'profile-a')->exists())->toBeTrue();
 });
 
+it('rechecks a deferred prefetch with a new request id without replaying an old decision', function (?int $initialLive) {
+    $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
+    $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
+    Channel::factory()->for($this->user)->for($sourcePlaylist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    $source = new class($initialLive) implements ManagedCacheCapacitySnapshotSource
+    {
+        public function __construct(public ?int $live) {}
+
+        public function snapshotFor(Channel|Episode $item): ?ManagedCacheCapacitySnapshot
+        {
+            return $this->live === null ? null : new ManagedCacheCapacitySnapshot('synthetic-retry-account', limit: 3, live: $this->live, background: 0);
+        }
+    };
+    app()->instance(ManagedCacheCapacitySnapshotSource::class, $source);
+    $item = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping)['items'][0];
+    $parameters = [
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'consumer_id' => 'profile-a',
+        'targets' => [[
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ]],
+    ];
+    $oldRequest = (string) Str::uuid();
+    $this->postJson(managedCacheActionUrl([...$parameters, 'request_id' => $oldRequest]))
+        ->assertOk()->assertJsonPath('data.results.0.status', 'deferred');
+    expect(CachedContentFile::count())->toBe(0)->and(ManagedCacheInterest::count())->toBe(0);
+
+    $source->live = 1;
+    $this->postJson(managedCacheActionUrl([...$parameters, 'request_id' => $oldRequest]))
+        ->assertOk()->assertJsonPath('data.results.0.status', 'deferred');
+    expect(CachedContentFile::count())->toBe(0);
+    $this->postJson(managedCacheActionUrl([...$parameters, 'request_id' => (string) Str::uuid()]))
+        ->assertOk()->assertJsonPath('data.results.0.status', 'queued');
+    expect(CachedContentFile::where('managed_by', 'managed_publishing')->count())->toBe(1)
+        ->and(ManagedCacheInterest::count())->toBe(1)
+        ->and(ManagedCacheEvent::count())->toBe(2);
+    Http::assertNothingSent();
+})->with(['unknown capacity' => [null], 'live reserve occupied' => [2]]);
+
 it('accepts the companion form contract with one global consumer id', function () {
     $sourcePlaylist = Playlist::factory()->for($this->user)->createQuietly();
     $group = Group::factory()->for($this->user)->for($sourcePlaylist)->create(['type' => 'vod']);
