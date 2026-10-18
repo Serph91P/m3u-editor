@@ -738,7 +738,7 @@ class PlaylistAlias extends Model
                 })->orWhere(function ($q): void {
                     $q->where('channels.is_vod', true)->where('merged_playlist_playlist.include_vod', true);
                 });
-            });
+            })->where(MergedPlaylist::onlyUnmatchedChannels());
 
             // The alias filter is stored as {playlist_id, name} pairs so a group can be
             // allowed from one source without also allowing a same-named group from
@@ -858,7 +858,8 @@ class PlaylistAlias extends Model
                 'playlist_id', // Foreign key on Series table
                 'merged_playlist_id', // Local key on PlaylistAlias table
                 'playlist_id' // Local key on merged_playlist_playlist
-            )->where('merged_playlist_playlist.include_series', true);
+            )->where('merged_playlist_playlist.include_series', true)
+                ->where(MergedPlaylist::onlyUnmatchedSeries('series'));
 
             $categorySelections = $this->getAllowedCategorySelections();
             if ($this->hasCategoryFilter()) {

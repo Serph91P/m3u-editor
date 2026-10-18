@@ -5,6 +5,7 @@ namespace App\Filament\Pages;
 use App\Enums\DvrRuleType;
 use App\Enums\DvrSeriesMode;
 use App\Filament\Concerns\HasBrowseShowsFiltersForm;
+use App\Filament\Support\DvrPaddingFields;
 use App\Jobs\DvrSchedulerTick;
 use App\Models\Channel;
 use App\Models\DvrRecordingRule;
@@ -266,7 +267,11 @@ class BrowseShows extends Page
             'seriesChannelId' => $this->seriesChannelId,
             'seriesPriority' => $this->seriesPriority,
             'seriesStartEarly' => $this->seriesStartEarly,
+            'seriesStartUnit' => $this->seriesStartUnit,
+            'seriesStartDirection' => $this->seriesStartDirection,
             'seriesEndLate' => $this->seriesEndLate,
+            'seriesEndUnit' => $this->seriesEndUnit,
+            'seriesEndDirection' => $this->seriesEndDirection,
             'seriesKeepLast' => $this->seriesKeepLast,
         ]);
     }
@@ -287,8 +292,8 @@ class BrowseShows extends Page
             $channelName,
             $this->seriesNewOnly ? __('new only') : null,
             $this->seriesPriority !== 50 ? 'P:'.$this->seriesPriority : null,
-            ($this->seriesStartEarly || $this->seriesEndLate)
-                ? '+'.$this->seriesStartEarly.'s/+'.$this->seriesEndLate.'s'
+            ($this->seriesStartEarlySeconds() || $this->seriesEndLateSeconds())
+                ? DvrPaddingFields::formatSeconds($this->seriesStartEarlySeconds()).'/'.DvrPaddingFields::formatSeconds($this->seriesEndLateSeconds())
                 : null,
             $this->seriesKeepLast ? __('keep').' '.$this->seriesKeepLast : null,
         ]);
@@ -343,8 +348,7 @@ class BrowseShows extends Page
         $this->selectedShowTitle = $title;
         $this->seriesNewOnly = 0;
         $this->seriesPriority = 50;
-        $this->seriesStartEarly = 0;
-        $this->seriesEndLate = 0;
+        $this->resetSeriesPadding();
         $this->seriesKeepLast = null;
         [$this->sourceChannelId, $this->sourceChannelName] = $this->resolveSourceChannel($title);
         $this->seriesChannelId = 0;
@@ -481,8 +485,8 @@ class BrowseShows extends Page
             'channel_id' => $channelId,
             'source_channel_id' => $sourceChannelId,
             'priority' => $this->seriesPriority,
-            'start_early_seconds' => $this->seriesStartEarly,
-            'end_late_seconds' => $this->seriesEndLate,
+            'start_early_seconds' => $this->seriesStartEarlySeconds(),
+            'end_late_seconds' => $this->seriesEndLateSeconds(),
             'keep_last' => $this->seriesKeepLast ?: null,
         ]);
     }

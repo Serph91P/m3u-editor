@@ -795,18 +795,12 @@ class NfoService
     }
 
     /**
-     * Decide whether a DVR recording is series-shaped (has season/episode info or series_key).
+     * Decide whether a DVR recording is series-shaped. Delegates to the model so the
+     * NFO sidecars always agree with how the recording was filed in the VOD library.
      */
     public function isDvrRecordingSeries(DvrRecording $recording): bool
     {
-        if (! empty($recording->series_key)) {
-            return true;
-        }
-        if (! empty($recording->season) || ! empty($recording->episode)) {
-            return true;
-        }
-
-        return ($recording->metadata['tmdb']['type'] ?? null) === 'tv';
+        return $recording->isTvContent();
     }
 
     /**

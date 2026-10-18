@@ -811,6 +811,29 @@ class EpgCacheService
     }
 
     /**
+     * Offset the start/stop of each programme by a channel's EPG shift (tvg_shift).
+     *
+     * @param  array<int, array<string, mixed>>  $programmes
+     * @return array<int, array<string, mixed>>
+     */
+    public static function shiftProgrammes(array $programmes, int $hours): array
+    {
+        if ($hours === 0) {
+            return $programmes;
+        }
+
+        foreach ($programmes as &$programme) {
+            foreach (['start', 'stop'] as $key) {
+                if (! empty($programme[$key])) {
+                    $programme[$key] = Carbon::parse($programme[$key])->addHours($hours)->toIso8601String();
+                }
+            }
+        }
+
+        return $programmes;
+    }
+
+    /**
      * Get cached programmes for a specific date and channels
      */
     public function getCachedProgrammes(Epg $epg, string $date, array $channelIds = []): array

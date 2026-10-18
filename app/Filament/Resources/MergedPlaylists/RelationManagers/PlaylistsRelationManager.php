@@ -51,20 +51,8 @@ class PlaylistsRelationManager extends RelationManager
                     ->sortable(),
                 TextColumn::make('live_channels_count')
                     ->label(__('Live'))
-                    ->state(function (Playlist $record): int {
-                        if (! $record->pivot->include_live) {
-                            return 0;
-                        }
-
-                        return $record->is_network_playlist ? $record->networks()->count() : $record->live_channels_count;
-                    })
-                    ->description(function (Playlist $record): string {
-                        if (! $record->pivot->include_live) {
-                            return __('Excluded from merge');
-                        }
-
-                        return $record->is_network_playlist ? 'Enabled: '.($record->networks()->get()->filter(fn ($n) => $n->isBroadcasting())->count()) : "Enabled: {$record->enabled_live_channels_count}";
-                    })
+                    ->state(fn (Playlist $record): int => $record->pivot->include_live ? $record->live_channels_count : 0)
+                    ->description(fn (Playlist $record): string => $record->pivot->include_live ? "Enabled: {$record->enabled_live_channels_count}" : __('Excluded from merge'))
                     ->sortable(),
                 TextColumn::make('vod_channels_count')
                     ->label(__('VOD'))
@@ -118,6 +106,7 @@ class PlaylistsRelationManager extends RelationManager
                         'include_live' => $record->pivot->include_live,
                         'include_vod' => $record->pivot->include_vod,
                         'include_series' => $record->pivot->include_series,
+                        'only_unmatched' => $record->pivot->only_unmatched,
                     ])
                     ->modalWidth('md')
                     ->modalHeading(fn (Playlist $record): string => __('Edit content types for :name', ['name' => $record->name]))
@@ -152,6 +141,10 @@ class PlaylistsRelationManager extends RelationManager
             Toggle::make('include_series')
                 ->label(__('Include Series'))
                 ->default(true),
+            Toggle::make('only_unmatched')
+                ->label(__('Only items not already provided by another playlist'))
+                ->helperText(__('For media server sources: hide titles another playlist in this merge already serves through "Prefer media server sources".'))
+                ->default(false),
         ];
     }
 }

@@ -33,6 +33,7 @@ class DeadChannelsRelationManager extends RelationManager
                     ->searchable()
                     ->sortable(),
                 TextColumn::make('url')
+                    ->extraAttributes(['class' => 'privacy-sensitive'])
                     ->label(__('URL'))
                     ->searchable(),
             ])

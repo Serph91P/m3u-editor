@@ -637,6 +637,7 @@ class ProcessM3uImport implements ShouldQueue
                 'year' => null, // new field for year
                 'rating' => null, // new field for rating
                 'rating_5based' => null, // new field for 5-based rating
+                'source_added_at' => null, // provider `added` (VOD only)
                 'source_id' => null, // source ID for the channel
                 'can_merge' => $this->canMergeEnabled,
                 'epg_map_enabled' => $this->epgMapEnabled,
@@ -759,6 +760,9 @@ class ProcessM3uImport implements ShouldQueue
                             'year' => $item->year ?? null, // new field for year
                             'rating' => $item->rating ?? null, // new field for rating
                             'rating_5based' => $item->rating_5based ?? null, // new field for 5-based rating
+                            'source_added_at' => is_numeric($item->added ?? null) && (int) $item->added > 0
+                                ? Carbon::createFromTimestamp((int) $item->added)->toDateTimeString()
+                                : null, // provider `added` (unix timestamp)
                         ];
                         if ($autoSort) {
                             $channel['sort'] = $localChannelNo;
@@ -1006,17 +1010,18 @@ class ProcessM3uImport implements ShouldQueue
                                     }
                                 }
 
-                                // Catch-up window in hours. Providers use different attributes for this:
-                                // 'timeshift'/'tvg-shift' are already in hours, while 'catchup-days'/
-                                // 'tvg-rec' express it in days. Xtream's 'tv_archive_duration' is also
-                                // days (see XtreamApiController::resolveTvArchiveDuration, #1389) and is
-                                // converted days→hours at the Xtream ingest site. Check in precedence
-                                // order and stop at the first one present.
+                                // Catch-up window, stored in hours. Providers use different attributes
+                                // for it, all in days: 'catchup-days', 'tvg-rec' and the older SIPTV
+                                // 'timeshift' (as read by Kodi IPTV Simple, TiviMate and IPTVnator).
+                                // 'tvg-shift' is the EPG time offset (tvg_shift above), not catchup.
+                                // Xtream's 'tv_archive_duration' is also days (see
+                                // XtreamApiController::resolveTvArchiveDuration, #1389) and is
+                                // converted days→hours at the Xtream ingest site. Check in Kodi's
+                                // precedence order and stop at the first one present.
                                 foreach ([
-                                    'timeshift' => 1,
-                                    'tvg-shift' => 1,
                                     'catchup-days' => 24,
                                     'tvg-rec' => 24,
+                                    'timeshift' => 24,
                                 ] as $shiftAttribute => $hoursPerUnit) {
                                     if ($extTag->hasAttribute($shiftAttribute)) {
                                         $channel['shift'] = (int) trim($extTag->getAttribute($shiftAttribute)) * $hoursPerUnit;

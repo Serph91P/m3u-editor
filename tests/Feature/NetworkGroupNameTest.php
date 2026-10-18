@@ -13,7 +13,7 @@ it('uses custom group_name when syncing network as channel', function () {
     ]);
 
     $service = app(NetworkChannelSyncService::class);
-    $channel = $service->syncNetworkAsChannel($playlist, $network);
+    $channel = $service->upsertChannel($playlist, $network);
 
     expect($channel->group_internal)->toBe('My Custom Group');
 
@@ -30,7 +30,7 @@ it('falls back to "Networks" when group_name is null', function () {
     ]);
 
     $service = app(NetworkChannelSyncService::class);
-    $channel = $service->syncNetworkAsChannel($playlist, $network);
+    $channel = $service->upsertChannel($playlist, $network);
 
     expect($channel->group_internal)->toBe('Networks');
 
@@ -46,22 +46,23 @@ it('falls back to "Networks" when group_name is empty string', function () {
     ]);
 
     $service = app(NetworkChannelSyncService::class);
-    $channel = $service->syncNetworkAsChannel($playlist, $network);
+    $channel = $service->upsertChannel($playlist, $network);
 
     expect($channel->group_internal)->toBe('Networks');
 });
 
-it('updates channel group when network group_name changes via refreshNetworkChannel', function () {
-    $playlist = Playlist::factory()->create(['include_networks_in_m3u' => true]);
+it('updates channel group when network group_name changes via syncNetwork', function () {
+    $playlist = Playlist::factory()->create(['is_network_playlist' => true]);
     $network = Network::factory()->create([
         'user_id' => $playlist->user_id,
         'group_name' => 'Original Group',
+        'network_playlist_id' => $playlist->id,
     ]);
 
     $service = app(NetworkChannelSyncService::class);
 
     // Initial sync
-    $channel = $service->syncNetworkAsChannel($playlist, $network);
+    $channel = $service->upsertChannel($playlist, $network);
     expect($channel->group_internal)->toBe('Original Group');
 
     // Change the group name
@@ -69,7 +70,7 @@ it('updates channel group when network group_name changes via refreshNetworkChan
     $network->saveQuietly();
 
     // Refresh should update the group
-    $service->refreshNetworkChannel($network);
+    $service->syncNetwork($network);
 
     $channel->refresh();
     expect($channel->group_internal)->toBe('Updated Group');
@@ -100,8 +101,8 @@ it('creates separate groups for networks with different group names', function (
     ]);
 
     $service = app(NetworkChannelSyncService::class);
-    $channel1 = $service->syncNetworkAsChannel($playlist, $network1);
-    $channel2 = $service->syncNetworkAsChannel($playlist, $network2);
+    $channel1 = $service->upsertChannel($playlist, $network1);
+    $channel2 = $service->upsertChannel($playlist, $network2);
 
     expect($channel1->group_id)->not->toBe($channel2->group_id);
     expect($channel1->group_internal)->toBe('Sports');

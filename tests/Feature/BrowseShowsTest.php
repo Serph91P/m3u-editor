@@ -425,6 +425,45 @@ it('creates a series rule with custom options', function () {
         ->and($rule->end_late_seconds)->toBe(300);
 });
 
+it('converts series padding unit and direction into signed seconds', function () {
+    Livewire::test(BrowseShows::class)
+        ->set('dvr_setting_id', $this->setting->id)
+        ->set('seriesStartEarly', 5)
+        ->set('seriesStartUnit', 'min')
+        ->set('seriesStartDirection', 'trim')
+        ->set('seriesEndLate', 90)
+        ->set('seriesEndUnit', 'sec')
+        ->set('seriesEndDirection', 'trim')
+        ->call('recordSeriesWithOptions', 'Breaking Bad');
+
+    $rule = DvrRecordingRule::where('user_id', $this->user->id)
+        ->where('series_title', 'Breaking Bad')
+        ->first();
+
+    expect($rule)->not->toBeNull()
+        ->and($rule->start_early_seconds)->toBe(-300)
+        ->and($rule->end_late_seconds)->toBe(-90);
+});
+
+it('clamps series padding to 24 hours when the form is not validated', function () {
+    Livewire::test(BrowseShows::class)
+        ->set('dvr_setting_id', $this->setting->id)
+        ->set('seriesStartEarly', 99999)
+        ->set('seriesStartUnit', 'min')
+        ->set('seriesStartDirection', 'trim')
+        ->set('seriesEndLate', 99999)
+        ->set('seriesEndUnit', 'min')
+        ->call('recordSeriesWithOptions', 'Breaking Bad');
+
+    $rule = DvrRecordingRule::where('user_id', $this->user->id)
+        ->where('series_title', 'Breaking Bad')
+        ->first();
+
+    expect($rule)->not->toBeNull()
+        ->and($rule->start_early_seconds)->toBe(-86400)
+        ->and($rule->end_late_seconds)->toBe(86400);
+});
+
 it('warns when recordSeriesWithOptions is called without a dvr setting selected', function () {
     Livewire::test(BrowseShows::class)
         ->set('dvr_setting_id', null)

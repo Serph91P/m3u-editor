@@ -481,6 +481,60 @@ it('prefers an exact-name TMDB match over a more popular fuzzy match', function 
         ->and($recording->metadata['tmdb']['name'])->toBe('The Office');
 });
 
+it('prefers an exact movie title over a fuzzy TV match', function () {
+    Http::fake([
+        '*/search/tv*' => Http::response(['results' => [
+            ['id' => 11, 'name' => 'Heat Wave', 'popularity' => 50.0],
+        ]]),
+        '*/search/movie*' => Http::response(['results' => [
+            ['id' => 949, 'title' => 'Heat', 'popularity' => 40.0, 'release_date' => '1995-12-15'],
+        ]]),
+    ]);
+
+    $recording = makeEnricherRecording(['title' => 'Heat']);
+
+    $this->enricher->enrich($recording);
+    $recording->refresh();
+
+    expect($recording->metadata['tmdb']['type'])->toBe('movie')
+        ->and($recording->metadata['tmdb']['id'])->toBe(949);
+});
+
+it('keeps an exact TV match without searching movies', function () {
+    Http::fake([
+        '*/search/tv*' => Http::response(['results' => [
+            ['id' => 2316, 'name' => 'The Office', 'popularity' => 90.0],
+        ]]),
+    ]);
+
+    $recording = makeEnricherRecording(['title' => 'The Office']);
+
+    $this->enricher->enrich($recording);
+    $recording->refresh();
+
+    expect($recording->metadata['tmdb']['type'])->toBe('tv');
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), '/search/movie'));
+});
+
+it('keeps a fuzzy TV match when no movie title matches exactly or the movie search fails', function (int $movieStatus) {
+    Http::fake([
+        '*/search/tv*' => Http::response(['results' => [
+            ['id' => 11, 'name' => 'Severance Pay', 'popularity' => 50.0],
+        ]]),
+        '*/search/movie*' => Http::response(['results' => [
+            ['id' => 22, 'title' => 'Severance Package', 'popularity' => 60.0],
+        ]], $movieStatus),
+    ]);
+
+    $recording = makeEnricherRecording(['title' => 'Severance']);
+
+    $this->enricher->enrich($recording);
+    $recording->refresh();
+
+    expect($recording->metadata['tmdb']['type'])->toBe('tv')
+        ->and($recording->metadata['tmdb']['id'])->toBe(11);
+})->with([200, 500]);
+
 it('falls back to highest popularity when no exact name match exists', function () {
     // No result matches "Severance" exactly (case-insensitive trim).  Among
     // fuzzy matches, the highest popularity wins.

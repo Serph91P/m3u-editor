@@ -68,6 +68,7 @@ class Channel extends Model
         'movie_data' => 'array',
         'sync_settings' => 'array',
         'last_metadata_fetch' => 'datetime',
+        'source_added_at' => 'datetime',
         'aed_profile_id' => 'integer',
         'epg_map_enabled' => 'boolean',
         'logo_type' => ChannelLogoType::class,

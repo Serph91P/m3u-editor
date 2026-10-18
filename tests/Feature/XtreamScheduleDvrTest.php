@@ -301,6 +301,40 @@ it('creates a Series DvrRecordingRule from the Xtream create_dvr_series_rule act
     expect($rule->playlist_auth_id)->toBe($this->playlistAuth->id);
 });
 
+it('stores negative padding (start late / finish early) from schedule_dvr', function () {
+    $start = now()->addHour()->startOfMinute();
+
+    $response = $this->postJson(scheduleDvrUrl($this->username, $this->password), [
+        'channel_id' => (string) $this->channel->id,
+        'title' => 'Long Match',
+        'start_time' => $start->toIso8601String(),
+        'end_time' => $start->copy()->addHours(3)->toIso8601String(),
+        'start_early_seconds' => -3600,
+        'end_late_seconds' => -600,
+    ]);
+
+    $response->assertOk();
+
+    expect(DvrRecordingRule::find($response->json('rule_id')))
+        ->start_early_seconds->toBe(-3600)
+        ->end_late_seconds->toBe(-600);
+});
+
+it('clamps out-of-range padding on series rule creation to 24 hours', function () {
+    $response = $this->postJson(createDvrSeriesRuleUrl($this->username, $this->password), [
+        'channel_id' => (string) $this->channel->id,
+        'title' => 'Clamp Me',
+        'start_early_seconds' => 999999,
+        'end_late_seconds' => -999999,
+    ]);
+
+    $response->assertOk();
+
+    expect(DvrRecordingRule::find($response->json('rule_id')))
+        ->start_early_seconds->toBe(86400)
+        ->end_late_seconds->toBe(-86400);
+});
+
 it('rejects a series rule for a channel that belongs to a different playlist', function () {
     $otherPlaylist = Playlist::factory()->for($this->user)->create();
     $otherChannel = Channel::factory()
@@ -352,8 +386,12 @@ it('rejects invalid schedule_dvr windows with a stable code', function (array $t
         fn () => ['start_time' => now()->addHour()->toIso8601String(), 'end_time' => now()->addHours(26)->toIso8601String()],
         'duration_too_long',
     ],
-    'negative padding' => [
-        fn () => ['start_time' => now()->addHour()->toIso8601String(), 'end_time' => now()->addHours(2)->toIso8601String(), 'start_early_seconds' => -30],
+    'padding beyond 24 hours' => [
+        fn () => ['start_time' => now()->addHour()->toIso8601String(), 'end_time' => now()->addHours(2)->toIso8601String(), 'start_early_seconds' => -86401],
+        'invalid_padding',
+    ],
+    'non-integer padding' => [
+        fn () => ['start_time' => now()->addHour()->toIso8601String(), 'end_time' => now()->addHours(2)->toIso8601String(), 'end_late_seconds' => '1.5'],
         'invalid_padding',
     ],
 ]);

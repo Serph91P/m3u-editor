@@ -63,7 +63,7 @@ class DvrVodIntegrationService
 
         $tmdb = $recording->metadata['tmdb'] ?? null;
         $tvmaze = is_array($recording->metadata) ? ($recording->metadata['tvmaze'] ?? null) : null;
-        $isTv = $this->isTvContent($recording, $tmdb);
+        $isTv = $recording->isTvContent();
 
         try {
             if ($isTv) {
@@ -100,69 +100,6 @@ class DvrVodIntegrationService
         $playlistId = $setting->playlist_id ?? $recording->channel?->playlist_id;
 
         return $playlistId !== null ? (int) $playlistId : null;
-    }
-
-    /**
-     * Decide whether a completed recording should be classified as TV (Series/
-     * Episode) or as a movie (single Channel row).
-     *
-     * Priority order (first match wins):
-     *
-     *   1. TMDB metadata type (definitive when present)
-     *   2. recording.season column (set from EPG at schedule time)
-     *   3. epg_programme_data.episode_num (raw XMLTV string — present even when
-     *      the EPG import predated our season/episode column parsing fix)
-     *   4. epg_programme_data.category — explicit "movie"/"film" → false
-     *   5. epg_programme_data.category — TV-ish keywords (series / episode /
-     *      tv / show / news / documentary / talk) → true
-     *   6. recording.subtitle non-empty AND a category was supplied (any
-     *      non-empty value other than the movie keywords above) → true.
-     *      Subtitle alone is not enough because some providers tag movies
-     *      with subtitles for director's cuts / extended editions; pairing
-     *      with the presence of any EPG category lets us trust it as a
-     *      "this aired with episodic context" hint.
-     */
-    private function isTvContent(DvrRecording $recording, ?array $tmdb): bool
-    {
-        if ($tmdb && isset($tmdb['type'])) {
-            return $tmdb['type'] === 'tv';
-        }
-
-        if ($recording->season !== null) {
-            return true;
-        }
-
-        // episode_num present in stored EPG data is a reliable TV signal even
-        // when season/episode columns were not populated (pre-parseEpisodeNumbers fix).
-        if (! empty($recording->epg_programme_data['episode_num'])) {
-            return true;
-        }
-
-        $category = mb_strtolower(trim((string) ($recording->epg_programme_data['category'] ?? '')));
-
-        if ($category !== '') {
-            // Explicit movie/film category short-circuits to movie path.
-            if (str_contains($category, 'movie') || str_contains($category, 'film')) {
-                return false;
-            }
-
-            // TV-ish category keywords.
-            foreach (['series', 'episode', 'tv', 'show', 'news', 'documentary', 'talk'] as $needle) {
-                if (str_contains($category, $needle)) {
-                    return true;
-                }
-            }
-
-            // A non-movie EPG category was supplied (e.g. "sports",
-            // "entertainment").  If the recording also has a subtitle, treat
-            // it as TV — the EPG explicitly classified it as a programme,
-            // not a film, and the subtitle gives us per-episode context.
-            if (! empty(trim((string) $recording->subtitle))) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

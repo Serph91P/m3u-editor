@@ -91,3 +91,62 @@ it('registers the real media server URL with the m3u-proxy and redirects the cli
             && ($request['headers']['X-Emby-Token'] ?? null) === 'test-token';
     });
 });
+
+it('registers Jellyfin network streams with the ApiKey query parameter and no legacy auth header', function () {
+    config()->set('proxy.m3u_proxy_host', 'http://test-proxy.example');
+    config()->set('proxy.m3u_proxy_port', null);
+
+    Http::fake([
+        '*/streams' => Http::response(['stream_id' => 'jf789'], 200),
+    ]);
+
+    $integration = MediaServerIntegration::factory()->for($this->user)->create([
+        'type' => 'jellyfin',
+        'host' => 'jellyfin.local',
+        'port' => 8096,
+        'ssl' => false,
+        'api_key' => 'test-token',
+    ]);
+
+    $network = Network::factory()
+        ->for($this->user)
+        ->activeBroadcast()
+        ->create(['media_server_integration_id' => $integration->id]);
+
+    $channel = Channel::factory()->for($this->user)->create([
+        'info' => ['media_server_id' => '97255'],
+    ]);
+
+    NetworkProgramme::create([
+        'network_id' => $network->id,
+        'title' => 'Test Programme',
+        'start_time' => now()->subMinutes(5),
+        'end_time' => now()->addHour(),
+        'duration_seconds' => 3900,
+        'contentable_type' => Channel::class,
+        'contentable_id' => $channel->id,
+    ]);
+
+    $response = $this->get(url("/network/{$network->uuid}/stream.mkv"));
+
+    $response->assertRedirect();
+    expect($response->headers->get('Location'))
+        ->toContain('/m3u-proxy/stream/jf789');
+
+    // Jellyfin 12 removed the legacy api_key parameter and the X-Emby-Token
+    // header: the token travels in the ApiKey query parameter alone, so no
+    // auth header is registered with the proxy (a second mechanism would be
+    // rejected by Jellyfin 12).
+    Http::assertSent(function (Request $request) {
+        if (! str_contains($request->url(), '/streams')) {
+            return false;
+        }
+
+        $body = $request->data();
+
+        return str_contains($body['url'], 'jellyfin.local:8096/Videos/97255/stream.mkv')
+            && str_contains($body['url'], 'ApiKey=test-token')
+            && ! str_contains($body['url'], 'api_key=')
+            && empty($body['headers']);
+    });
+});

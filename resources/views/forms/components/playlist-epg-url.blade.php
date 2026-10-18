@@ -10,7 +10,7 @@
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$epgUrl" />
                 </x-slot>
-                <x-filament::input type="text" :value="$epgUrl" readonly />
+                <x-filament::input type="text" class="privacy-sensitive" :value="$epgUrl" readonly />
                 <x-slot name="suffix">.xml</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$record->name" body="EPG URL" :text="$epgUrl" />
@@ -20,7 +20,7 @@
                 <x-slot name="prefix">
                     <x-copy-to-clipboard :text="$epgZippedUrl" />
                 </x-slot>
-                <x-filament::input type="text" :value="$epgZippedUrl" readonly />
+                <x-filament::input type="text" class="privacy-sensitive" :value="$epgZippedUrl" readonly />
                 <x-slot name="suffix">.xml.gz</x-slot>
             </x-filament::input.wrapper>
             <x-qr-modal :title="$record->name" body="EPG URL (compressed)" :text="$epgZippedUrl" />

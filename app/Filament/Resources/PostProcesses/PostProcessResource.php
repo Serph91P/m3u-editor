@@ -250,8 +250,8 @@ class PostProcessResource extends Resource implements CopilotResource
                                 ->schema([
                                     TextInput::make('header_name')
                                         ->label(__('Header name'))
-                                        ->placeholder(__('X-Emby-Token'))
-                                        ->helperText(__('Name of the HTTP header.'))
+                                        ->placeholder('Authorization')
+                                        ->helperText(__('Name of the HTTP header. Emby uses X-Emby-Token. Jellyfin 10.8+ uses Authorization with the value MediaBrowser Token="API_KEY".'))
                                         ->datalist([
                                             'X-Emby-Token',
                                             'X-Api-Key',

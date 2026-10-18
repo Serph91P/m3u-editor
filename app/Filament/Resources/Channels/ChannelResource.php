@@ -303,6 +303,7 @@ class ChannelResource extends Resource implements CopilotResource
                     ->orderBy('channels.channel', $direction)
                     ->orderByRaw('COALESCE(channels.channel_minor, 0) '.($direction === 'desc' ? 'desc' : 'asc'))),
             TextInputColumn::make('url_custom')
+                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                 ->label(__('URL'))
                 ->rules(['url'])
                 ->type('url')
@@ -434,6 +435,7 @@ class ChannelResource extends Resource implements CopilotResource
                 })
                 ->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('url')
+                ->extraAttributes(['class' => 'privacy-sensitive'])
                 ->label(__('Default URL'))
                 ->sortable()
                 ->searchable(query: function (Builder $query, string $search): Builder {
@@ -1423,8 +1425,10 @@ class ChannelResource extends Resource implements CopilotResource
                     ->columns(2)
                     ->schema([
                         TextEntry::make('url')
+                            ->extraAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('URL'))->columnSpanFull(),
                         TextEntry::make('proxy_url')
+                            ->extraAttributes(['class' => 'privacy-sensitive'])
                             ->state(fn ($record) => $record?->getProxyUrl())
                             ->label(__('Proxy URL'))->columnSpanFull(),
                         TextEntry::make('stream_id')
@@ -1830,6 +1834,7 @@ class ChannelResource extends Resource implements CopilotResource
             Fieldset::make(__('URL Settings'))
                 ->schema([
                     TextInput::make('url')
+                        ->extraInputAttributes(['class' => 'privacy-sensitive'])
                         ->label(fn (Get $get) => $get('is_custom') ? 'URL' : 'Provider URL')
                         ->columnSpan(1)
                         ->prefixIcon('heroicon-m-globe-alt')
@@ -1842,6 +1847,7 @@ class ChannelResource extends Resource implements CopilotResource
                         ->dehydrated(fn (Get $get) => $get('is_custom')) // don't save the value in the database for custom channels
                         ->type('url'),
                     TextInput::make('url_custom')
+                        ->extraInputAttributes(['class' => 'privacy-sensitive'])
                         ->label(__('URL Override'))
                         ->columnSpan(1)
                         ->prefixIcon('heroicon-m-globe-alt')
@@ -1901,6 +1907,7 @@ class ChannelResource extends Resource implements CopilotResource
                         ->url()
                         ->hidden(fn (Get $get) => ! ($get('is_custom') && $get('catchup'))),
                     TextInput::make('proxy_url')
+                        ->extraInputAttributes(['class' => 'privacy-sensitive'])
                         ->label(__('Proxy URL'))
                         ->columnSpan(2)
                         ->prefixIcon('heroicon-m-globe-alt')
@@ -1916,6 +1923,7 @@ class ChannelResource extends Resource implements CopilotResource
                         ->hiddenOn('create')
                         ->hidden(fn () => ! config('proxy.proxy_integration_enabled')),
                     TextInput::make('mediaflow_proxy_url')
+                        ->extraInputAttributes(['class' => 'privacy-sensitive'])
                         ->label(__('MediaFlow Proxy URL'))
                         ->columnSpan(2)
                         ->prefixIcon('heroicon-m-shield-check')

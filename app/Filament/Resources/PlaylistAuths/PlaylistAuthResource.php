@@ -95,6 +95,7 @@ class PlaylistAuthResource extends Resource implements CopilotResource
                     ->searchable()
                     ->sortable(),
                 TextColumn::make('username')
+                    ->extraAttributes(['class' => 'privacy-sensitive'])
                     ->searchable()
                     ->toggleable()
                     ->sortable(),
@@ -333,6 +334,7 @@ class PlaylistAuthResource extends Resource implements CopilotResource
                         ->columns(3)
                         ->schema([
                             TextInput::make('username')
+                                ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                 ->label(__('Username'))
                                 ->required()
                                 ->rules(function ($record) {

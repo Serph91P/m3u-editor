@@ -18,6 +18,8 @@ class GeneralSettings extends Settings
 
     public ?bool $show_queue_indicator = true;
 
+    public ?bool $privacy_mode = false;
+
     public ?bool $show_logs = false;
 
     public ?bool $show_api_docs = false;
@@ -84,6 +86,11 @@ class GeneralSettings extends Settings
     public ?array $failover_fail_conditions = null;
 
     public ?int $failover_fail_conditions_timeout = 5;
+
+    // Retry the same stream URL once before failing over when a provider drops a healthy live stream
+    public ?bool $silent_close_retry_enabled = false;
+
+    public ?int $silent_close_retry_window = 60;
 
     // Logo cache and placeholders
     public ?bool $logo_cache_permanent = false;

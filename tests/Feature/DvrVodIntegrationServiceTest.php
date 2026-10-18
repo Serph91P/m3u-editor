@@ -25,6 +25,7 @@ use App\Jobs\IntegrateDvrRecordingToVod;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\DvrRecording;
+use App\Models\DvrRecordingRule;
 use App\Models\DvrSetting;
 use App\Models\Episode;
 use App\Models\MergedPlaylist;
@@ -1030,6 +1031,126 @@ it('classifies recording with non-movie category and subtitle as TV', function (
     $series = Series::first();
     expect($series->name)->toBe('Premier League');
 });
+
+it('classifies a bare film-genre category with a subtitle as a movie', function (string $category) {
+    $recording = makeCompletedRecording([
+        'title' => 'Heat',
+        'subtitle' => 'Director\'s Cut',
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => ['category' => $category],
+    ]);
+
+    $this->service->integrateRecording($recording);
+
+    expect($recording->isTvContent())->toBeFalse()
+        ->and(Series::count())->toBe(0)
+        ->and(Channel::where('dvr_recording_id', $recording->id)->exists())->toBeTrue();
+})->with(['Drama', 'Action', 'Thriller', 'Comedy']);
+
+it('ignores a provider ID in episode_num and classifies the recording as a movie', function () {
+    $recording = makeCompletedRecording([
+        'title' => 'Heat',
+        'subtitle' => null,
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => ['episode_num' => 'MV000123.0000'],
+    ]);
+
+    $this->service->integrateRecording($recording);
+
+    expect($recording->isTvContent())->toBeFalse()
+        ->and(Series::count())->toBe(0)
+        ->and(Channel::where('dvr_recording_id', $recording->id)->exists())->toBeTrue();
+});
+
+it('does not treat series_key as a TV signal because every recording has one', function () {
+    $recording = makeCompletedRecording([
+        'title' => 'Heat',
+        'series_key' => 'setting:1|title:heat',
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => null,
+    ]);
+
+    $this->service->integrateRecording($recording);
+
+    expect($recording->isTvContent())->toBeFalse()
+        ->and(Channel::where('dvr_recording_id', $recording->id)->exists())->toBeTrue();
+});
+
+it('classifies a Series rule recording as TV even with a bare film genre or no category', function (?string $category) {
+    $recording = makeCompletedRecording([
+        'title' => 'Greys Anatomy',
+        'subtitle' => 'Some Episode Title',
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => $category === null ? null : ['category' => $category],
+    ]);
+    $rule = DvrRecordingRule::factory()->series()
+        ->for($recording->dvrSetting, 'dvrSetting')
+        ->for($recording->user)
+        ->create(['series_title' => 'Greys Anatomy']);
+    $recording->update(['dvr_recording_rule_id' => $rule->id]);
+
+    $this->service->integrateRecording($recording);
+
+    expect($recording->isTvContent())->toBeTrue()
+        ->and(Series::count())->toBe(1)
+        ->and(Channel::where('dvr_recording_id', $recording->id)->exists())->toBeFalse();
+})->with(['Drama', null]);
+
+it('still files a Series rule recording with a movie category as a movie', function () {
+    $recording = makeCompletedRecording([
+        'title' => 'Heat',
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => ['category' => 'Movie'],
+    ]);
+    $rule = DvrRecordingRule::factory()->series()
+        ->for($recording->dvrSetting, 'dvrSetting')
+        ->for($recording->user)
+        ->create(['series_title' => 'Heat']);
+    $recording->update(['dvr_recording_rule_id' => $rule->id]);
+
+    expect($recording->isTvContent())->toBeFalse();
+});
+
+it('reads Gracenote programme ID prefixes in episode_num', function (string $episodeNum, bool $expected) {
+    $recording = makeCompletedRecording([
+        'title' => 'Heat',
+        'subtitle' => 'Some Subtitle',
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => ['episode_num' => $episodeNum, 'category' => 'Drama'],
+    ]);
+
+    expect($recording->isTvContent())->toBe($expected);
+})->with([
+    'movie' => ['MV000123.0000', false],
+    'episode' => ['EP01234567.0045', true],
+    'show' => ['SH01234567.0000', true],
+    'sports' => ['SP01234567.0000', true],
+]);
+
+it('only treats a film genre as a movie when it is the whole category', function (string $category) {
+    $recording = makeCompletedRecording([
+        'title' => 'Some Cartoon',
+        'subtitle' => 'Episode Title',
+        'season' => null,
+        'episode' => null,
+        'metadata' => null,
+        'epg_programme_data' => ['category' => $category],
+    ]);
+
+    expect($recording->isTvContent())->toBeTrue();
+})->with(['Animation', 'Crime drama']);
 
 it('falls through to movie when no category, no S/E, no subtitle', function () {
     $recording = makeCompletedRecording([

@@ -12,6 +12,7 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
+use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
@@ -120,40 +121,7 @@ class ManageGeneralSettings extends BaseSettingsPage
             ->components([
                 Section::make(__('Layout & Display Options'))
                     ->schema([
-                        Grid::make()
-                            ->columnSpanFull()
-                            ->columns(4)
-                            ->schema([
-                                Toggle::make('show_breadcrumbs')
-                                    ->label(__('Show breadcrumbs'))
-                                    ->helperText(__('Show breadcrumbs under the page titles')),
-                                Toggle::make('show_queue_indicator')
-                                    ->label(__('Show queue indicator'))
-                                    ->helperText(__('Show the live queue status indicator in the top navigation bar')),
-                                Toggle::make('output_wan_address')
-                                    ->label(__('Output WAN address in menu'))
-                                    ->helperText(__('When enabled, the application will output the WAN address of the server m3u-editor is currently running on.'))
-                                    ->default(function () {
-                                        return config('dev.show_wan_details') !== null
-                                            ? (bool) config('dev.show_wan_details')
-                                            : false;
-                                    })
-                                    ->afterStateHydrated(function (Toggle $component, $state) {
-                                        if (config('dev.show_wan_details') !== null) {
-                                            $component->state((bool) config('dev.show_wan_details'));
-                                        }
-                                    })->disabled(fn () => config('dev.show_wan_details') !== null)
-                                    ->hint(fn () => config('dev.show_wan_details') !== null ? __('Already set by environment variable!') : null)
-                                    ->dehydrated(fn () => config('dev.show_wan_details') === null),
-                                Toggle::make('suppress_success_notifications')
-                                    ->label(__('Suppress success notifications'))
-                                    ->hintIcon(
-                                        'heroicon-m-question-mark-circle',
-                                        tooltip: __('When enabled, success and informational notifications from background tasks (e.g. sync started or completed successfully) will be hidden. Errors and warnings will still be shown regardless of this setting.')
-                                    )
-                                    ->helperText(__('Hide success and informational notifications from background tasks (errors and warnings are always shown).')),
-                            ]),
-                        Grid::make()
+                        Fieldset::make(__('Layout'))
                             ->columnSpanFull()
                             ->columns(2)
                             ->schema([
@@ -173,8 +141,45 @@ class ManageGeneralSettings extends BaseSettingsPage
                                         Width::ScreenTwoExtraLarge->value => '2XL',
                                         Width::Full->value => 'Full',
                                     ]),
+                                Toggle::make('show_breadcrumbs')
+                                    ->label(__('Show breadcrumbs'))
+                                    ->helperText(__('Show breadcrumbs under the page titles')),
                             ]),
-                        Grid::make()
+                        Fieldset::make(__('Top bar'))
+                            ->columnSpanFull()
+                            ->columns(2)
+                            ->schema([
+                                Toggle::make('show_queue_indicator')
+                                    ->label(__('Show queue indicator'))
+                                    ->helperText(__('Show the live queue status indicator in the top navigation bar')),
+                                Toggle::make('output_wan_address')
+                                    ->label(__('Output WAN address in menu'))
+                                    ->helperText(__('Show the WAN address of this server in the top navigation bar.'))
+                                    ->default(function () {
+                                        return config('dev.show_wan_details') !== null
+                                            ? (bool) config('dev.show_wan_details')
+                                            : false;
+                                    })
+                                    ->afterStateHydrated(function (Toggle $component, $state) {
+                                        if (config('dev.show_wan_details') !== null) {
+                                            $component->state((bool) config('dev.show_wan_details'));
+                                        }
+                                    })->disabled(fn () => config('dev.show_wan_details') !== null)
+                                    ->hint(fn () => config('dev.show_wan_details') !== null ? __('Already set by environment variable!') : null)
+                                    ->dehydrated(fn () => config('dev.show_wan_details') === null),
+                            ]),
+                        Fieldset::make(__('Privacy & notifications'))
+                            ->columnSpanFull()
+                            ->columns(2)
+                            ->schema([
+                                Toggle::make('privacy_mode')
+                                    ->label(__('Privacy mode'))
+                                    ->helperText(__('Blur URLs and credentials across the app. Hover over a value to reveal it.')),
+                                Toggle::make('suppress_success_notifications')
+                                    ->label(__('Suppress success notifications'))
+                                    ->helperText(__('Hide success and informational notifications from background tasks (errors and warnings are always shown).')),
+                            ]),
+                        Fieldset::make(__('Date & time'))
                             ->columnSpanFull()
                             ->columns(2)
                             ->schema([
@@ -212,11 +217,6 @@ class ManageGeneralSettings extends BaseSettingsPage
                                     ->default('Y-m-d H:i:s')
                                     ->live()
                                     ->helperText(__('Format applied to dates throughout the application (e.g. next sync, last synced).')),
-                            ]),
-                        Grid::make()
-                            ->columnSpanFull()
-                            ->columns(2)
-                            ->schema([
                                 TextInput::make('date_format_custom')
                                     ->label(__('Custom Date Format String'))
                                     ->placeholder(__('e.g. d/m/Y H:i:s'))
@@ -246,7 +246,6 @@ class ManageGeneralSettings extends BaseSettingsPage
                                     )
                                     ->visible(fn (Get $get): bool => $get('date_format_preset') === '__custom__'),
                             ]),
-
                     ]),
                 Section::make(__('Allowed Playlist Domains'))
                     ->description(__('Restrict playlist URLs to specific domains. Leave empty to allow all domains.'))

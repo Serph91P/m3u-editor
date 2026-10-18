@@ -13,6 +13,7 @@ use App\Enums\ImageProfile;
 use App\Events\ViewerFavoriteEvent;
 use App\Facades\PlaylistFacade;
 use App\Facades\ProxyFacade;
+use App\Filament\Support\DvrPaddingFields;
 use App\Jobs\FetchTmdbIds;
 use App\Jobs\RefreshMediaServerLibraryJob;
 use App\Models\ArrIntegration;
@@ -235,11 +236,12 @@ class XtreamApiController extends Controller
      *   - `priority` (int, optional): Defaults to 50 via the column migration default.
      *     Clamped 0-100 when supplied. **Omit to inherit the column default; do not send
      *     a hardcoded value.**
-     *   - `start_early_seconds` (int, optional): Seconds to start early. **Omit to inherit
+     *   - `start_early_seconds` (int, optional): Seconds to start early; a negative value
+     *     starts late. Clamped to ±24h. **Omit to inherit
      *     `dvr_setting.default_start_early_seconds`** (resolved at runtime). Blank is not
      *     coerced to 0 — `0` is a meaningful value (no padding) distinct from "inherit".
-     *   - `end_late_seconds` (int, optional): Seconds to end late. Same omit-to-inherit
-     *     semantics as `start_early_seconds`.
+     *   - `end_late_seconds` (int, optional): Seconds to end late; a negative value finishes
+     *     early. Clamped to ±24h. Same omit-to-inherit semantics as `start_early_seconds`.
      * Returns `{success: true, rule_id: <int>}`. Returns 409 `{error, rule_id, duplicate: true}`
      * when a Series rule for the same normalized title already exists under this DVR
      * setting (+ auth).
@@ -867,7 +869,7 @@ class XtreamApiController extends Controller
                             $channel->info['vote_count'] ?? null
                         ),
                         'rating_5based' => $channel->rating_5based ?? 0,
-                        'added' => (string) $channel->created_at->timestamp,
+                        'added' => (string) ($channel->source_added_at ?? $channel->created_at)->timestamp,
                         'category_id' => $channelCategoryId,
                         'category_ids' => array_values(array_unique(array_merge(
                             [(int) $channelCategoryId],
@@ -1053,6 +1055,7 @@ class XtreamApiController extends Controller
                         'tmdb_id' => (int) ($tmdb ?: 0),
                         'youtube_trailer' => $seriesItem->youtube_trailer ?? '',
                         'episode_run_time' => (string) ($seriesItem->episode_run_time ?? 0),
+                        'mpaa_rating' => $seriesItem->getContentRating() ?? '',
                         'category_id' => $seriesCategoryId,
                         'category_ids' => array_values(array_unique(array_merge(
                             [(int) $seriesCategoryId],
@@ -1272,6 +1275,7 @@ class XtreamApiController extends Controller
                         'cover_big' => $coverBig,
                         'releaseDate' => $season->metadata['release_date'] ?? $season->metadata['releaseDate'] ?? $season->metadata['air_date'] ?? '',
                         'duration' => (string) ($season->metadata['duration'] ?? 0),
+                        'youtube_trailer' => $season->metadata['youtube_trailer'] ?? '',
                     ];
                     $seasonEpisodes = [];
                     if ($season->episodes && $season->episodes->isNotEmpty()) {
@@ -1816,7 +1820,7 @@ class XtreamApiController extends Controller
                 'name' => $movieData['name'] ?? $channel->name,
                 'title' => $movieData['title'] ?? $channel->name,
                 'year' => app(VodFileNameService::class)->resolveMovieYearAsInt($channel),
-                'added' => $movieData['added'] ?? (string) ($channel->created_at ? $channel->created_at->timestamp : time()),
+                'added' => $movieData['added'] ?? (string) (($channel->source_added_at ?? $channel->created_at)?->timestamp ?? time()),
                 'category_id' => (string) ($channel->group_id ?? ''),
                 'category_ids' => ($channel->group_id ? [(int) $channel->group_id] : []),
                 'container_extension' => $extension,
@@ -1922,6 +1926,20 @@ class XtreamApiController extends Controller
                 $allProgrammes = array_merge($allProgrammes, $tomorrowProgrammes[$channel->epgChannel->channel_id]);
             }
 
+            // A positive shift moves programmes from earlier dates into today, so fetch those too
+            $tvgShift = (int) ($channel->tvg_shift ?? 0);
+            if ($tvgShift > 0) {
+                $earlierProgrammes = $cacheService->getCachedProgrammesRange(
+                    $epg,
+                    Carbon::now()->subHours($tvgShift)->format('Y-m-d'),
+                    Carbon::now()->subDay()->format('Y-m-d'),
+                    [$channel->epgChannel->channel_id]
+                );
+                $allProgrammes = array_merge($earlierProgrammes[$channel->epgChannel->channel_id] ?? [], $allProgrammes);
+            }
+
+            $allProgrammes = EpgCacheService::shiftProgrammes($allProgrammes, $tvgShift);
+
             // Check if channel is currently playing
             $isNowPlaying = $proxyEnabled ? M3uProxyService::isChannelActive($channel) : false;
 
@@ -2011,6 +2029,7 @@ class XtreamApiController extends Controller
                     $allProgrammes = array_merge($allProgrammes, $programmes[$channel->epgChannel->channel_id]);
                 }
             }
+            $allProgrammes = EpgCacheService::shiftProgrammes($allProgrammes, (int) ($channel->tvg_shift ?? 0));
 
             $epgListings = [];
             if (! empty($allProgrammes)) {
@@ -2105,9 +2124,39 @@ class XtreamApiController extends Controller
                     $programmes[$channelId] = array_merge($programmes[$channelId], $progs);
                 }
 
+                // A positive shift moves programmes from earlier dates into the requested day,
+                // so fetch those for the positively shifted channels only
+                $positiveShifts = [];
                 foreach ($group['channelMap'] as $streamId => $epgChannelId) {
-                    $channelProgrammes = $programmes[$epgChannelId] ?? [];
+                    $tvgShift = (int) ($channels[$streamId]->tvg_shift ?? 0);
+                    if ($tvgShift > 0) {
+                        $positiveShifts[$epgChannelId] = max($tvgShift, $positiveShifts[$epgChannelId] ?? 0);
+                    }
+                }
+                $earlierProgrammes = [];
+                if (! empty($positiveShifts)) {
+                    $earlierProgrammes = $cacheService->getCachedProgrammesRange(
+                        $epg,
+                        Carbon::parse($date)->subHours(max($positiveShifts))->format('Y-m-d'),
+                        Carbon::parse($date)->subDay()->format('Y-m-d'),
+                        array_keys($positiveShifts)
+                    );
+                }
+                $dayStart = Carbon::parse($date)->startOfDay();
+
+                foreach ($group['channelMap'] as $streamId => $epgChannelId) {
                     $channel = $channels[$streamId];
+                    $tvgShift = (int) ($channel->tvg_shift ?? 0);
+                    $channelProgrammes = EpgCacheService::shiftProgrammes($programmes[$epgChannelId] ?? [], $tvgShift);
+
+                    // Keep only the earlier-dated programmes that now reach into the requested day
+                    if ($tvgShift > 0 && ! empty($earlierProgrammes[$epgChannelId])) {
+                        $shiftedIn = array_filter(
+                            EpgCacheService::shiftProgrammes($earlierProgrammes[$epgChannelId], $tvgShift),
+                            fn ($programme) => ! empty($programme['stop']) && Carbon::parse($programme['stop'])->gt($dayStart)
+                        );
+                        $channelProgrammes = array_merge(array_values($shiftedIn), $channelProgrammes);
+                    }
 
                     // Fill gaps in EPG
                     if (empty($channelProgrammes)) {
@@ -2382,12 +2431,12 @@ class XtreamApiController extends Controller
             ->get();
 
         // Build a mapping of group name -> stable category ID
-        $categoryMap = $this->buildNetworkCategoryMap($networks);
+        $categoryMap = $this->buildNetworkCategoryMap($playlist, $networks);
 
         $liveStreams = [];
         foreach ($networks as $network) {
             $streamIcon = $network->logo ?: $baseUrl.'/placeholder.png';
-            $categoryId = $categoryMap[$network->effective_group_name] ?? 'networks';
+            $categoryId = $categoryMap[$network->effective_group_name] ?? 0;
 
             $liveStreams[] = [
                 'num' => $network->channel_number ?? $network->id,
@@ -2416,15 +2465,18 @@ class XtreamApiController extends Controller
      */
     private function getNetworkLiveCategories(Playlist $playlist): \Illuminate\Http\JsonResponse
     {
-        $networks = $playlist->networks()->where('enabled', true)->get();
+        $networks = $playlist->networks()
+            ->where('enabled', true)
+            ->orderBy('channel_number')
+            ->get();
 
         if ($networks->isEmpty()) {
             return response()->json([]);
         }
 
-        $categoryMap = $this->buildNetworkCategoryMap($networks);
+        $categoryMap = $this->buildNetworkCategoryMap($playlist, $networks);
 
-        $categories = collect($categoryMap)->map(fn (string $id, string $name) => [
+        $categories = collect($categoryMap)->map(fn (int $id, string $name) => [
             'category_id' => $id,
             'category_name' => $name,
             'parent_id' => 0,
@@ -2436,17 +2488,22 @@ class XtreamApiController extends Controller
     /**
      * Build a consistent mapping of network group name to category ID.
      *
+     * The IDs are the primary keys of the Group rows NetworkChannelSyncService
+     * projects for each network: numeric (so Xtream consumers like
+     * ProcessM3uImport can bind them against bigint source group columns,
+     * issue #1303) and stable across requests.
+     *
      * @param  Collection<int, Network>  $networks
-     * @return array<string, string>
+     * @return array<string, int>
      */
-    private function buildNetworkCategoryMap(Collection $networks): array
+    private function buildNetworkCategoryMap(Playlist $playlist, Collection $networks): array
     {
-        $index = 1;
+        $names = $networks->map(fn (Network $network) => $network->effective_group_name)->unique()->values();
+        $groupIds = $playlist->groups()->whereIn('name', $names)->pluck('id', 'name');
 
-        return $networks
-            ->map(fn (Network $network) => $network->effective_group_name)
-            ->unique()
-            ->mapWithKeys(fn (string $name) => [$name => 'network-group-'.($index++)])
+        return $names
+            ->filter(fn (string $name) => $groupIds->has($name))
+            ->mapWithKeys(fn (string $name) => [$name => (int) $groupIds[$name]])
             ->all();
     }
 
@@ -4952,8 +5009,8 @@ class XtreamApiController extends Controller
 
         foreach (['start_early_seconds', 'end_late_seconds'] as $paddingField) {
             $padding = $request->input($paddingField);
-            if ($padding !== null && filter_var($padding, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 65535]]) === false) {
-                return $this->scheduleDvrRejection('invalid_padding', "{$paddingField} must be a whole number of seconds between 0 and 65535");
+            if ($padding !== null && filter_var($padding, FILTER_VALIDATE_INT, ['options' => ['min_range' => -DvrPaddingFields::MAX_SECONDS, 'max_range' => DvrPaddingFields::MAX_SECONDS]]) === false) {
+                return $this->scheduleDvrRejection('invalid_padding', "{$paddingField} must be a whole number of seconds between -".DvrPaddingFields::MAX_SECONDS.' and '.DvrPaddingFields::MAX_SECONDS);
             }
         }
 
@@ -5014,8 +5071,8 @@ class XtreamApiController extends Controller
             'match_mode' => DvrMatchMode::Exact,
             'manual_start' => $manualStart,
             'manual_end' => $manualEnd,
-            'start_early_seconds' => (int) $request->input('start_early_seconds', $dvrSetting->default_start_early_seconds ?? 0),
-            'end_late_seconds' => (int) $request->input('end_late_seconds', $dvrSetting->default_end_late_seconds ?? 0),
+            'start_early_seconds' => DvrPaddingFields::clampSeconds((int) $request->input('start_early_seconds', $dvrSetting->default_start_early_seconds ?? 0)),
+            'end_late_seconds' => DvrPaddingFields::clampSeconds((int) $request->input('end_late_seconds', $dvrSetting->default_end_late_seconds ?? 0)),
             'enabled' => true,
         ]);
 
@@ -5140,11 +5197,11 @@ class XtreamApiController extends Controller
 
         $rawStartEarly = $request->input('start_early_seconds');
         if ($rawStartEarly !== null && $rawStartEarly !== '') {
-            $createAttrs['start_early_seconds'] = (int) $rawStartEarly;
+            $createAttrs['start_early_seconds'] = DvrPaddingFields::clampSeconds((int) $rawStartEarly);
         }
         $rawEndLate = $request->input('end_late_seconds');
         if ($rawEndLate !== null && $rawEndLate !== '') {
-            $createAttrs['end_late_seconds'] = (int) $rawEndLate;
+            $createAttrs['end_late_seconds'] = DvrPaddingFields::clampSeconds((int) $rawEndLate);
         }
 
         $rule = DvrRecordingRule::create($createAttrs);
@@ -5237,12 +5294,12 @@ class XtreamApiController extends Controller
 
         $rawStartEarly = $request->input('start_early_seconds');
         if ($rawStartEarly !== null && $rawStartEarly !== '') {
-            $rule->start_early_seconds = (int) $rawStartEarly;
+            $rule->start_early_seconds = DvrPaddingFields::clampSeconds((int) $rawStartEarly);
         }
 
         $rawEndLate = $request->input('end_late_seconds');
         if ($rawEndLate !== null && $rawEndLate !== '') {
-            $rule->end_late_seconds = (int) $rawEndLate;
+            $rule->end_late_seconds = DvrPaddingFields::clampSeconds((int) $rawEndLate);
         }
 
         $rule->save();

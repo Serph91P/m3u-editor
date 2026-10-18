@@ -2,11 +2,13 @@
 
 namespace App\Filament\Concerns;
 
+use App\Filament\Support\DvrPaddingFields;
 use App\Models\Channel;
 use App\Models\Group;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -15,6 +17,43 @@ use Illuminate\Support\Str;
 
 trait HasBrowseShowsFiltersForm
 {
+    public string $seriesStartUnit = DvrPaddingFields::UNIT_SECONDS;
+
+    public string $seriesStartDirection = DvrPaddingFields::DIRECTION_EXTEND;
+
+    public string $seriesEndUnit = DvrPaddingFields::UNIT_SECONDS;
+
+    public string $seriesEndDirection = DvrPaddingFields::DIRECTION_EXTEND;
+
+    /**
+     * Series start padding as signed seconds (negative = start late).
+     */
+    protected function seriesStartEarlySeconds(): int
+    {
+        return DvrPaddingFields::clampSeconds((int) DvrPaddingFields::toSeconds($this->seriesStartEarly, $this->seriesStartUnit, $this->seriesStartDirection));
+    }
+
+    /**
+     * Series end padding as signed seconds (negative = finish early).
+     */
+    protected function seriesEndLateSeconds(): int
+    {
+        return DvrPaddingFields::clampSeconds((int) DvrPaddingFields::toSeconds($this->seriesEndLate, $this->seriesEndUnit, $this->seriesEndDirection));
+    }
+
+    /**
+     * Restore the series padding inputs to their defaults.
+     */
+    protected function resetSeriesPadding(): void
+    {
+        $this->seriesStartEarly = 0;
+        $this->seriesStartUnit = DvrPaddingFields::UNIT_SECONDS;
+        $this->seriesStartDirection = DvrPaddingFields::DIRECTION_EXTEND;
+        $this->seriesEndLate = 0;
+        $this->seriesEndUnit = DvrPaddingFields::UNIT_SECONDS;
+        $this->seriesEndDirection = DvrPaddingFields::DIRECTION_EXTEND;
+    }
+
     /**
      * Searchable channel picker, server-side filtered.
      * Reads $this->getCachedDvrSetting() so it works in both auth and guest panels.
@@ -157,15 +196,13 @@ trait HasBrowseShowsFiltersForm
                                 ->minValue(1)
                                 ->maxValue(99),
 
-                            TextInput::make('seriesStartEarly')
-                                ->label(__('Start early (seconds)'))
-                                ->numeric()
-                                ->minValue(0),
+                            Fieldset::make(__('Start Padding'))
+                                ->columns(2)
+                                ->schema(DvrPaddingFields::inputs('seriesStartEarly', 'seriesStartUnit', 'seriesStartDirection', isStart: true)),
 
-                            TextInput::make('seriesEndLate')
-                                ->label(__('End late (seconds)'))
-                                ->numeric()
-                                ->minValue(0),
+                            Fieldset::make(__('End Padding'))
+                                ->columns(2)
+                                ->schema(DvrPaddingFields::inputs('seriesEndLate', 'seriesEndUnit', 'seriesEndDirection', isStart: false)),
 
                             TextInput::make('seriesKeepLast')
                                 ->label(__('Keep last N recordings'))

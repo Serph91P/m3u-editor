@@ -21,6 +21,24 @@ class TmdbEnrichment
     public const PROVIDER_ABSENT_KEYS = ['cast_list', 'clearlogo', 'related_tmdb', 'content_rating', 'networks', 'tmdb_certification', 'studios'];
 
     /**
+     * FetchTmdbIds bookkeeping markers (genre already compared with TMDB, episodes last
+     * looked up). Carried over a provider refresh like PROVIDER_ABSENT_KEYS, otherwise
+     * every refresh would bring back the repeat TMDB lookups they exist to stop - but
+     * kept out of that list, since they don't mean the row holds TMDB data (isEnriched()).
+     * tmdb_search_failed is deliberately not here: a refresh (e.g. a renamed title) is
+     * what earns a no-match title another search.
+     */
+    public const TMDB_MARKER_KEYS = ['tmdb_genre_checked', 'tmdb_episodes_checked_at'];
+
+    /**
+     * Fields TMDB enrichment fills only when the provider left them empty (VOD `info`
+     * plot/cover_big, series plot/cover columns). On a TMDB-checked row a blank provider
+     * value must not wipe them: the related_tmdb sentinel keeps FetchTmdbIds from
+     * filling them again, so they would stay blank.
+     */
+    public const TMDB_FILLED_KEYS = ['plot', 'cover', 'cover_big'];
+
+    /**
      * VOD `info` keys TMDB enrichment overwrites with its own value (as opposed to
      * only filling when empty, like plot/cover_big), so on an enriched row the
      * persisted value is TMDB's. Kept over the provider's value when TMDB is preferred.
@@ -90,9 +108,17 @@ class TmdbEnrichment
             return $incoming;
         }
 
-        foreach (self::PROVIDER_ABSENT_KEYS as $key) {
+        foreach ([...self::PROVIDER_ABSENT_KEYS, ...self::TMDB_MARKER_KEYS] as $key) {
             if (array_key_exists($key, $existing) && ! array_key_exists($key, $incoming)) {
                 $incoming[$key] = $existing[$key];
+            }
+        }
+
+        if (self::isTmdbChecked($existing)) {
+            foreach (self::TMDB_FILLED_KEYS as $key) {
+                if (blank($incoming[$key] ?? null) && ! blank($existing[$key] ?? null)) {
+                    $incoming[$key] = $existing[$key];
+                }
             }
         }
 

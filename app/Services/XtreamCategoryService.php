@@ -52,10 +52,19 @@ class XtreamCategoryService
      */
     public static function groupCategories($playlist, bool $isVod, array $aliasGroupFilter = []): array
     {
-        $channelConstraint = function ($query) use ($isVod, $aliasGroupFilter): void {
+        // Merged sources flagged only_unmatched hide some of their movies, so a VOD group
+        // only counts the movies the merge actually lists. The rule correlates to the
+        // merged_playlist_playlist row that groups() joins through.
+        $hidesUnmatched = $isVod && ($playlist instanceof MergedPlaylist
+            || ($playlist instanceof PlaylistAlias && $playlist->merged_playlist_id));
+
+        $channelConstraint = function ($query) use ($isVod, $aliasGroupFilter, $hidesUnmatched): void {
             $query->where('enabled', true)->where('is_vod', $isVod);
             if (! empty($aliasGroupFilter)) {
                 $query->whereIn('group_internal', $aliasGroupFilter);
+            }
+            if ($hidesUnmatched) {
+                $query->where(MergedPlaylist::onlyUnmatchedChannels());
             }
         };
 

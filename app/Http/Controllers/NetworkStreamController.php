@@ -80,11 +80,13 @@ class NetworkStreamController extends Controller
         $offsetSeconds = $programme->getCurrentOffsetSeconds();
         $offsetTicks = $offsetSeconds * 10_000_000; // Jellyfin/Emby use ticks (100ns intervals)
 
-        // Build the media server stream URL
+        // Build the media server stream URL. Jellyfin 12 removed the legacy
+        // lowercase api_key query parameter, so Jellyfin uses the supported
+        // ApiKey form there.
         $streamUrl = "{$integration->base_url}/Videos/{$itemId}/stream.{$container}";
         $params = [
             'static' => 'true',
-            'api_key' => $integration->api_key,
+            $integration->isJellyfin() ? 'ApiKey' : 'api_key' => $integration->api_key,
         ];
 
         // Add seek position if we're not at the start
@@ -108,9 +110,16 @@ class NetworkStreamController extends Controller
         // client there. The proxy fetches the media server directly (never through PHP curl),
         // so the API token never touches this app's PHP-FPM workers for the stream duration
         // and never reaches the client either, since the client only ever sees the proxy URL.
+        // The Jellyfin URL carries its own ApiKey token, so no auth header is registered
+        // with the proxy: Jellyfin 12 rejects requests carrying more than one authorization
+        // mechanism. Emby is unchanged.
+        $proxyHeaders = $integration->isJellyfin()
+            ? []
+            : [['header' => 'X-Emby-Token', 'value' => $integration->api_key]];
+
         $proxyUrl = app(M3uProxyService::class)->createDirectStreamUrl(
             url: $fullUrl,
-            headers: [['header' => 'X-Emby-Token', 'value' => $integration->api_key]],
+            headers: $proxyHeaders,
             format: 'raw',
             metadata: [
                 'type' => 'network',

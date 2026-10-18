@@ -2,9 +2,11 @@
 
 namespace App\Services;
 
+use App\Enums\PlaylistChannelId;
 use App\Models\Channel;
 use App\Models\MediaServerIntegration;
 use App\Models\MediaSourceMatch;
+use App\Models\MergedPlaylist;
 use App\Models\Playlist;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
@@ -68,6 +70,62 @@ class MediaSourceMatchService
         ]);
 
         return ['movies' => count($movieMatches), 'episodes' => count($episodeMatches), 'changed' => $changed];
+    }
+
+    /**
+     * An existing merge of this provider (unflagged) with at least one of its eligible
+     * media-server playlists flagged only_unmatched, so the one-click action does not
+     * create duplicates. Matching on any flagged source, not all of them, keeps a merge
+     * findable after the owner adds or enables another integration.
+     */
+    public function findMergedWithLocalMedia(Playlist $provider): ?MergedPlaylist
+    {
+        $mediaPlaylistIds = array_keys($this->eligibleIntegrationPlaylists($provider));
+
+        if ($mediaPlaylistIds === []) {
+            return null;
+        }
+
+        return MergedPlaylist::query()
+            ->where('user_id', $provider->user_id)
+            ->whereHas('playlists', fn (Builder $sources) => $sources
+                ->where('playlists.id', $provider->id)
+                ->where('merged_playlist_playlist.only_unmatched', false))
+            ->whereHas('playlists', fn (Builder $sources) => $sources
+                ->whereIn('playlists.id', $mediaPlaylistIds)
+                ->where('merged_playlist_playlist.only_unmatched', true))
+            ->orderBy('id')
+            ->first();
+    }
+
+    /**
+     * Create a merged playlist of the provider plus its eligible media-server playlists,
+     * with each media-server source set to only_unmatched so titles the provider already
+     * carries (and streams from local media via prefer-local) are not listed twice.
+     * Returns null when the owner has no eligible integration.
+     */
+    public function createMergedWithLocalMedia(Playlist $provider): ?MergedPlaylist
+    {
+        $mediaPlaylistIds = array_keys($this->eligibleIntegrationPlaylists($provider));
+
+        if ($mediaPlaylistIds === []) {
+            return null;
+        }
+
+        return DB::transaction(function () use ($provider, $mediaPlaylistIds): MergedPlaylist {
+            $merged = MergedPlaylist::create([
+                'name' => __(':name + Local Media', ['name' => $provider->name]),
+                'user_id' => $provider->user_id,
+                'id_channel_by' => PlaylistChannelId::TvgId,
+            ]);
+
+            $merged->playlists()->attach($provider->id);
+            foreach ($mediaPlaylistIds as $mediaPlaylistId) {
+                $merged->playlists()->attach($mediaPlaylistId, ['only_unmatched' => true]);
+            }
+
+            return $merged;
+        });
     }
 
     /**

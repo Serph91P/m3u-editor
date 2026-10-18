@@ -424,7 +424,9 @@ class DvrMetadataEnricherService
 
     /**
      * Fetch show-level metadata from TMDB.
-     * Searches TV first (most DVR content is TV), falls back to movies.
+     * Searches TV first (most DVR content is TV), falls back to movies. A TV hit
+     * only wins outright on an exact title match; a fuzzy TV hit loses to an
+     * exact movie title, so a movie isn't filed as a loosely-named show.
      *
      * @return array<string, mixed>|false|null
      *                                         - array: confirmed match
@@ -444,11 +446,12 @@ class DvrMetadataEnricherService
             return null; // transient failure — do not cache
         }
 
+        $tvData = null;
         $results = $response->json('results', []);
         if (! empty($results)) {
             $match = $this->selectBestTmdbResult($results, $title, 'tv');
 
-            return [
+            $tvData = [
                 'id' => $match['id'],
                 'type' => 'tv',
                 'name' => $match['name'] ?? $match['title'] ?? $title,
@@ -461,9 +464,13 @@ class DvrMetadataEnricherService
                     : null,
                 'first_air_date' => $match['first_air_date'] ?? null,
             ];
+
+            if ($this->isExactTmdbTitle($match, $title, 'tv')) {
+                return $tvData;
+            }
         }
 
-        // Try movies as a fallback
+        // Try movies as a fallback, or to beat a fuzzy TV match with an exact movie title
         $searchUrl = self::TMDB_BASE_URL.'/search/movie';
         $response = Http::timeout(10)->get($searchUrl, [
             'api_key' => $apiKey,
@@ -471,12 +478,16 @@ class DvrMetadataEnricherService
         ]);
 
         if (! $response->successful()) {
-            return null; // transient failure — do not cache
+            return $tvData; // transient failure - keep the TV match, or null so nothing is cached
         }
 
         $results = $response->json('results', []);
         if (! empty($results)) {
             $match = $this->selectBestTmdbResult($results, $title, 'movie');
+
+            if ($tvData !== null && ! $this->isExactTmdbTitle($match, $title, 'movie')) {
+                return $tvData;
+            }
 
             return [
                 'id' => $match['id'],
@@ -493,7 +504,20 @@ class DvrMetadataEnricherService
             ];
         }
 
-        return false; // confirmed miss — both endpoints returned 200 with empty results
+        return $tvData ?? false; // false: confirmed miss, both endpoints returned 200 with empty results
+    }
+
+    /**
+     * Whether a TMDB search result's title matches the searched title exactly (case-insensitive).
+     *
+     * @param  array<string, mixed>  $result
+     * @param  'tv'|'movie'  $type
+     */
+    private function isExactTmdbTitle(array $result, string $title, string $type): bool
+    {
+        $candidate = mb_strtolower(trim((string) ($result[$type === 'movie' ? 'title' : 'name'] ?? '')));
+
+        return $candidate !== '' && $candidate === mb_strtolower(trim($title));
     }
 
     /**
@@ -516,15 +540,11 @@ class DvrMetadataEnricherService
      */
     private function selectBestTmdbResult(array $results, string $title, string $type): array
     {
-        $titleField = $type === 'movie' ? 'title' : 'name';
-        $needle = mb_strtolower(trim($title));
-
         $best = null;
         $bestScore = null;
 
         foreach ($results as $index => $result) {
-            $candidate = mb_strtolower(trim((string) ($result[$titleField] ?? '')));
-            $exact = ($candidate !== '' && $candidate === $needle) ? 1 : 0;
+            $exact = $this->isExactTmdbTitle($result, $title, $type) ? 1 : 0;
             $popularity = (float) ($result['popularity'] ?? 0);
 
             // Build a composite score; lower index breaks ties.  Negate index

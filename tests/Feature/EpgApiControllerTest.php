@@ -14,6 +14,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Router;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
@@ -469,3 +470,36 @@ it('does not load the panel session on the other epg routes', function (string $
     'api.epg.data',
     'api.epg.playlist.groups',
 ]);
+
+it('applies the channel tvg_shift to mapped epg programmes', function () {
+    $epg = Epg::factory()->create(['user_id' => $this->user->id, 'is_cached' => true]);
+    $epgChannel = EpgChannel::factory()->create([
+        'epg_id' => $epg->id,
+        'user_id' => $this->user->id,
+        'channel_id' => 'abc.us',
+    ]);
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'epg_channel_id' => $epgChannel->id,
+        'enabled' => true,
+        'is_vod' => false,
+        'tvg_shift' => '2',
+    ]);
+
+    Storage::fake('local');
+    $start = now()->startOfDay()->addHours(20);
+    seedEpgProgrammeCache($epg, [
+        ['abc.us', [
+            'start' => $start->toISOString(),
+            'stop' => $start->copy()->addHour()->toISOString(),
+            'title' => 'Show',
+        ]],
+    ]);
+
+    $response = $this->getJson("/api/epg/playlist/{$this->playlist->uuid}/data");
+
+    $response->assertSuccessful();
+    $programme = $response->json("programmes.{$channel->id}.0");
+    expect(Carbon::parse($programme['start'])->equalTo($start->copy()->addHours(2)))->toBeTrue();
+});

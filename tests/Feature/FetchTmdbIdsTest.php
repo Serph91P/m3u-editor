@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\SyncPipelineService;
 use App\Services\TmdbService;
 use App\Settings\GeneralSettings;
+use App\Support\TmdbEnrichment;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -900,6 +901,7 @@ it('enriches episodes when series has complete metadata but episodes lack tmdb_i
         ], 200),
         // getSeasonDetails call
         'https://api.themoviedb.org/3/tv/224372/season/1*' => Http::response([
+            'id' => 22437201,
             'season_number' => 1,
             'poster_path' => '/season1.jpg',
             'episodes' => [
@@ -1020,6 +1022,7 @@ it('enriches episodes even when series is skipped due to complete metadata', fun
         ], 200),
         // getSeasonDetails call
         'https://api.themoviedb.org/3/tv/1396/season/1*' => Http::response([
+            'id' => 139601,
             'season_number' => 1,
             'poster_path' => '/bb_s1.jpg',
             'episodes' => [
@@ -2415,6 +2418,402 @@ it('strips numbering from VOD title even without prefix patterns', function () {
 
     $job = new TestableFetchTmdbIds(vodChannelIds: [$channel->id], user: $this->user);
     $job->handle($tmdb);
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Repeat lookups: titles TMDB has already been asked about must not be fetched
+// again on every sync.
+// ──────────────────────────────────────────────────────────────────────────────
+
+it('does not re-fetch a VOD title that TMDB has no poster for once it has been looked up', function () {
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'is_vod' => true,
+        'title' => 'Example Documentary (2010)',
+        'tmdb_id' => 900001,
+        'info' => [
+            'tmdb_id' => 900001,
+            'plot' => 'A documentary TMDB has an overview for but no poster.',
+            'genre' => 'Documentary, History',
+            'related_tmdb' => [],
+        ],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldNotReceive('getMovieDetails');
+    $tmdb->shouldNotReceive('searchMovie');
+
+    (new TestableFetchTmdbIds(vodChannelIds: [$channel->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+});
+
+it('runs the VOD library-name genre check only once per title', function () {
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'is_vod' => true,
+        'title' => 'A Drama',
+        'tmdb_id' => 4242,
+        'info' => [
+            'tmdb_id' => 4242,
+            'plot' => 'Plot.',
+            'cover_big' => 'https://image.tmdb.org/t/p/w500/drama.jpg',
+            'genre' => 'Drama',
+            'related_tmdb' => [],
+        ],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    // Genuinely single-genre: nothing to change, but it must not be asked again.
+    $tmdb->shouldReceive('getMovieDetails')->once()->with(4242)->andReturn(['genres' => 'Drama']);
+
+    foreach ([1, 2] as $run) {
+        (new TestableFetchTmdbIds(vodChannelIds: [$channel->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+    }
+
+    expect($channel->fresh()->info['tmdb_genre_checked'])->toBe('Drama')
+        ->and($channel->fresh()->info['genre'])->toBe('Drama');
+});
+
+it('checks the VOD genre again when a provider refresh sets it back to a library name', function () {
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'is_vod' => true,
+        'title' => 'An Action Film',
+        'tmdb_id' => 4244,
+        'info' => [
+            'tmdb_id' => 4244,
+            'plot' => 'Plot.',
+            'cover_big' => 'https://image.tmdb.org/t/p/w500/action.jpg',
+            'genre' => 'Movies',
+            'related_tmdb' => [],
+        ],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('getMovieDetails')->twice()->with(4244)->andReturn(['genres' => 'Action']);
+    $run = fn () => (new TestableFetchTmdbIds(vodChannelIds: [$channel->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+
+    $run();
+    $run();
+    expect($channel->fresh()->info['genre'])->toBe('Action');
+
+    // A provider refresh replaces info (the marker is carried over) and restores the placeholder.
+    $channel->update(['info' => array_merge($channel->fresh()->info, ['genre' => 'Movies'])]);
+    $run();
+
+    expect($channel->fresh()->info)->toMatchArray(['genre' => 'Action', 'tmdb_genre_checked' => 'Action']);
+});
+
+it('retries the VOD genre check when the TMDB lookup failed', function () {
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'is_vod' => true,
+        'title' => 'A Drama',
+        'tmdb_id' => 4243,
+        'info' => [
+            'tmdb_id' => 4243,
+            'plot' => 'Plot.',
+            'cover_big' => 'https://image.tmdb.org/t/p/w500/drama.jpg',
+            'genre' => 'Drama',
+            'related_tmdb' => [],
+        ],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('getMovieDetails')->twice()->with(4243)->andReturn(null);
+
+    foreach ([1, 2] as $run) {
+        (new TestableFetchTmdbIds(vodChannelIds: [$channel->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+    }
+
+    expect($channel->fresh()->info)->not->toHaveKey('tmdb_genre_checked');
+});
+
+it('does not re-fetch a series that TMDB has no poster for once it has been looked up', function () {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Series (1991)',
+        'tmdb_id' => 900101,
+        'plot' => 'Plot from TMDB.',
+        'cover' => null,
+        'genre' => 'Comedy, Drama',
+        'metadata' => ['tmdb_id' => 900101, 'related_tmdb' => []],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldNotReceive('getTvSeriesDetails');
+    $tmdb->shouldNotReceive('searchTvSeries');
+
+    (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+});
+
+it('remembers a series TMDB search with no match and does not search again', function () {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Shorts (2011)',
+        'tmdb_id' => null,
+        'tvdb_id' => null,
+        'metadata' => [],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('searchTvSeries')->once()->andReturn(null);
+
+    foreach ([1, 2] as $run) {
+        (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+    }
+
+    expect($series->fresh()->metadata['tmdb_search_failed'])->toBeTrue();
+
+    // Overwrite (the single-item "look up again" action) still searches.
+    $retry = Mockery::mock(TmdbService::class);
+    $retry->shouldReceive('isConfigured')->andReturn(true);
+    $retry->shouldReceive('searchTvSeries')->once()->andReturn(null);
+    (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: true, user: $this->user))->handle($retry);
+});
+
+it('looks up unmatched episodes again only when new episodes arrive or a week has passed', function () {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Cartoon',
+        'tmdb_id' => 900102,
+        'plot' => 'Plot.',
+        'cover' => 'https://image.tmdb.org/t/p/w500/cartoon.jpg',
+        'genre' => 'Animation, Action',
+        'metadata' => ['tmdb_id' => 900102, 'related_tmdb' => []],
+    ]);
+    $season = Season::factory()->create([
+        'series_id' => $series->id,
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'season_number' => 1,
+    ]);
+    $makeEpisode = fn (int $number) => Episode::factory()->create([
+        'series_id' => $series->id,
+        'season_id' => $season->id,
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'season' => 1,
+        'episode_num' => $number,
+        'tmdb_id' => null,
+        'info' => [],
+    ]);
+    $makeEpisode(1);
+
+    $calls = 0;
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('getAllSeasons')->andReturnUsing(function () use (&$calls) {
+        $calls++;
+
+        return [['season_number' => 1]];
+    });
+    // TMDB has nothing for this episode, so it stays without a tmdb_id.
+    $tmdb->shouldReceive('getSeasonDetailsResult')->andReturn(['status' => 'found', 'payload' => ['episodes' => [['episode_number' => 99, 'id' => 1]]]]);
+    $run = fn () => (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+
+    $run();
+    $run();
+    expect($calls)->toBe(1);
+
+    $this->travel(5)->seconds();
+    $makeEpisode(2);
+    $run();
+    expect($calls)->toBe(2);
+
+    $run();
+    expect($calls)->toBe(2);
+
+    $this->travel(8)->days();
+    $run();
+    expect($calls)->toBe(3);
+});
+
+it('looks up episodes again on the next run when a TMDB season lookup failed', function (?array $seasons, array $seasonDetails) {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Cartoon',
+        'tmdb_id' => 900104,
+        'plot' => 'Plot.',
+        'cover' => 'https://image.tmdb.org/t/p/w500/cartoon.jpg',
+        'genre' => 'Animation, Action',
+        'metadata' => ['tmdb_id' => 900104, 'related_tmdb' => []],
+    ]);
+    $season = Season::factory()->create([
+        'series_id' => $series->id,
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'season_number' => 1,
+    ]);
+    Episode::factory()->create([
+        'series_id' => $series->id,
+        'season_id' => $season->id,
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'season' => 1,
+        'episode_num' => 1,
+        'tmdb_id' => null,
+        'info' => [],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    // getAllSeasons(nullOnError: true) returns null on a failed request, and
+    // getSeasonDetailsResult() an error status.
+    $tmdb->shouldReceive('getAllSeasons')->twice()->andReturn($seasons);
+    $tmdb->shouldReceive('getSeasonDetailsResult')->andReturn($seasonDetails);
+
+    foreach ([1, 2] as $run) {
+        (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+    }
+
+    expect($series->fresh()->metadata)->not->toHaveKey('tmdb_episodes_checked_at');
+})->with([
+    'seasons request failed' => [null, ['status' => 'error']],
+    'season details request failed' => [[['season_number' => 1]], ['status' => 'error']],
+]);
+
+it('does not look up episodes again when TMDB verifiably has no season data', function (array $seasons, array $seasonDetails) {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Cartoon',
+        'tmdb_id' => 900105,
+        'plot' => 'Plot.',
+        'cover' => 'https://image.tmdb.org/t/p/w500/cartoon.jpg',
+        'genre' => 'Animation, Action',
+        'metadata' => ['tmdb_id' => 900105, 'related_tmdb' => []],
+    ]);
+    $season = Season::factory()->create([
+        'series_id' => $series->id,
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'season_number' => 1,
+    ]);
+    Episode::factory()->create([
+        'series_id' => $series->id,
+        'season_id' => $season->id,
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'season' => 1,
+        'episode_num' => 1,
+        'tmdb_id' => null,
+        'info' => [],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('getAllSeasons')->once()->andReturn($seasons);
+    $tmdb->shouldReceive('getSeasonDetailsResult')->andReturn($seasonDetails);
+
+    foreach ([1, 2] as $run) {
+        (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+    }
+
+    expect($series->fresh()->metadata)->toHaveKey('tmdb_episodes_checked_at');
+})->with([
+    'no seasons on TMDB' => [[], ['status' => 'error']],
+    'season not found on TMDB' => [[['season_number' => 1]], ['status' => 'not_found']],
+]);
+
+it('treats only a TMDB "resource not found" as no seasons when asked for failures', function () {
+    Http::fake([
+        'https://api.themoviedb.org/3/tv/404404*' => Http::response(['status_code' => 34, 'status_message' => 'Not found.'], 404),
+        'https://api.themoviedb.org/3/tv/500500*' => Http::response([], 500),
+    ]);
+
+    $tmdb = app(TmdbService::class);
+
+    expect($tmdb->getAllSeasons(404404, nullOnError: true))->toBe([])
+        ->and($tmdb->getAllSeasons(500500, nullOnError: true))->toBeNull()
+        ->and($tmdb->getAllSeasons(500500))->toBe([]);
+});
+
+it('keeps the TMDB lookup markers through a provider metadata refresh', function () {
+    $existing = [
+        'related_tmdb' => [],
+        'tmdb_genre_checked' => true,
+        'tmdb_episodes_checked_at' => '2026-10-01T00:00:00+00:00',
+        'tmdb_search_failed' => true,
+    ];
+
+    $refreshed = TmdbEnrichment::preserveOnProviderRefresh($existing, ['plot' => 'From the provider.']);
+
+    expect($refreshed)
+        ->toMatchArray([
+            'plot' => 'From the provider.',
+            'tmdb_genre_checked' => true,
+            'tmdb_episodes_checked_at' => '2026-10-01T00:00:00+00:00',
+        ])
+        // A refresh is what earns a no-match title another search.
+        ->not->toHaveKey('tmdb_search_failed')
+        // The markers alone don't mean the row holds TMDB data.
+        ->and(TmdbEnrichment::isEnriched(['tmdb_genre_checked' => true, 'tmdb_episodes_checked_at' => '2026-10-01T00:00:00+00:00']))->toBeFalse();
+});
+
+it('runs the series library-name genre check only once per series', function () {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Detective Show',
+        'tmdb_id' => 900103,
+        'plot' => 'Plot.',
+        'cover' => 'https://image.tmdb.org/t/p/w500/detective.jpg',
+        'genre' => 'Drama',
+        'metadata' => ['tmdb_id' => 900103, 'related_tmdb' => []],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('getTvSeriesDetails')->once()->with(900103)->andReturn(['genres' => 'Drama']);
+
+    foreach ([1, 2] as $run) {
+        (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+    }
+
+    expect($series->fresh()->metadata['tmdb_genre_checked'])->toBe('Drama')
+        ->and($series->fresh()->genre)->toBe('Drama');
+});
+
+it('checks the series genre again when a provider refresh sets it back to a library name', function () {
+    $series = Series::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'name' => 'Example Action Show',
+        'tmdb_id' => 900105,
+        'plot' => 'Plot.',
+        'cover' => 'https://image.tmdb.org/t/p/w500/action.jpg',
+        'genre' => 'Shows',
+        'metadata' => ['tmdb_id' => 900105, 'related_tmdb' => []],
+    ]);
+
+    $tmdb = Mockery::mock(TmdbService::class);
+    $tmdb->shouldReceive('isConfigured')->andReturn(true);
+    $tmdb->shouldReceive('getTvSeriesDetails')->twice()->with(900105)->andReturn(['genres' => 'Action']);
+    $run = fn () => (new TestableFetchTmdbIds(seriesIds: [$series->id], overwriteExisting: false, user: $this->user))->handle($tmdb);
+
+    $run();
+    $run();
+    expect($series->fresh()->genre)->toBe('Action');
+
+    $series->fresh()->update(['genre' => 'Shows']);
+    $run();
+
+    expect($series->fresh()->genre)->toBe('Action')
+        ->and($series->fresh()->metadata['tmdb_genre_checked'])->toBe('Action');
 });
 
 class TestableFetchTmdbIds extends FetchTmdbIds

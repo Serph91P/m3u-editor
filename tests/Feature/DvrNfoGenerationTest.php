@@ -180,7 +180,7 @@ it('routes the job through NfoService::isDvrRecordingSeries to pick movie vs epi
         'file_path' => 'library/2025/M/M.mp4',
         'season' => null,
         'episode' => null,
-        'series_key' => null,
+        'series_key' => 'setting:1|title:m',
         'metadata' => ['tmdb' => ['id' => 1, 'name' => 'M']],
     ]);
 
@@ -188,12 +188,25 @@ it('routes the job through NfoService::isDvrRecordingSeries to pick movie vs epi
         'file_path' => 'library/2025/S/S - S01E01.mp4',
         'season' => 1,
         'episode' => 1,
+        'series_key' => 'setting:1|title:s',
         'metadata' => ['tmdb' => ['id' => 2, 'name' => 'S']],
     ]);
 
     expect($service->isDvrRecordingSeries($movie))->toBeFalse()
         ->and($service->isDvrRecordingSeries($series))->toBeTrue();
 });
+
+it('classifies recordings the same way as the VOD integration', function (array $attributes, bool $expected) {
+    $recording = makeNfoRecording($attributes);
+
+    expect(app(NfoService::class)->isDvrRecordingSeries($recording))->toBe($expected)
+        ->and($recording->isTvContent())->toBe($expected);
+})->with([
+    'bare genre with subtitle' => [['season' => null, 'episode' => null, 'subtitle' => 'Extended', 'epg_programme_data' => ['category' => 'Drama']], false],
+    'provider id in episode_num' => [['season' => null, 'episode' => null, 'epg_programme_data' => ['episode_num' => 'MV000123.0000']], false],
+    'real episode_num' => [['season' => null, 'episode' => null, 'epg_programme_data' => ['episode_num' => 'S01E03']], true],
+    'tmdb tv type' => [['season' => null, 'episode' => null, 'metadata' => ['tmdb' => ['type' => 'tv']]], true],
+]);
 
 it('queues the job on the dvr-meta queue when dispatched', function () {
     Queue::fake();

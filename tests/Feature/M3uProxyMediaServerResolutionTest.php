@@ -65,7 +65,8 @@ test('getChannelUrl resolves an Emby/Jellyfin proxy URL to the real upstream bef
     expect($url)->toContain('stream/resolved-stream-id');
 
     // The critical assertion: the proxy's upstream `url` is the real Jellyfin URL, hitting
-    // Jellyfin directly — never PHP's /media-server/... curl-relay route.
+    // Jellyfin directly — never PHP's /media-server/... curl-relay route. Jellyfin 12
+    // removed the legacy api_key parameter, so the token travels as ApiKey.
     Http::assertSent(function (Request $request) {
         if ($request->method() !== 'POST' || ! str_ends_with($request->url(), '/streams')) {
             return false;
@@ -74,7 +75,8 @@ test('getChannelUrl resolves an Emby/Jellyfin proxy URL to the real upstream bef
         $body = $request->data();
 
         return str_starts_with($body['url'] ?? '', 'http://jellyfin.local:8096/Videos/97255/stream.mkv')
-            && str_contains($body['url'], 'api_key=super-secret-key')
+            && str_contains($body['url'], 'ApiKey=super-secret-key')
+            && ! str_contains($body['url'], 'api_key=')
             && ! str_contains($body['url'], '/media-server/');
     });
 });

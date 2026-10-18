@@ -23,6 +23,7 @@ class MergedPlaylistPivot extends Pivot
         'include_live' => 'boolean',
         'include_vod' => 'boolean',
         'include_series' => 'boolean',
+        'only_unmatched' => 'boolean',
     ];
 
     public function playlist(): BelongsTo

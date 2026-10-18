@@ -120,6 +120,12 @@ class ProcessEpgImport implements ShouldQueue
         // Flag job start time
         $start = now();
 
+        // Path of a fresh URL download that hasn't replaced the guide file yet
+        $downloadPath = null;
+
+        // Import batch, so a failed import can drop the chunk rows it already queued
+        $batchNo = null;
+
         // Process EPG XMLTV based on standard format
         // Info: https://wiki.xmltv.org/index.php/XMLTVFormat
         try {
@@ -138,37 +144,7 @@ class ProcessEpgImport implements ShouldQueue
             $filePath = null;
             if ($epg->source_type === EpgSourceType::SCHEDULES_DIRECT) {
                 if (! $epg->hasSchedulesDirectCredentials()) {
-                    // Log the exception
-                    logger()->error("Error processing \"{$this->epg->name}\"");
-
-                    // Send notification
-                    $error = 'Invalid SchedulesDirect credentials. Unable to get results from the API. Please check the credentials and try again.';
-                    Notification::make()
-                        ->danger()
-                        ->title("Error processing \"{$this->epg->name}\"")
-                        ->body('Please view your notifications for details.')
-                        ->broadcast($this->epg->user);
-                    Notification::make()
-                        ->danger()
-                        ->title("Error processing \"{$this->epg->name}\"")
-                        ->body($error)
-                        ->sendToDatabase($this->epg->user);
-
-                    // Update the EPG
-                    $this->epg->update([
-                        'status' => Status::Failed,
-                        'synced' => now(),
-                        'errors' => $error,
-                        'progress' => 100,
-                        'processing' => false,
-                        'processing_started_at' => null,
-                        'processing_phase' => null,
-                    ]);
-
-                    // Fire the epg synced event
-                    event(new SyncCompleted($this->epg));
-
-                    static::scheduleResyncIfNeeded($this->epg);
+                    $this->failImport('Invalid SchedulesDirect credentials. Unable to get results from the API. Please check the credentials and try again.');
 
                     return;
                 } else {
@@ -228,22 +204,19 @@ class ProcessEpgImport implements ShouldQueue
                 // Make sure the directory exists
                 Storage::disk('local')->makeDirectory($epg->folder_path);
 
-                // Get the file path
-                $filePath = Storage::disk('local')->path($epg->file_path);
-
-                // If the file exists, delete it
-                if (Storage::disk('local')->exists($epg->file_path)) {
-                    Storage::disk('local')->delete($epg->file_path);
-                }
+                // Download next to the current guide file. It only replaces that file once the
+                // import has found channels in it, so a failed, truncated or non-XMLTV download
+                // never overwrites the last good guide data (and its cache stays valid).
+                $downloadPath = "{$epg->file_path}.download";
+                Storage::disk('local')->delete($downloadPath);
                 $response = $this->withProviderThrottling(fn () => Http::withUserAgent($userAgent)
-                    ->sink($filePath)
+                    ->sink(Storage::disk('local')->path($downloadPath))
                     ->withOptions(['verify' => $verify])
                     ->timeout(config('dev.epg_download_timeout', 900)) // set timeout based on config
                     ->throw()->get($url->toString()));
 
-                if ($response->ok() && Storage::disk('local')->exists($epg->file_path)) {
-                    // Update the file path
-                    $filePath = Storage::disk('local')->path($epg->file_path);
+                if ($response->ok() && Storage::disk('local')->exists($downloadPath)) {
+                    $filePath = Storage::disk('local')->path($downloadPath);
                 } else {
                     $filePath = null;
                 }
@@ -266,35 +239,7 @@ class ProcessEpgImport implements ShouldQueue
                 $channelReader = new XMLReader;
                 $channelReader->open('compress.zlib://'.$filePath);
             } else {
-                // Log the exception
-                logger()->error("Error processing \"{$this->epg->name}\"");
-
-                // Send notification
-                $error = 'Invalid EPG file. Unable to read or download your EPG file. Please check the URL or uploaded file and try again.';
-                Notification::make()
-                    ->danger()
-                    ->title("Error processing \"{$this->epg->name}\"")
-                    ->body('Please view your notifications for details.')
-                    ->broadcast($this->epg->user);
-                Notification::make()
-                    ->danger()
-                    ->title("Error processing \"{$this->epg->name}\"")
-                    ->body($error)
-                    ->sendToDatabase($this->epg->user);
-
-                // Update the EPG
-                $this->epg->update([
-                    'status' => Status::Failed,
-                    'synced' => now(),
-                    'errors' => $error,
-                    'progress' => 100,
-                    'processing' => false,
-                ]);
-
-                // Fire the epg synced event
-                event(new SyncCompleted($this->epg));
-
-                static::scheduleResyncIfNeeded($this->epg);
+                $this->failImport('Invalid EPG file. Unable to read or download your EPG file. Please check the URL or uploaded file and try again.');
 
                 return;
             }
@@ -320,14 +265,27 @@ class ProcessEpgImport implements ShouldQueue
                 $programmeCount = 0;
                 $seen = [];
 
+                // Read errors are suppressed below, so a file cut off or broken partway through
+                // just stops reading. Track whether the reader got to the end of the guide.
+                $readToEnd = false;
+                libxml_clear_errors();
+
                 // Create a lazy collection to process the XML data
-                LazyCollection::make(function () use (&$programmeCount, &$channelCount, &$seen, $channelReader, $defaultChannelData) {
+                LazyCollection::make(function () use (&$programmeCount, &$channelCount, &$seen, &$readToEnd, $channelReader, $defaultChannelData) {
                     // Loop through the XML data
                     $channelCount = 0;
                     while (@$channelReader->read()) {
                         // Limit the number of items to process
                         if ($channelCount >= $this->maxItems) {
+                            $readToEnd = true;
                             break;
+                        }
+
+                        if ($channelReader->name === 'tv'
+                            && ($channelReader->nodeType == XMLReader::END_ELEMENT
+                                || ($channelReader->nodeType == XMLReader::ELEMENT && $channelReader->isEmptyElement))
+                        ) {
+                            $readToEnd = true;
                         }
 
                         // Only consider XML elements and channel nodes
@@ -414,6 +372,32 @@ class ProcessEpgImport implements ShouldQueue
                 // Close the XMLReaders, all done!
                 $channelReader->close();
 
+                // Parse errors are suppressed above, so an HTML error page or other non-XMLTV
+                // body reads as zero channels. Completing that import would delete every
+                // existing EPG channel and its mappings, so fail and keep the current data.
+                $hasExistingChannels = $epg->channels()->exists();
+                if ($channelCount === 0 && $hasExistingChannels) {
+                    $this->failImport('No channels found in the EPG file. The source may have returned an error page instead of XMLTV guide data. The existing EPG data was kept.', $batchNo);
+
+                    return;
+                }
+
+                // A file that stops partway through would replace the guide with a shorter one.
+                // Keep the existing guide when there is one; a new EPG still imports what parsed,
+                // so a feed that is always malformed at some point still gives a partial guide.
+                if (! $readToEnd && $hasExistingChannels) {
+                    $xmlError = libxml_get_last_error();
+                    $detail = $xmlError ? " (line {$xmlError->line}: ".trim($xmlError->message).')' : '';
+                    $this->failImport("The EPG file ended early or is malformed{$detail}. The existing EPG data was kept.", $batchNo);
+
+                    return;
+                }
+
+                // The download parsed as XMLTV, so it becomes the EPG's guide file
+                if ($downloadPath !== null) {
+                    Storage::disk('local')->move($downloadPath, $epg->file_path);
+                }
+
                 // Update progress
                 $epg->update([
                     'progress' => 15,
@@ -459,35 +443,7 @@ class ProcessEpgImport implements ShouldQueue
                         ProcessEpgImport::scheduleResyncIfNeeded($epg);
                     })->dispatch();
             } else {
-                // Log the exception
-                logger()->error("Error processing \"{$this->epg->name}\"");
-
-                // Send notification
-                $error = 'Invalid EPG file. Unable to read or download your EPG file. Please check the URL or uploaded file and try again.';
-                Notification::make()
-                    ->danger()
-                    ->title("Error processing \"{$this->epg->name}\"")
-                    ->body('Please view your notifications for details.')
-                    ->broadcast($this->epg->user);
-                Notification::make()
-                    ->danger()
-                    ->title("Error processing \"{$this->epg->name}\"")
-                    ->body($error)
-                    ->sendToDatabase($this->epg->user);
-
-                // Update the EPG
-                $this->epg->update([
-                    'status' => Status::Failed,
-                    'synced' => now(),
-                    'errors' => $error,
-                    'progress' => 100,
-                    'processing' => false,
-                    'processing_started_at' => null,
-                    'processing_phase' => null,
-                ]);
-
-                // Fire the epg synced event
-                event(new SyncCompleted($this->epg));
+                $this->failImport('Invalid EPG file. Unable to read or download your EPG file. Please check the URL or uploaded file and try again.');
             }
         } catch (SchedulesDirectRateLimitException $e) {
             // Schedules Direct login limit (4009). A bounded cooldown is already
@@ -522,38 +478,52 @@ class ProcessEpgImport implements ShouldQueue
 
             event(new SyncCompleted($this->epg));
         } catch (Exception $e) {
-            // Log the exception
-            logger()->error("Error processing \"{$this->epg->name}\": {$e->getMessage()}");
-
-            // Send notification
-            Notification::make()
-                ->danger()
-                ->title("Error processing \"{$this->epg->name}\"")
-                ->body('Please view your notifications for details.')
-                ->broadcast($this->epg->user);
-            Notification::make()
-                ->danger()
-                ->title("Error processing \"{$this->epg->name}\"")
-                ->body($e->getMessage())
-                ->sendToDatabase($this->epg->user);
-
-            // Update the EPG
-            $this->epg->update([
-                'status' => Status::Failed,
-                'synced' => now(),
-                'errors' => $e->getMessage(),
-                'progress' => 100,
-                'processing' => false,
-                'processing_started_at' => null,
-                'processing_phase' => null,
-            ]);
-
-            // Fire the epg synced event
-            event(new SyncCompleted($this->epg));
-
-            static::scheduleResyncIfNeeded($this->epg);
+            $this->failImport($e->getMessage(), $batchNo);
+        } finally {
+            // Drop a download that never became the guide file (failed, truncated or not XMLTV)
+            if ($downloadPath !== null) {
+                Storage::disk('local')->delete($downloadPath);
+            }
         }
 
+    }
+
+    /**
+     * Mark the import as failed, notify the owner and queue a resync when the EPG allows it.
+     * Chunk rows already queued for $batchNo are dropped, since no chain will process them.
+     */
+    private function failImport(string $error, ?string $batchNo = null): void
+    {
+        logger()->error("Error processing \"{$this->epg->name}\": {$error}");
+
+        if ($batchNo !== null) {
+            Job::where('batch_no', $batchNo)->delete();
+        }
+
+        Notification::make()
+            ->danger()
+            ->title("Error processing \"{$this->epg->name}\"")
+            ->body('Please view your notifications for details.')
+            ->broadcast($this->epg->user);
+        Notification::make()
+            ->danger()
+            ->title("Error processing \"{$this->epg->name}\"")
+            ->body($error)
+            ->sendToDatabase($this->epg->user);
+
+        $this->epg->update([
+            'status' => Status::Failed,
+            'synced' => now(),
+            'errors' => $error,
+            'progress' => 100,
+            'processing' => false,
+            'processing_started_at' => null,
+            'processing_phase' => null,
+        ]);
+
+        event(new SyncCompleted($this->epg));
+
+        static::scheduleResyncIfNeeded($this->epg);
     }
 
     /**

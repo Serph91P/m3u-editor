@@ -116,6 +116,29 @@ class Series extends Model
     }
 
     /**
+     * Season metadata after a provider refresh: the provider's season info when it sent
+     * any, keeping the TMDB season trailer the provider doesn't carry. FetchTmdbIds only
+     * revisits a season while its episodes still lack TMDB ids, so a trailer dropped here
+     * would otherwise never come back.
+     *
+     * @param  array<string, mixed>|null  $existing
+     * @param  array<string, mixed>  $seasonInfo
+     * @return array<string, mixed>|null
+     */
+    private static function mergeSeasonMetadata(?array $existing, array $seasonInfo): ?array
+    {
+        if ($seasonInfo === []) {
+            return $existing;
+        }
+
+        if (blank($seasonInfo['youtube_trailer'] ?? null) && filled($existing['youtube_trailer'] ?? null)) {
+            $seasonInfo['youtube_trailer'] = $existing['youtube_trailer'];
+        }
+
+        return $seasonInfo;
+    }
+
+    /**
      * Resolve provider season metadata by its explicit season number.
      *
      * Xtream providers commonly return seasons as a zero-indexed JSON list,
@@ -365,6 +388,15 @@ class Series extends Model
                                 }
                             }
                         }
+
+                        // A blank provider plot/cover doesn't wipe the one TMDB filled in.
+                        if (TmdbEnrichment::isTmdbChecked($this->metadata)) {
+                            foreach (TmdbEnrichment::TMDB_FILLED_KEYS as $column) {
+                                if (array_key_exists($column, $update) && blank($update[$column]) && ! blank($this->{$column})) {
+                                    unset($update[$column]);
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -413,7 +445,7 @@ class Series extends Model
                                 'cover_big' => $seasonInfo['cover_big'] ?? $playlistSeason->getRawOriginal('cover_big'),
                                 'series_id' => $this->id,
                                 'import_batch_no' => $batchNo,
-                                'metadata' => $seasonInfo ?: $playlistSeason->metadata,
+                                'metadata' => self::mergeSeasonMetadata($playlistSeason->metadata, $seasonInfo),
                             ]);
                         }
 

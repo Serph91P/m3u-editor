@@ -386,6 +386,31 @@ it('falls back to VOD metadata when the channel year is missing', function () {
         ->assertJsonPath('0.year', 2024);
 });
 
+it('reports the provider added date for vod streams, falling back to created_at', function () {
+    $group = Group::factory()->for($this->user)->create();
+    Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'Provider Dated',
+        'source_added_at' => '2021-03-04 05:06:07',
+        'created_at' => '2026-10-14 00:00:00',
+    ]);
+    Channel::factory()->for($this->playlist)->for($group)->create([
+        'enabled' => true,
+        'is_vod' => true,
+        'title' => 'Undated',
+        'source_added_at' => null,
+        'created_at' => '2026-10-14 00:00:00',
+    ]);
+
+    $streams = collect($this->getJson(getXtreamApiUrl($this->username, $this->password, 'get_vod_streams'))
+        ->assertOk()
+        ->json())->keyBy('name');
+
+    expect($streams['Provider Dated']['added'])->toBe((string) Carbon\Carbon::parse('2021-03-04 05:06:07')->timestamp)
+        ->and($streams['Undated']['added'])->toBe((string) Carbon\Carbon::parse('2026-10-14 00:00:00')->timestamp);
+});
+
 // Tests for get_vod_info - returns VOD channel (movie) info, not Series
 it('returns vod info successfully', function () {
     $group = Group::factory()->for($this->user)->create();
@@ -838,6 +863,35 @@ it('suppresses episode rating on get series info when tmdb vote_count is below t
     $episodes = $response->json('episodes.1');
     expect($episodes)->toHaveCount(1);
     expect($episodes[0]['info']['rating'])->toBe('');
+});
+
+it('returns the season trailer on get series info', function () {
+    $category = Category::factory()->for($this->user)->for($this->playlist)->create();
+    $series = Series::factory()->for($this->playlist)->create([
+        'user_id' => $this->user->id,
+        'category_id' => $category->id,
+        'enabled' => true,
+        'name' => 'Series With Season Trailers',
+        'metadata' => ['tmdb' => ''],
+    ]);
+
+    foreach ([1 => ['youtube_trailer' => 'https://www.youtube.com/watch?v=abc123'], 2 => []] as $seasonNumber => $metadata) {
+        Season::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'category_id' => $category->id,
+            'series_id' => $series->id,
+            'season_number' => $seasonNumber,
+            'metadata' => $metadata,
+        ]);
+    }
+
+    $response = $this->getJson(getXtreamApiUrl($this->username, $this->password, 'get_series_info', ['series_id' => $series->id]));
+
+    $response->assertOk();
+    $trailers = collect($response->json('seasons'))->pluck('youtube_trailer', 'season_number');
+    expect($trailers[1])->toBe('https://www.youtube.com/watch?v=abc123')
+        ->and($trailers[2])->toBe('');
 });
 
 it('surfaces episode rating on get series info when tmdb vote_count is at or above threshold', function () {

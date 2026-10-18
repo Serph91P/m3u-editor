@@ -182,7 +182,7 @@ class EpgViewer extends Component implements HasActions, HasForms
                         // Fetch programme data for Playlist channels if they have an EPG channel
                         if ($updated->epgChannel) {
                             // Fetch programme data for this channel
-                            $programmes = $this->fetchProgrammeData($updated->epgChannel, $channelId);
+                            $programmes = $this->fetchProgrammeData($updated->epgChannel, $channelId, (int) ($updated->tvg_shift ?? 0));
                             $channelData['programmes'] = $programmes;
                         } else {
                             // If no EPG channel, set programmes to empty
@@ -419,7 +419,7 @@ class EpgViewer extends Component implements HasActions, HasForms
     /**
      * Fetch programme data for a channel
      */
-    protected function fetchProgrammeData($epgChannel, $channelId)
+    protected function fetchProgrammeData($epgChannel, $channelId, int $tvgShift = 0)
     {
         try {
             // Get today's date for programme lookup
@@ -449,7 +449,7 @@ class EpgViewer extends Component implements HasActions, HasForms
             $programmes = $cacheService->getCachedProgrammes($epg, $today, [$epgChannel->channel_id]);
 
             // Return programmes for this channel, or empty array if none found
-            return $programmes[$epgChannel->channel_id] ?? [];
+            return EpgCacheService::shiftProgrammes($programmes[$epgChannel->channel_id] ?? [], $tvgShift);
         } catch (Exception $e) {
             Log::error('Failed to fetch programme data', [
                 'channel_id' => $channelId,

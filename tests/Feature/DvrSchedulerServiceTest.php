@@ -358,6 +358,73 @@ it('skips a manual rule whose end time has already passed', function () {
 
 // --- Capacity ---
 
+it('starts a manual recording late and finishes it early when padding is negative', function () {
+    $start = now()->addMinutes(10)->startOfSecond();
+    $end = now()->addMinutes(130)->startOfSecond();
+
+    $rule = DvrRecordingRule::factory()
+        ->for($this->setting, 'dvrSetting')
+        ->for($this->user)
+        ->create([
+            'type' => DvrRuleType::Manual,
+            'manual_start' => $start,
+            'manual_end' => $end,
+            'start_early_seconds' => -3600,
+            'end_late_seconds' => -300,
+        ]);
+
+    $this->service->matchAndSchedule(30);
+
+    $recording = DvrRecording::where('dvr_recording_rule_id', $rule->id)->firstOrFail();
+
+    expect($recording->scheduled_start->equalTo($start->copy()->addHour()))->toBeTrue()
+        ->and($recording->scheduled_end->equalTo($end->copy()->subMinutes(5)))->toBeTrue()
+        ->and($recording->programme_start->equalTo($start))->toBeTrue()
+        ->and($recording->programme_end->equalTo($end))->toBeTrue();
+});
+
+it('does not schedule a manual recording when negative padding leaves no window', function () {
+    $rule = DvrRecordingRule::factory()
+        ->for($this->setting, 'dvrSetting')
+        ->for($this->user)
+        ->create([
+            'type' => DvrRuleType::Manual,
+            'manual_start' => now()->addMinutes(10),
+            'manual_end' => now()->addMinutes(20),
+            'start_early_seconds' => -400,
+            'end_late_seconds' => -400,
+        ]);
+
+    $this->service->matchAndSchedule(30);
+
+    expect(DvrRecording::where('dvr_recording_rule_id', $rule->id)->count())->toBe(0);
+});
+
+it('falls back to the dvr setting default padding when the rule has none', function () {
+    $this->setting->update(['default_start_early_seconds' => 30, 'default_end_late_seconds' => 60]);
+
+    $start = now()->addMinutes(10)->startOfSecond();
+    $end = now()->addMinutes(40)->startOfSecond();
+
+    $rule = DvrRecordingRule::factory()
+        ->for($this->setting, 'dvrSetting')
+        ->for($this->user)
+        ->create([
+            'type' => DvrRuleType::Manual,
+            'manual_start' => $start,
+            'manual_end' => $end,
+            'start_early_seconds' => null,
+            'end_late_seconds' => null,
+        ]);
+
+    $this->service->matchAndSchedule(30);
+
+    $recording = DvrRecording::where('dvr_recording_rule_id', $rule->id)->firstOrFail();
+
+    expect($recording->scheduled_start->equalTo($start->copy()->subSeconds(30)))->toBeTrue()
+        ->and($recording->scheduled_end->equalTo($end->copy()->addSeconds(60)))->toBeTrue();
+});
+
 it('does not schedule when the dvr setting is at capacity', function () {
     $this->setting->update(['max_concurrent_recordings' => 1]);
 

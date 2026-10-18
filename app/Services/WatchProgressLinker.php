@@ -59,6 +59,8 @@ class WatchProgressLinker
 
         if ($progress->content_type === 'episode') {
             if ($progress->episode) {
+                $this->repairSeriesId($progress);
+
                 return true;
             }
 
@@ -67,11 +69,14 @@ class WatchProgressLinker
                 return false;
             }
 
-            // Unlinked manual rows carry no series_id/season/episode yet - fill
-            // them from the episode so get_series_progress can see the row.
+            // series_id always follows the episode: a library flush recreates the
+            // series too, so the row's old value points at a deleted series and
+            // clients can't resolve (or play) the entry. Unlinked manual rows
+            // carry no season/episode yet - fill them from the episode so
+            // get_series_progress can see the row.
             $progress->forceFill([
                 'stream_id' => $replacement->id,
-                'series_id' => $progress->series_id ?? $replacement->series_id,
+                'series_id' => $replacement->series_id,
                 'season_number' => $progress->season_number ?? $replacement->season,
                 'episode_number' => $progress->episode_number ?? $replacement->episode_num,
             ])->save();
@@ -232,6 +237,20 @@ class WatchProgressLinker
         }
 
         return $progress->stream_id === null ? 'keep' : 'delete';
+    }
+
+    /**
+     * Point an episode row's series_id back at its episode's series. Rows
+     * relinked before series_id followed the episode (see ensureLinked()) kept
+     * the deleted pre-flush series id, so they resolve server side but clients
+     * looking the series up by that id treat the entry as gone.
+     */
+    private function repairSeriesId(ViewerWatchProgress $progress): void
+    {
+        $seriesId = (int) $progress->episode->series_id;
+        if ($seriesId && $progress->series_id !== $seriesId) {
+            $progress->forceFill(['series_id' => $seriesId])->save();
+        }
     }
 
     /**

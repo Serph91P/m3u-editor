@@ -374,6 +374,7 @@ class ManageIntegrationSettings extends BaseSettingsPage
                                     ])
                                     ->schema([
                                         TextInput::make('mediaflow_proxy_url')
+                                            ->extraInputAttributes(['class' => 'privacy-sensitive'])
                                             ->label(__('Proxy URL'))
                                             ->columnSpan(1)
                                             ->placeholder(__('http://your-mediaflow-host:8888')),
