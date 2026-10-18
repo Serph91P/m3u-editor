@@ -187,10 +187,21 @@ class DownloadCachedContentFile implements ShouldQueue
             $this->managedCapacityReservation = $capacity->reservationForFile($file->id);
             $snapshot = app(ManagedCacheCapacitySnapshotSource::class)->snapshotFor($item);
             if ($snapshot === null || ! $capacity->canUseReservation($this->managedCapacityReservation, $snapshot)) {
-                $this->markFailed($file, 'Managed cache capacity reservation is no longer current before request open.');
+                $capacity->release($this->managedCapacityReservation);
+                $this->managedCapacityReservation = $snapshot === null ? null : $capacity->reserve($snapshot);
+            }
+
+            if ($this->managedCapacityReservation === null) {
+                // Queue delays may outlive a reservation. Keep the bounded
+                // existing job pending until fresh account counters allow it;
+                // never open a source or turn temporary capacity into failure.
+                $file->update(['status' => CachedContentFileStatus::Pending]);
+                $this->release(self::BUSY_RELEASE_SECONDS);
 
                 return;
             }
+
+            $capacity->attachToFile($file->id, $this->managedCapacityReservation);
         }
 
         $this->progressFile = $file;
