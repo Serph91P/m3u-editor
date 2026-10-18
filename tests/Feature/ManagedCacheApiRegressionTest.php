@@ -1,5 +1,7 @@
 <?php
 
+use App\Jobs\DownloadCachedContentFile;
+use App\Jobs\ReleaseWatchedManagedCache;
 use App\Models\CachedContentActivityLease;
 use App\Models\CachedContentFile;
 use App\Models\Channel;
@@ -11,6 +13,7 @@ use App\Models\MediaServerIntegration;
 use App\Models\Playlist;
 use App\Models\PlaylistAuth;
 use App\Models\User;
+use App\Services\CachedContentRetentionService;
 use App\Services\EmbyPublicationCatalogService;
 use App\Services\ManagedCacheCapacitySnapshot;
 use App\Services\ManagedCacheCapacitySnapshotSource;
@@ -116,7 +119,7 @@ it('runs the editor prefetch download and watched grace lifecycle with fresh Xtr
         ...$this->payload, 'action' => 'm3u_editor_cache_prefetch', 'targets' => $targets,
     ])->assertOk()->assertJsonPath('data.results.0.status', 'queued');
     $file = CachedContentFile::sole();
-    (new \App\Jobs\DownloadCachedContentFile($file->id))->handle();
+    (new DownloadCachedContentFile($file->id))->handle();
     $file->refresh();
     expect($file->status->value)->toBe('completed');
     Storage::disk($file->disk)->assertExists($file->file_path);
@@ -131,8 +134,8 @@ it('runs the editor prefetch download and watched grace lifecycle with fresh Xtr
         'watched' => true, 'cohort_complete' => false, 'delete_after_hours' => 0];
     $this->postJson('/player_api.php', [...$release, 'request_id' => (string) Str::uuid()])->assertOk();
     $this->travel(16)->minutes();
-    $job = app(\App\Jobs\ReleaseWatchedManagedCache::class);
-    $retention = app(\App\Services\CachedContentRetentionService::class);
+    $job = app(ReleaseWatchedManagedCache::class);
+    $retention = app(CachedContentRetentionService::class);
     $job->handle($retention);
     expect($file->fresh())->not->toBeNull(); // one selected profile remains unwatched
 

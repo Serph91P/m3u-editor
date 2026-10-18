@@ -40,6 +40,7 @@ beforeEach(function () {
     $this->snapshots = new class implements ManagedCacheCapacitySnapshotSource
     {
         public ?ManagedCacheCapacitySnapshot $snapshot;
+
         public int $calls = 0;
 
         public function __construct()
