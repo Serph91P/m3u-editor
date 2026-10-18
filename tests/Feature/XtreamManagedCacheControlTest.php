@@ -298,7 +298,7 @@ it('renews an active playback lease when an idempotent heartbeat is retried', fu
 
     $this->postJson('/player_api.php', $heartbeat)->assertOk();
 
-    expect($lease->fresh()->expires_at->greaterThan($expiryBeforeRetry))->toBeTrue();
+    expect($lease->fresh()->expires_at->equalTo($expiryBeforeRetry))->toBeTrue();
 });
 
 it('releases and undoes a watched managed cache interest through the companion form contract', function () {

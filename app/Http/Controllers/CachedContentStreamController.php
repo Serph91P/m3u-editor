@@ -94,6 +94,7 @@ class CachedContentStreamController extends Controller
             mimeType: $file->resolveMimeType(),
             filename: basename($file->file_path),
             range: $request->header('Range'),
+            onProgress: fn () => $this->readerLease && $this->activity->renewReader($this->readerLease),
             onFinish: fn () => $this->releaseReaderLease(),
         );
     }

@@ -45,7 +45,15 @@ class CachedContentDispatchService
      */
     public function isEnabled(): bool
     {
-        return (bool) (app(GeneralSettings::class)->enable_cache ?? false);
+        /** @var GeneralSettings $settings */
+        $settings = app(GeneralSettings::class);
+        // Tests and callers may deliberately bind a partial settings double;
+        // only real settings instances can be reloaded from persistent state.
+        if ($settings::class === GeneralSettings::class) {
+            $settings->refresh();
+        }
+
+        return (bool) ($settings->enable_cache ?? false);
     }
 
     /**
@@ -96,7 +104,7 @@ class CachedContentDispatchService
         $existing = $item->cachedContentFile()->first();
 
         if ($existing) {
-            if (! $automatic) {
+            if (! $automatic && $managedBy === null) {
                 $existing->keep();
 
                 // Cache Now on a title still waiting on the arr uses the
@@ -140,7 +148,7 @@ class CachedContentDispatchService
                 'user_id' => $playlist->user_id,
                 'playlist_id' => $playlist->id,
                 ...CachedContentFile::buildAttributes($item, $automatic),
-                'managed_by' => $managedBy,
+                ...($managedBy === null ? [] : ['managed_by' => $managedBy]),
                 'status' => CachedContentFileStatus::Pending,
             ]);
         } catch (UniqueConstraintViolationException) {

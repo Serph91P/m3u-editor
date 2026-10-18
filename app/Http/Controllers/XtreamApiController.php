@@ -16,6 +16,7 @@ use App\Facades\ProxyFacade;
 use App\Jobs\FetchTmdbIds;
 use App\Jobs\RefreshMediaServerLibraryJob;
 use App\Models\ArrIntegration;
+use App\Models\CachedContentActivityLease;
 use App\Models\CachedContentFile;
 use App\Models\Category;
 use App\Models\Channel;
@@ -3767,14 +3768,51 @@ class XtreamApiController extends Controller
         }
 
         $mappingIdentity = $mappingValidator->validated();
-        $mapping = app(ManagedCacheControlService::class)->resolveActiveMapping(
+        $action = (string) $request->input('action');
+        $control = app(ManagedCacheControlService::class);
+        $mapping = $control->resolveActiveMapping(
             $effectivePlaylist->user,
             $mappingIdentity['integration_id'],
             $mappingIdentity['mapping_uuid'],
             $mappingIdentity['revision'],
         );
+
+        // A stop is allowed to close the exact lease issued by an older
+        // generation. It cannot target a newly resolved source or any other
+        // session after the generation moved on.
+        if ($mapping === null && $action === 'm3u_editor_cache_playback' && $request->input('state') === 'stop') {
+            $candidate = EmbyLibraryMapping::query()
+                ->where('user_id', $effectivePlaylist->user_id)
+                ->where('media_server_integration_id', $mappingIdentity['integration_id'])
+                ->where('uuid', $mappingIdentity['mapping_uuid'])
+                ->where('enabled', true)
+                ->where('is_managed', true)
+                ->first();
+            $hasExactLease = $candidate !== null && CachedContentActivityLease::query()
+                ->where('integration_id', $candidate->media_server_integration_id)
+                ->where('kind', 'playback')
+                ->where('lease_id', (string) $request->input('session_id'))
+                ->where('revision', $mappingIdentity['revision'])
+                ->exists();
+            $mapping = $hasExactLease ? $candidate : null;
+        }
         if (! $mapping) {
-            return $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
+            $mappingExists = EmbyLibraryMapping::query()
+                ->where('user_id', $effectivePlaylist->user_id)
+                ->where('media_server_integration_id', $mappingIdentity['integration_id'])
+                ->where('uuid', $mappingIdentity['mapping_uuid'])
+                ->where('enabled', true)
+                ->where('is_managed', true)
+                ->exists();
+
+            return $mappingExists
+                ? $this->requestError('stale_revision', 'The managed mapping revision is not current.', 409)
+                : $this->requestError('mapping_not_found', 'The managed mapping was not found.', 404);
+        }
+
+        if ($action === 'm3u_editor_cache_prefetch'
+            && ! hash_equals((string) $mapping->last_planned_revision, $mappingIdentity['revision'])) {
+            return $this->requestError('stale_revision', 'The managed mapping revision is not current.', 409);
         }
 
         $validator = Validator::make($request->all(), [
@@ -3818,6 +3856,27 @@ class XtreamApiController extends Controller
             }
 
             $validated = [...$validated, ...$releaseValidator->validated()];
+        }
+
+        // Heartbeats only renew their lease. They are intentionally not audit
+        // events: a player may emit them frequently and they do not alter the
+        // managed cache cohort or dispatch work.
+        if ($action === 'm3u_editor_cache_playback' && $validated['state'] === 'heartbeat') {
+            $target = $validated['targets'][0];
+            app(CachedContentActivityService::class)->acquirePlayback(
+                $effectivePlaylist->user,
+                $mapping->integration,
+                $validated['session_id'],
+                $validated['sequence'],
+                [
+                    'mapping_uuid' => $mapping->uuid,
+                    'revision' => $validated['revision'],
+                    'canonical_id' => $target['canonical_id'],
+                    'variant_key' => $target['variant_key'],
+                ],
+            );
+
+            return $this->requestSuccess(['request_id' => $validated['request_id'], 'results' => []]);
         }
         $control = app(ManagedCacheControlService::class);
         $resolvedTargets = [];

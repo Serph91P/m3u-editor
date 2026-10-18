@@ -15,7 +15,7 @@ class CachedContentActivityService
 {
     private const int PLAYBACK_TTL_SECONDS = 120;
 
-    private const int READER_TTL_SECONDS = 30;
+    private const int READER_TTL_SECONDS = 120;
 
     private const int LOCK_TIMEOUT_SECONDS = 10;
 
@@ -45,13 +45,6 @@ class CachedContentActivityService
 
         $now = now();
         if ($lease->exists && $sequence === $lease->sequence) {
-            if ($lease->expires_at?->isFuture()) {
-                $lease->update([
-                    'expires_at' => $now->copy()->addSeconds(self::PLAYBACK_TTL_SECONDS),
-                    'last_activity_at' => $now,
-                ]);
-            }
-
             return $lease;
         }
         $lease->fill([
@@ -72,17 +65,31 @@ class CachedContentActivityService
 
     public function stopPlayback(MediaServerIntegration $integration, string $leaseId, int $sequence): void
     {
-        CachedContentActivityLease::query()
+        $lease = CachedContentActivityLease::query()
             ->where('integration_id', $integration->id)
             ->where('kind', 'playback')
             ->where('lease_id', $leaseId)
             ->where('sequence', '<', $sequence)
-            ->update([
-                'sequence' => $sequence,
-                'expires_at' => now(),
-                'last_activity_at' => now(),
-                'terminal_until' => now()->addSeconds(self::PLAYBACK_TTL_SECONDS),
-            ]);
+            ->first();
+        if ($lease === null) {
+            return;
+        }
+
+        $now = now();
+        $lease->update([
+            'sequence' => $sequence,
+            'expires_at' => $now,
+            'last_activity_at' => $now,
+            'terminal_until' => $now->copy()->addSeconds(self::PLAYBACK_TTL_SECONDS),
+        ]);
+
+        ManagedCacheInterest::query()
+            ->where('integration_id', $lease->integration_id)
+            ->where('mapping_uuid', $lease->mapping_uuid)
+            ->where('canonical_id', $lease->canonical_id)
+            ->where('variant_key', $lease->variant_key)
+            ->whereNotNull('watched_at')
+            ->update(['release_after' => $now->copy()->addMinutes(15)]);
     }
 
     /** @param array{mapping_uuid: string, revision: string, canonical_id: string, variant_key: string} $target */
@@ -153,6 +160,15 @@ class CachedContentActivityService
     {
         $lease->update([
             'expires_at' => now(),
+            'last_activity_at' => now(),
+        ]);
+    }
+
+    /** Renew the active reader while bytes are still being streamed. */
+    public function renewReader(CachedContentActivityLease $lease): void
+    {
+        $lease->update([
+            'expires_at' => now()->addSeconds(self::READER_TTL_SECONDS),
             'last_activity_at' => now(),
         ]);
     }
