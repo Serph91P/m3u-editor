@@ -115,11 +115,7 @@ it('review transport recovery must not plan an owned library without applying NF
     $this->scenario = 'exception';
     reviewer1538Publish($this)->assertHasNoActionErrors();
     $mapping = EmbyLibraryMapping::query()->sole();
-    fwrite(STDERR, '\nTRANSPORT '.json_encode([
-        'status' => $mapping->status, 'confirmed' => $mapping->managed_library_creation_confirmed_at !== null,
-        'applied' => $mapping->library_options_applied_at !== null,
-        'create' => $this->createRequests, 'options' => $this->optionsRequests,
-    ]).'\n');
+
     expect($mapping->status === 'planned' && $mapping->library_options_applied_at === null)->toBeFalse();
 });
 
@@ -131,11 +127,7 @@ it('review delayed stable ID must not plan before options are applied', function
     $this->inventoryReady = true;
     $component->callAction(TestAction::make('reconcile')->table($mapping));
     $mapping->refresh();
-    fwrite(STDERR, '\nDELAYED '.json_encode([
-        'status' => $mapping->status, 'confirmed' => $mapping->managed_library_creation_confirmed_at !== null,
-        'applied' => $mapping->library_options_applied_at !== null,
-        'create' => $this->createRequests, 'options' => $this->optionsRequests,
-    ]).'\n');
+
     expect($mapping->status === 'planned' && $mapping->library_options_applied_at === null)->toBeFalse();
 });
 
@@ -143,10 +135,7 @@ it('review two new publications must never apply options to an unowned preexisti
     $this->scenario = 'foreign';
     reviewer1538Publish($this, 0);
     reviewer1538Publish($this, 1);
-    fwrite(STDERR, '\nFOREIGN '.json_encode([
-        'mappings' => EmbyLibraryMapping::query()->count(), 'create' => $this->createRequests,
-        'discovery' => $this->discoveryRequests, 'options' => $this->optionsRequests,
-    ]).'\n');
+
     expect($this->optionsRequests)->toBe(0)
         ->and($this->discoveryRequests)->toBe(0)
         ->and(EmbyLibraryMapping::query()->count())->toBe(0);
@@ -158,12 +147,7 @@ it('review once applied options stay applied when another source reuses owned li
     expect($first->managed_library_creation_confirmed_at)->not->toBeNull()
         ->and($first->library_options_applied_at)->not->toBeNull();
     reviewer1538Publish($this, 1)->assertHasNoActionErrors();
-    fwrite(STDERR, '\nREUSE '.json_encode([
-        'mappings' => EmbyLibraryMapping::query()->count(),
-        'create' => $this->createRequests,
-        'discovery' => $this->discoveryRequests,
-        'options' => $this->optionsRequests,
-    ]).'\n');
+
     expect($this->createRequests)->toBe(1)
         ->and($this->optionsRequests)->toBe(1)
         ->and($this->discoveryRequests)->toBe(1);
@@ -173,12 +157,7 @@ it('review budget transport recovery uses the preflight discovery once', functio
     $this->scenario = 'exception';
     reviewer1538Publish($this)->assertHasNoActionErrors();
     $mapping = EmbyLibraryMapping::query()->sole();
-    fwrite(STDERR, '\nBUDGET '.json_encode([
-        'status' => $mapping->status,
-        'discovery' => $this->discoveryRequests,
-        'options' => $this->optionsRequests,
-        'create' => $this->createRequests,
-    ]).'\n');
+
     expect($mapping->library_options_applied_at)->not->toBeNull()
         ->and($this->createRequests)->toBe(1)
         ->and($this->optionsRequests)->toBe(1)
@@ -203,13 +182,7 @@ it('review retry transport recovery keeps ID and ownership after options failure
     $this->failOptions = false;
     $component->callAction(TestAction::make('reconcile')->table($mapping));
     $mapping->refresh();
-    fwrite(STDERR, '\nRETRY '.json_encode([
-        'status' => $mapping->status,
-        'initial_discovery' => $beforeDiscovery,
-        'retry_discovery' => $this->discoveryRequests - $beforeDiscovery,
-        'options' => $this->optionsRequests,
-        'create' => $this->createRequests,
-    ]).'\n');
+
     expect($mapping->status)->toBe('planned')
         ->and($mapping->target_library_id)->toBe('review-library')
         ->and($mapping->library_options_applied_at)->not->toBeNull()

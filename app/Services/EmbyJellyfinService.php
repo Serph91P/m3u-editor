@@ -317,7 +317,7 @@ class EmbyJellyfinService implements MediaServer
             if ($existingLibrary !== null) {
                 $drift = ! $matchesRequest($existingLibrary);
 
-                if ($managed && ! $libraryOptionsApplied && ! $drift) {
+                if ($managed && $libraryOwnershipConfirmed && ! $libraryOptionsApplied && ! $drift) {
                     return $this->applyManagedLibraryOptions($existingLibrary, $collectionType);
                 }
 

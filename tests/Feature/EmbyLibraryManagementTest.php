@@ -1174,6 +1174,35 @@ it('does not mutate an unproven matching user library during managed creation', 
     Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
 });
 
+it('does not configure an existing library by ID without confirmed ownership', function (string $collectionType) {
+    Http::preventStrayRequests();
+    Http::fake([
+        'https://emby.test:8096/Library/VirtualFolders' => Http::response([[
+            'ItemId' => 'existing-library',
+            'Name' => 'Existing Library',
+            'CollectionType' => $collectionType,
+            'Locations' => ['/srv/emby/existing'],
+        ]]),
+    ]);
+
+    $result = MediaServerService::make($this->integration)->createLibrary(
+        name: 'Existing Library',
+        collectionType: $collectionType,
+        paths: ['/srv/emby/existing'],
+        refreshLibrary: false,
+        libraryId: 'existing-library',
+        managed: true,
+        libraryOwnershipConfirmed: false,
+    );
+
+    expect($result['success'])->toBeTrue()
+        ->and($result['created'])->toBeFalse()
+        ->and($result['library_options_applied'])->toBeFalse();
+    Http::assertSentCount(1);
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Libraries/AvailableOptions'));
+    Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST');
+})->with(['movies', 'tvshows']);
+
 it('retries failed option application without creating a second library', function () {
     Http::preventStrayRequests();
     $inventoryRequests = 0;
@@ -1226,6 +1255,7 @@ it('retries failed option application without creating a second library', functi
         refreshLibrary: false,
         managed: true,
         libraryId: 'managed-library',
+        libraryOwnershipConfirmed: true,
     );
 
     expect($retry['success'])->toBeTrue()
