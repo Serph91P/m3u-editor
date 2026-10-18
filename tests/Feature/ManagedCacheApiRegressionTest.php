@@ -67,6 +67,36 @@ it('refuses new prefetch when applied generation differs from planned', function
     expect(CachedContentFile::count())->toBe(0);
 });
 
+it('queues each requested target while an account prefetch slot is already reserved', function () {
+    $this->channel->update(['tmdb_id' => 900001]);
+    Channel::factory()->for($this->user)->createQuietly([
+        'playlist_id' => $this->channel->playlist_id,
+        'group_id' => $this->channel->group_id,
+        'enabled' => true, 'is_vod' => true, 'container_extension' => 'mkv',
+        'tmdb_id' => 900002,
+    ]);
+    app()->instance(ManagedCacheCapacitySnapshotSource::class, new class implements ManagedCacheCapacitySnapshotSource
+    {
+        public function snapshotFor(Channel|Episode $item): ?ManagedCacheCapacitySnapshot
+        {
+            return new ManagedCacheCapacitySnapshot('multi-target-account', 3, 1, 0);
+        }
+    });
+    $items = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping)['items'];
+    expect($items)->toHaveCount(2);
+    $targets = array_map(fn ($item) => [
+        'canonical_id' => $item['canonical_id'], 'variant_key' => $item['variants'][0]['key'],
+    ], $items);
+
+    $this->postJson('/player_api.php', [
+        ...$this->payload, 'action' => 'm3u_editor_cache_prefetch', 'targets' => $targets,
+    ])->assertOk()
+        ->assertJsonPath('data.results.0.status', 'queued')
+        ->assertJsonPath('data.results.1.status', 'queued');
+
+    expect(CachedContentFile::where('managed_by', 'managed_publishing')->count())->toBe(2);
+});
+
 it('permits exact old session stop after applied revision changes', function () {
     $session = (string) Str::uuid();
     $start = [...$this->payload, 'action' => 'm3u_editor_cache_playback', 'session_id' => $session, 'sequence' => 1, 'state' => 'start'];
