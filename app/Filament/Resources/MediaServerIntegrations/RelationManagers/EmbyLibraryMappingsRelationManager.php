@@ -1030,7 +1030,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 : ($aborted['success']
                     ? __('Emby could not create the managed library. Retry after checking the companion version and administrator credential.')
                     : __('Emby could not create the managed library. Retry after checking the companion version and administrator credential. Companion cleanup is still pending and will be retried with the same operation.'));
-            if ($aborted['success'] || $matchedUnownedLibrary) {
+            if ($aborted['success']) {
                 EmbyLibraryMapping::query()->whereKey($intentIds)->delete();
             }
             throw ValidationException::withMessages([
@@ -1055,7 +1055,9 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             'managed' => true,
             'pending' => ! $libraryIsConfirmed || ! $committed['success'],
             'intent_ids' => $intentIds,
-            'created' => ($result['created'] ?? false) || $knownLibraryId !== null,
+            'created' => ($result['success'] && ($result['created'] ?? false))
+                || $libraryIsConfirmed
+                || $knownLibraryId !== null,
             'library_options_applied' => $result['library_options_applied'] ?? false,
             'library_options_summary' => $result['library_options_summary'] ?? null,
             'error_summary' => ! $result['success'] && $libraryIsConfirmed
@@ -1639,6 +1641,49 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             return;
         }
 
+        // A delayed inventory ID must be durably recorded before the separate
+        // managed-options phase can make either of its outbound requests.
+        // Resolving by the confirmed create's name/path is deliberately
+        // read-only: it must neither repeat the create nor mutate options.
+        if ($mapping->is_managed
+            && $mapping->managed_library_creation_confirmed_at !== null
+            && $mapping->target_library_id === null) {
+            $resolution = MediaServerService::make($this->ownerRecord)->createLibrary(
+                $mapping->target_library_name,
+                $mapping->collection_type,
+                [$mapping->output_path],
+                false,
+                createIfMissing: false,
+            );
+            $resolvedLibraryId = $resolution['library']['id'] ?? null;
+
+            if (! $resolution['success'] || ! is_string($resolvedLibraryId) || $resolvedLibraryId === '') {
+                $mapping->updateQuietly([
+                    'last_planned_revision' => null,
+                    'status' => 'pending',
+                    'status_summary' => __('Pending'),
+                    'error_summary' => $resolution['success']
+                        ? null
+                        : EmbyLibraryMapping::redactSummary($resolution['message']),
+                ]);
+
+                Notification::make()
+                    ->warning()
+                    ->title(__('Pending'))
+                    ->send();
+
+                return;
+            }
+
+            $mapping->updateQuietly(['target_library_id' => $resolvedLibraryId]);
+
+            // Re-enter only after durable ID persistence authorizes applying
+            // managed options to this library.
+            $this->reconcile($mapping->fresh());
+
+            return;
+        }
+
         // A companion-prepared library is retried even after an earlier create
         // request: createLibrary() only creates once a fail-closed inventory shows
         // no library with this name or path, so an ambiguous earlier attempt that
@@ -1654,7 +1699,8 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             $mapping->target_library_id,
             createIfMissing: $mapping->library_create_requested_at === null || $preparedPath !== null,
             managed: $mapping->is_managed && ($mapping->managed_library_creation_confirmed_at !== null
-                || ($mapping->target_library_id === null && $mapping->library_create_requested_at === null)),
+                || ($mapping->target_library_id === null
+                    && ($mapping->library_create_requested_at === null || $preparedPath !== null))),
             libraryOptionsApplied: $mapping->library_options_applied_at !== null,
             libraryOwnershipConfirmed: $mapping->managed_library_creation_confirmed_at !== null,
         );
@@ -1662,8 +1708,24 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         if ($result['created']) {
             $mapping->updateQuietly(['managed_library_creation_confirmed_at' => now()]);
         }
-        if (($result['library_options_applied'] ?? false) && $mapping->library_options_applied_at === null) {
-            $mapping->updateQuietly(['library_options_applied_at' => now()]);
+        if (($result['library_options_applied'] ?? false)) {
+            $targetLibraryId = $result['library']['id'] ?? $mapping->target_library_id;
+            EmbyLibraryMapping::query()
+                ->where('media_server_integration_id', $mapping->media_server_integration_id)
+                ->where('is_managed', true)
+                ->where('target_library_name', $mapping->target_library_name)
+                ->where('collection_type', $mapping->collection_type)
+                ->whereNotNull('managed_library_creation_confirmed_at')
+                ->where(function ($query) use ($targetLibraryId): void {
+                    $query->whereNull('target_library_id')
+                        ->orWhere('target_library_id', $targetLibraryId);
+                })
+                ->update([
+                    'target_library_id' => $targetLibraryId,
+                    'library_options_applied_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            $mapping->refresh();
         }
 
         if (! $result['success']) {

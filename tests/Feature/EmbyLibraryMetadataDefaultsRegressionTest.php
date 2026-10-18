@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\EmbyPublicationCatalogService;
 use Filament\Actions\Testing\TestAction;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
@@ -47,7 +48,9 @@ beforeEach(function () {
             return Http::response([
                 'CapabilityVersion' => 1, 'IntegrationId' => $this->integration->id,
                 'OperationId' => $request->data()['OperationId'], 'PreparedPath' => $this->path,
-                'State' => str_ends_with($request->url(), '/Commit') ? 'committed' : 'prepared',
+                'State' => str_ends_with($request->url(), '/Commit')
+                    ? 'committed'
+                    : (str_ends_with($request->url(), '/Abort') ? 'aborted' : 'prepared'),
                 'Success' => true,
             ]);
         }
@@ -218,4 +221,160 @@ it('review retry transport recovery keeps ID and ownership after options failure
     expect($this->createRequests)->toBe(1)
         ->and($this->optionsRequests)->toBe(2)
         ->and($this->discoveryRequests - $beforeDiscovery)->toBe(1);
+});
+
+it('keeps the library-wide applied state when a second source reuses an owned library', function () {
+    reviewer1538Publish($this, 0)->assertHasNoActionErrors();
+    $component = reviewer1538Publish($this, 1)->assertHasNoActionErrors();
+    $second = EmbyLibraryMapping::query()->latest('id')->firstOrFail();
+
+    expect($second->status)->toBe('planned')
+        ->and($second->managed_library_creation_confirmed_at)->not->toBeNull()
+        ->and($second->library_options_applied_at)->not->toBeNull()
+        ->and(app(EmbyPublicationCatalogService::class)->buildForUser($this->user)['mappings'])->toHaveCount(2)
+        ->and($this->createRequests)->toBe(1)
+        ->and($this->discoveryRequests)->toBe(1)
+        ->and($this->optionsRequests)->toBe(1);
+
+    $component->callAction(TestAction::make('reconcile')->table($second));
+    $second->refresh();
+
+    expect($second->status)->toBe('planned')
+        ->and($second->library_options_applied_at)->not->toBeNull()
+        ->and($this->createRequests)->toBe(1)
+        ->and($this->discoveryRequests)->toBe(1)
+        ->and($this->optionsRequests)->toBe(1);
+});
+
+it('persists a delayed stable ID before managed option discovery and application', function () {
+    $this->scenario = 'delayed';
+    $component = reviewer1538Publish($this)->assertHasNoActionErrors();
+    $mapping = EmbyLibraryMapping::query()->sole();
+    $observedIds = [];
+
+    Http::globalRequestMiddleware(function ($request) use ($mapping, &$observedIds) {
+        $path = $request->getUri()->getPath();
+        if (str_contains($path, '/Libraries/AvailableOptions') || str_contains($path, '/Library/VirtualFolders/LibraryOptions')) {
+            $observedIds[] = $mapping->fresh()->target_library_id;
+        }
+
+        return $request;
+    });
+
+    $this->inventoryReady = true;
+    $component->callAction(TestAction::make('reconcile')->table($mapping));
+    $mapping->refresh();
+
+    expect($observedIds)->toBe(['review-library', 'review-library'])
+        ->and($mapping->status)->toBe('planned')
+        ->and($mapping->target_library_id)->toBe('review-library')
+        ->and($mapping->library_options_applied_at)->not->toBeNull()
+        ->and($this->createRequests)->toBe(1)
+        ->and($this->discoveryRequests)->toBe(2)
+        ->and($this->optionsRequests)->toBe(1);
+});
+
+it('shares a completed managed-options apply between pending sources that resolve sequentially', function () {
+    $this->scenario = 'delayed';
+    $component = Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $this->integration,
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('create')->table(), [
+        'publication_type' => 'movies',
+        'sources' => ['vod:'.$this->groups[0]->id, 'vod:'.$this->groups[1]->id],
+        'destination' => '__new__',
+        'new_library_name' => 'Managed Movies',
+    ])->assertHasNoActionErrors();
+    $mappings = EmbyLibraryMapping::query()->orderBy('id')->get();
+
+    expect($mappings)->toHaveCount(2)
+        ->and($mappings->every(fn (EmbyLibraryMapping $mapping): bool => $mapping->status === 'pending'
+            && $mapping->managed_library_creation_confirmed_at !== null
+            && $mapping->target_library_id === null))->toBeTrue()
+        ->and($this->createRequests)->toBe(1)
+        ->and($this->discoveryRequests)->toBe(1)
+        ->and($this->optionsRequests)->toBe(0);
+
+    $this->inventoryReady = true;
+    foreach ($mappings as $mapping) {
+        $component->callAction(TestAction::make('reconcile')->table($mapping));
+    }
+
+    expect($mappings->every(fn (EmbyLibraryMapping $mapping): bool => $mapping->fresh()->status === 'planned'
+        && $mapping->fresh()->target_library_id === 'review-library'
+        && $mapping->fresh()->library_options_applied_at !== null))->toBeTrue()
+        ->and(app(EmbyPublicationCatalogService::class)->buildForUser($this->user)['mappings'])->toHaveCount(2)
+        ->and($this->createRequests)->toBe(1)
+        ->and($this->discoveryRequests)->toBe(2)
+        ->and($this->optionsRequests)->toBe(1);
+});
+
+it('retains an unowned cleanup intent until a foreign-match abort retry succeeds', function () {
+    Http::swap(new Factory);
+    Http::preventStrayRequests();
+    $abortFails = true;
+    $abortRequests = 0;
+    $operationIds = [];
+    Http::fake(function (Request $request) use (&$abortFails, &$abortRequests, &$operationIds) {
+        if (str_ends_with($request->url(), '/M3uEditor/Managed/Setup/V1')) {
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $this->integration->id,
+                'ConfirmedRoot' => '/config/plugins/m3u-editor/managed-publishing',
+                'Ready' => true,
+                'Result' => 'Ready',
+            ]);
+        }
+        if (str_contains($request->url(), '/M3uEditor/Managed/Libraries/V1/')) {
+            $operationIds[] = $request->data()['OperationId'];
+            $aborting = str_ends_with($request->url(), '/Abort');
+            if ($aborting) {
+                $abortRequests++;
+                if ($abortFails) {
+                    return Http::response([], 500);
+                }
+            }
+
+            return Http::response([
+                'CapabilityVersion' => 1,
+                'IntegrationId' => $this->integration->id,
+                'OperationId' => $request->data()['OperationId'],
+                'PreparedPath' => $this->path,
+                'State' => $aborting ? 'aborted' : 'prepared',
+                'Success' => true,
+            ]);
+        }
+        if (str_ends_with($request->url(), '/Library/VirtualFolders') && $request->method() === 'GET') {
+            return Http::response([[
+                'ItemId' => 'foreign-library',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => [$this->path],
+            ]]);
+        }
+
+        throw new RuntimeException('Unexpected synthetic request.');
+    });
+
+    reviewer1538Publish($this, 0)->assertHasActionErrors();
+    $intent = EmbyLibraryMapping::query()->sole();
+    expect($intent->status)->toBe('cleanup_pending')
+        ->and($intent->target_library_id)->toBeNull()
+        ->and($intent->managed_library_creation_confirmed_at)->toBeNull()
+        ->and($intent->library_options_applied_at)->toBeNull()
+        ->and($abortRequests)->toBe(1);
+
+    reviewer1538Publish($this, 1)->assertHasActionErrors();
+    expect(EmbyLibraryMapping::query()->sole()->is($intent))->toBeTrue()
+        ->and($abortRequests)->toBe(1);
+
+    $abortFails = false;
+    Livewire::test(EmbyLibraryMappingsRelationManager::class, [
+        'ownerRecord' => $this->integration->fresh(),
+        'pageClass' => EditMediaServerIntegration::class,
+    ])->callAction(TestAction::make('reconcile')->table($intent->fresh()));
+
+    expect(EmbyLibraryMapping::query()->count())->toBe(0)
+        ->and($abortRequests)->toBe(2)
+        ->and(array_unique($operationIds))->toHaveCount(1);
 });

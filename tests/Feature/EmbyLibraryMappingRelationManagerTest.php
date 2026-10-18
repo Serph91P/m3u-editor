@@ -2505,6 +2505,12 @@ it('resolves a pending managed library from a later exact listing without duplic
                 'Name' => 'Managed Movies',
                 'CollectionType' => 'movies',
                 'Locations' => ['/srv/emby/managed/movies'],
+            ]], 200)
+            ->push([[
+                'ItemId' => 'managed-library-1',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => ['/srv/emby/managed/movies'],
             ]], 200),
         'https://emby.test:8096/Libraries/AvailableOptions*' => Http::response([
             'MetadataReaders' => [['Name' => 'NFO', 'DefaultEnabled' => true]],
@@ -2913,6 +2919,12 @@ it('persists a pending mapping when a newly created library is not immediately i
             ->push([], 200)
             ->push([], 204)
             ->push([], 200)
+            ->push([[
+                'ItemId' => 'managed-library',
+                'Name' => 'Managed Movies',
+                'CollectionType' => 'movies',
+                'Locations' => [$preparedPath],
+            ]], 200)
             ->push([[
                 'ItemId' => 'managed-library',
                 'Name' => 'Managed Movies',

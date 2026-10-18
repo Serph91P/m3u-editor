@@ -22,6 +22,7 @@ trait DoesNotSupportLibraryCreation
         bool $createIfMissing = true,
         bool $managed = false,
         bool $libraryOptionsApplied = false,
+        bool $libraryOwnershipConfirmed = false,
     ): array {
         return [
             'success' => false,

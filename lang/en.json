@@ -2466,6 +2466,8 @@
     "Amount": "Amount",
     "An administrator still needs to trust this plugin. Review the declared permissions, owned schema, and file integrity before enabling it.": "An administrator still needs to trust this plugin. Review the declared permissions, owned schema, and file integrity before enabling it.",
     "An error occurred while processing \":playlist\". Please check the logs for details.": "An error occurred while processing \":playlist\". Please check the logs for details.",
+    "An existing Emby library matches this managed destination. Choose a different library name.": "An existing Emby library matches this managed destination. Choose a different library name.",
+    "An existing Emby library matches this managed destination. Companion cleanup is still pending and will be retried with the same operation.": "An existing Emby library matches this managed destination. Companion cleanup is still pending and will be retried with the same operation.",
     "Another Emby publication is already in progress. Retry when it finishes.": "Another Emby publication is already in progress. Retry when it finishes.",
     "Another of your playlists already uses this password.": "Another of your playlists already uses this password.",
     "Any": "Any",

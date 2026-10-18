@@ -321,7 +321,14 @@ class EmbyJellyfinService implements MediaServer
                     return $this->applyManagedLibraryOptions($existingLibrary, $collectionType);
                 }
 
-                return $this->libraryResult(true, false, 'Existing Emby library found by ID.', $existingLibrary, $drift);
+                return $this->libraryResult(
+                    true,
+                    false,
+                    'Existing Emby library found by ID.',
+                    $existingLibrary,
+                    $drift,
+                    $managed && $libraryOwnershipConfirmed && $libraryOptionsApplied,
+                );
             }
 
             if ($libraryId !== null) {
