@@ -48,9 +48,11 @@ beforeEach(function () {
             return Http::response([
                 'CapabilityVersion' => 1, 'IntegrationId' => $this->integration->id,
                 'OperationId' => $request->data()['OperationId'], 'PreparedPath' => $this->path,
-                'State' => str_ends_with($request->url(), '/Commit')
+                'State' => $this->scenario === 'legacy_committed'
                     ? 'committed'
-                    : (str_ends_with($request->url(), '/Abort') ? 'aborted' : 'prepared'),
+                    : (str_ends_with($request->url(), '/Commit')
+                        ? 'committed'
+                        : (str_ends_with($request->url(), '/Abort') ? 'aborted' : 'prepared')),
                 'Success' => true,
             ]);
         }
@@ -100,6 +102,35 @@ function reviewer1538Publish($test, int $source = 0)
         'destination' => '__new__', 'new_library_name' => 'Managed Movies',
     ]);
 }
+
+it('does not infer metadata ownership from a legacy committed companion operation', function (bool $hasLegacyMapping) {
+    $this->scenario = 'legacy_committed';
+    $this->inventoryReady = true;
+    $legacy = $hasLegacyMapping ? EmbyLibraryMapping::factory()->create([
+        'user_id' => $this->user->id,
+        'media_server_integration_id' => $this->integration->id,
+        'source_identifier' => (string) $this->groups[0]->id,
+        'target_library_id' => 'review-library',
+        'target_library_name' => 'Managed Movies',
+        'output_path' => $this->path,
+        'managed_library_creation_confirmed_at' => null,
+        'library_options_applied_at' => null,
+        'status' => 'pending',
+    ]) : null;
+
+    reviewer1538Publish($this, 1)->assertHasActionErrors();
+
+    expect($this->createRequests)->toBe(0)
+        ->and($this->discoveryRequests)->toBe(0)
+        ->and($this->optionsRequests)->toBe(0)
+        ->and(EmbyLibraryMapping::whereNotNull('managed_library_creation_confirmed_at')->count())->toBe(0)
+        ->and(EmbyLibraryMapping::whereNotNull('library_options_applied_at')->count())->toBe(0)
+        ->and(EmbyLibraryMapping::where('status', 'planned')->count())->toBe(0);
+    if ($legacy !== null) {
+        expect($legacy->fresh()->status)->toBe('pending')
+            ->and($legacy->fresh()->target_library_id)->toBe('review-library');
+    }
+})->with(['missing mapping' => false, 'legacy mapping without markers' => true]);
 
 it('review control applies options for immediate confirmed creation', function (string $scenario) {
     $this->scenario = $scenario;

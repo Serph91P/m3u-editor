@@ -1983,7 +1983,7 @@ it('retries the Emby create on reconcile when an ambiguous create left no librar
         ->and($commitRequests)->toBe(1);
 });
 
-it('recovers a committed lifecycle operation after core mapping persistence was lost', function () {
+it('does not recover metadata ownership from a committed lifecycle after mapping persistence was lost', function () {
     config(['app.key' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=']);
     $user = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($user);
@@ -2045,13 +2045,13 @@ it('recovers a committed lifecycle operation after core mapping persistence was 
         'publish_all' => true,
         'destination' => '__new__',
         'new_library_name' => 'Managed Movies',
-    ])->assertHasNoActionErrors();
+    ])->assertHasActionErrors();
 
-    expect(EmbyLibraryMapping::query()->sole())
-        ->target_library_id->toBe('managed-library')
-        ->status->toBe('planned')
-        ->and($operationIds)->toHaveCount(2)
-        ->and($operationIds[0])->toBe($operationIds[1]);
+    expect(EmbyLibraryMapping::query()->count())->toBe(0)
+        ->and($operationIds)->toHaveCount(1);
+    Http::assertNotSent(fn (Request $request): bool => str_contains($request->url(), '/Libraries/AvailableOptions')
+        || str_contains($request->url(), '/Library/VirtualFolders/LibraryOptions')
+        || str_contains($request->url(), '/M3uEditor/Managed/Libraries/V1/Abort'));
     Http::assertNotSent(fn (Request $request): bool => $request->method() === 'POST'
         && $request->url() === 'https://emby.test:8096/Library/VirtualFolders');
 });

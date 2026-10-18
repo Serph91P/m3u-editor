@@ -977,7 +977,7 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
         }
 
         $path = $prepared['path'];
-        $lifecycleOwnsLibrary = ($prepared['state'] ?? null) === 'committed';
+
         $matchingManagedMappings = $this->ownerRecord->embyLibraryMappings()
             ->where('is_managed', true)
             ->where('target_library_name', $name)
@@ -999,15 +999,15 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
             $knownLibraryId,
             createIfMissing: ! $createWasAlreadyRequested,
             managed: true,
-            libraryOptionsApplied: $ownedLibrary?->library_options_applied_at !== null || $lifecycleOwnsLibrary,
-            libraryOwnershipConfirmed: $ownedLibrary !== null || $lifecycleOwnsLibrary,
+            libraryOptionsApplied: $ownedLibrary?->library_options_applied_at !== null,
+            libraryOwnershipConfirmed: $ownedLibrary !== null,
         );
         $libraryId = $result['library']['id'] ?? null;
         $createIsAmbiguous = ! $result['success'] && $result['created'];
         $matchedUnownedLibrary = $result['success']
             && ! $result['created']
             && $knownLibraryId === null
-            && ! $lifecycleOwnsLibrary
+
             && is_string($libraryId)
             && $libraryId !== '';
         if ((! $result['success'] && ! $createIsAmbiguous) || $matchedUnownedLibrary) {
@@ -1018,11 +1018,13 @@ class EmbyLibraryMappingsRelationManager extends RelationManager
                 'error_summary' => $originalError,
                 'updated_at' => now(),
             ]);
-            $aborted = $lifecycle->abortLibrary(
-                $this->ownerRecord,
-                $prepared['operation_id'],
-                $path,
-            );
+            $aborted = $matchedUnownedLibrary && ($prepared['state'] ?? null) === 'committed'
+                ? ['success' => true]
+                : $lifecycle->abortLibrary(
+                    $this->ownerRecord,
+                    $prepared['operation_id'],
+                    $path,
+                );
             $message = $matchedUnownedLibrary
                 ? ($aborted['success']
                     ? __('An existing Emby library matches this managed destination. Choose a different library name.')
