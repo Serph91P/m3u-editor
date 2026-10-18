@@ -58,6 +58,23 @@ beforeEach(function () {
     app()->instance(ManagedCacheCapacitySnapshotSource::class, $this->snapshots);
 });
 
+it('refreshes a resolved worker settings instance before opening a managed source', function () {
+    $resolved = new GeneralSettings;
+    $resolved->enable_cache = true;
+    $resolved->save();
+    app()->instance(GeneralSettings::class, $resolved);
+    $updated = new GeneralSettings;
+    $updated->enable_cache = false;
+    $updated->save();
+    Http::fake(['http://198.51.100.1/*' => Http::response('synthetic media bytes', 200)]);
+
+    (new DownloadCachedContentFile($this->file->id))->handle();
+
+    expect($this->file->fresh()->status)->toBe(CachedContentFileStatus::Failed)
+        ->and($this->snapshots->calls)->toBe(0);
+    Http::assertNothingSent();
+});
+
 it('reacquires expired prefetch capacity from a fresh snapshot before downloading', function () {
     $capacity = app(ManagedCacheCapacityService::class);
     $reservation = $capacity->reserve($this->snapshots->snapshot);

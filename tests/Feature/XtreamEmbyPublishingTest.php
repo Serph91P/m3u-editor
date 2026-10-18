@@ -61,6 +61,7 @@ function embyPublishingActionUrl(string $action, array $parameters = []): string
 }
 
 it('advertises the versioned managed library publishing contract to authenticated clients', function () {
+    app(GeneralSettings::class)->enable_cache = true;
     $response = $this->getJson(embyPublishingActionUrl('get_server_info'));
 
     $response->assertOk()
@@ -91,6 +92,15 @@ it('advertises the versioned managed library publishing contract to authenticate
     expect(json_encode($response->json('m3u_editor.library_publishing')))
         ->not->toContain('must-not-leak')
         ->not->toContain('/srv/emby');
+});
+
+it('does not advertise cache control while leaving library publishing available with caching disabled', function () {
+    app(GeneralSettings::class)->enable_cache = false;
+    $this->getJson(embyPublishingActionUrl('get_server_info'))
+        ->assertOk()
+        ->assertJsonPath('m3u_editor.library_publishing.api_version', 1)
+        ->assertJsonPath('m3u_editor.library_publishing.actions.catalog', 'm3u_editor_catalog')
+        ->assertJsonMissingPath('m3u_editor.library_publishing.cache_control');
 });
 
 it('requires POST and refuses cache actions while global caching is disabled', function () {
