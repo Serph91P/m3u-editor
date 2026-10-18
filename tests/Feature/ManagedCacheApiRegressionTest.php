@@ -124,6 +124,7 @@ it('runs the editor prefetch download and watched grace lifecycle with fresh Xtr
 
     $manual = CachedContentFile::factory()->for($this->playlist)->createQuietly([
         'managed_by' => null, 'status' => 'completed', 'disk' => 'cache', 'file_path' => 'manual/keep.mkv',
+        'content_fingerprint' => 'synthetic-manual-copy',
     ]);
     Storage::disk('cache')->put($manual->file_path, 'manual bytes');
     $release = [...$this->payload, 'action' => 'm3u_editor_cache_release', 'targets' => $targets,
