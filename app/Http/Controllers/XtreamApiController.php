@@ -3938,13 +3938,10 @@ class XtreamApiController extends Controller
             return $this->requestSuccess(['request_id' => $validated['request_id'], 'results' => []]);
         }
         $control = app(ManagedCacheControlService::class);
+        $catalogTargets = $control->resolveCatalogTargets($mapping, $validated['targets']);
         $resolvedTargets = [];
-        foreach ($validated['targets'] as $target) {
-            $catalogTarget = $control->resolveCatalogTarget(
-                $mapping,
-                $target['canonical_id'],
-                $target['variant_key'],
-            );
+        foreach ($validated['targets'] as $index => $target) {
+            $catalogTarget = $catalogTargets[$index];
             if ($catalogTarget === null) {
                 return $this->requestError('target_not_found', 'The managed catalog target was not found.', 404);
             }

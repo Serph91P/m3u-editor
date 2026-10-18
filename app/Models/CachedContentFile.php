@@ -244,7 +244,18 @@ class CachedContentFile extends Model
             return false;
         }
 
-        return $this->forceFill(['managed_by' => null])->save();
+        // A deletion claim may win after this model was loaded. An atomic
+        // update waits for that claim and must not report success for no row.
+        $changed = static::query()->whereKey($this->getKey())
+            ->whereNotNull('managed_by')
+            ->update(['managed_by' => null]);
+        if ($changed === 0) {
+            return false;
+        }
+
+        $this->forceFill(['managed_by' => null])->syncOriginalAttribute('managed_by');
+
+        return true;
     }
 
     /**

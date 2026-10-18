@@ -123,16 +123,38 @@ class ManagedCacheControlService
         string $canonicalId,
         string $variantKey,
     ): ?array {
-        $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
+        return $this->resolveCatalogTargets($mapping, [[
+            'canonical_id' => $canonicalId,
+            'variant_key' => $variantKey,
+        ]])[0];
+    }
 
+    /**
+     * Build and scan this mapping's catalog once per request. Only requested
+     * identities are indexed, and results retain the caller's target order.
+     *
+     * @param  array<int, array{canonical_id: string, variant_key: string}>  $targets
+     * @return array<int, array{canonical_id: string, variant_key: string, item: array<string, mixed>, variant: array<string, mixed>}|null>
+     */
+    public function resolveCatalogTargets(EmbyLibraryMapping $mapping, array $targets): array
+    {
+        $wanted = [];
+        foreach ($targets as $target) {
+            $wanted[$target['canonical_id']][$target['variant_key']] = true;
+        }
+
+        $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($mapping);
+        $index = [];
         foreach ($this->catalogItems($catalog['items'] ?? []) as $item) {
-            if (($item['canonical_id'] ?? null) !== $canonicalId) {
+            $canonicalId = $item['canonical_id'] ?? null;
+            if (! isset($wanted[$canonicalId])) {
                 continue;
             }
 
             foreach ($item['variants'] ?? [] as $variant) {
-                if (($variant['key'] ?? null) === $variantKey) {
-                    return [
+                $variantKey = $variant['key'] ?? null;
+                if (isset($wanted[$canonicalId][$variantKey]) && ! isset($index[$canonicalId][$variantKey])) {
+                    $index[$canonicalId][$variantKey] = [
                         'canonical_id' => $canonicalId,
                         'variant_key' => $variantKey,
                         'item' => $item,
@@ -140,11 +162,10 @@ class ManagedCacheControlService
                     ];
                 }
             }
-
-            return null;
+            unset($wanted[$canonicalId]);
         }
 
-        return null;
+        return array_map(fn (array $target): ?array => $index[$target['canonical_id']][$target['variant_key']] ?? null, $targets);
     }
 
     /**

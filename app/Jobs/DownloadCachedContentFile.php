@@ -378,10 +378,21 @@ class DownloadCachedContentFile implements ShouldQueue
 
         return PrivateNetworkGuard::get(
             $url,
-            fn (): PendingRequest => Http::withUserAgent($userAgent)
-                ->timeout($this->timeout)
-                ->withOptions(['stream' => true])
-                ->throw(),
+            function () use ($userAgent): PendingRequest {
+                if (! $this->renewManagedReservation()) {
+                    throw new RuntimeException('Managed cache capacity reservation expired before provider request.');
+                }
+
+                // Both receiving headers and an individual streamed body read
+                // must finish well before the 120-second account lease. A
+                // stalled provider is aborted, not allowed to outlive its slot.
+                $managed = $this->managedCapacityReservation !== null;
+
+                return Http::withUserAgent($userAgent)
+                    ->timeout($managed ? min($this->timeout, 30) : $this->timeout)
+                    ->withOptions($managed ? ['stream' => true, 'read_timeout' => 30] : ['stream' => true])
+                    ->throw();
+            },
             $this->maxRedirects,
         );
     }
@@ -410,6 +421,11 @@ class DownloadCachedContentFile implements ShouldQueue
 
         try {
             while (! $body->eof()) {
+                if (! $this->renewManagedReservation()) {
+                    $this->cancelled = true;
+                    break;
+                }
+
                 $chunk = $body->read($this->readChunkSize);
                 if ($chunk === '') {
                     break;
@@ -433,6 +449,12 @@ class DownloadCachedContentFile implements ShouldQueue
             fclose($out);
             $body->close();
         }
+    }
+
+    private function renewManagedReservation(): bool
+    {
+        return $this->managedCapacityReservation === null
+            || app(ManagedCacheCapacityService::class)->renew($this->managedCapacityReservation);
     }
 
     /**

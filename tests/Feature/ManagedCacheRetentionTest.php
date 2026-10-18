@@ -46,6 +46,43 @@ function makeManagedFile(Playlist $playlist): CachedContentFile
     ]);
 }
 
+it('rechecks ownership and sharing inside its storage deletion claim', function (string $protection) {
+    $file = makeManagedFile($this->playlist);
+    Storage::disk('cache')->put($file->file_path, 'owned cache');
+    ManagedCacheInterest::create([
+        'cached_content_file_id' => $file->id,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => '123e4567-e89b-12d3-a456-426614174000',
+        'canonical_id' => 'episode:fixture:s01e01',
+        'variant_key' => '1080p',
+        'consumer_id' => 'profile-a',
+        'watched_at' => now()->subHour(),
+        'release_after' => now()->subMinute(),
+    ]);
+    $activity = Mockery::mock(CachedContentActivityService::class)->makePartial();
+    $activity->shouldReceive('isSafeToDelete')->once()->andReturnUsing(function () use ($file, $protection): bool {
+        if ($protection === 'keep') {
+            expect($file->fresh()->keep())->toBeTrue();
+        } else {
+            $this->playlist->update(['share_cache_across_playlists' => true]);
+        }
+
+        return true;
+    });
+    app()->instance(CachedContentActivityService::class, $activity);
+
+    expect(app(CachedContentRetentionService::class)->deleteManagedFileIfReleasable($file))->toBeFalse()
+        ->and($file->fresh())->not->toBeNull();
+    Storage::disk('cache')->assertExists($file->file_path);
+})->with(['manual keep' => ['keep'], 'shared playlist' => ['share']]);
+
+it('does not report a stale deleted file as successfully kept', function () {
+    $file = makeManagedFile($this->playlist);
+    CachedContentFile::query()->whereKey($file->id)->delete();
+
+    expect($file->keep())->toBeFalse();
+});
+
 it('sets release_after when cohort is complete and watched', function () {
     $file = makeManagedFile($this->playlist);
     $interest = ManagedCacheInterest::create([

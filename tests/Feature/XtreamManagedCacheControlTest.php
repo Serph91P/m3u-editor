@@ -75,6 +75,36 @@ function managedCacheActionUrl(array $parameters = []): string
     ], $parameters));
 }
 
+it('builds the mapping catalog only once for a batched cache request', function () {
+    $group = Group::factory()->for($this->user)->for($this->playlist)->create(['type' => 'vod']);
+    Channel::factory()->count(3)->for($this->user)->for($this->playlist)->for($group)->createQuietly([
+        'enabled' => true,
+        'is_vod' => true,
+        'container_extension' => 'mkv',
+    ]);
+    $catalog = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping);
+    expect($catalog['items'])->toHaveCount(3);
+    $catalogService = Mockery::mock(EmbyPublicationCatalogService::class);
+    $catalogService->shouldReceive('buildMapping')->once()->andReturn($catalog);
+    app()->instance(EmbyPublicationCatalogService::class, $catalogService);
+
+    $this->postJson(managedCacheActionUrl(), [
+        'username' => 'emby-companion',
+        'password' => 'companion-secret',
+        'action' => 'm3u_editor_cache_prefetch',
+        'api_version' => 1,
+        'integration_id' => $this->integration->id,
+        'mapping_uuid' => $this->mapping->uuid,
+        'revision' => str_repeat('a', 64),
+        'request_id' => (string) Str::uuid(),
+        'consumer_id' => 'profile-a',
+        'targets' => array_map(fn (array $item): array => [
+            'canonical_id' => $item['canonical_id'],
+            'variant_key' => $item['variants'][0]['key'],
+        ], $catalog['items']),
+    ])->assertOk()->assertJsonCount(3, 'data.results');
+});
+
 it('rejects prefetch without required target fields', function () {
     $this->postJson(managedCacheActionUrl([
         'action' => 'm3u_editor_cache_prefetch',

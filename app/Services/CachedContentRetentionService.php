@@ -208,6 +208,48 @@ class CachedContentRetentionService
                 return false;
             }
 
+            return $this->deleteManagedFileWithDatabaseClaim($file);
+        });
+    }
+
+    /**
+     * Hold the file, playlist and interest rows through physical deletion.
+     * Ordinary keep/sharing/undo updates must serialize with this claim, even
+     * when their caller does not use the cache activity lock.
+     */
+    private function deleteManagedFileWithDatabaseClaim(CachedContentFile $file): bool
+    {
+        return DB::transaction(function () use ($file): bool {
+            if (DB::connection()->getDriverName() === 'sqlite') {
+                // SQLite has no FOR UPDATE. Reserve its writer before taking
+                // the protection snapshot; this does not change metadata.
+                DB::table('cached_content_files')->where('id', $file->id)
+                    ->update(['updated_at' => DB::raw('updated_at')]);
+            }
+
+            $file = CachedContentFile::query()->lockForUpdate()->find($file->id);
+            if ($file === null || $file->managed_by !== CachedContentManagedBy::ManagedPublishing || $file->source !== 'provider') {
+                return false;
+            }
+            $playlist = Playlist::query()->lockForUpdate()->find($file->playlist_id);
+            if ($playlist?->share_cache_across_playlists || in_array($file->status, [
+                CachedContentFileStatus::Pending,
+                CachedContentFileStatus::Downloading,
+            ], true)) {
+                return false;
+            }
+
+            $interests = ManagedCacheInterest::query()
+                ->where('cached_content_file_id', $file->id)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            if ($interests->contains(fn (ManagedCacheInterest $interest): bool => $interest->watched_at === null
+                || $interest->release_after === null || $interest->release_after->isFuture())
+                || ! app(CachedContentActivityService::class)->isSafeToDelete($file)) {
+                return false;
+            }
+
             return $this->deleteStoredFileAndRow($file);
         });
     }
