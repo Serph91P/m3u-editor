@@ -1642,9 +1642,9 @@ class MediaServerIntegrationResource extends Resource implements CopilotResource
                             // Optionally delete the associated playlist
                             // For now, we leave the playlist intact (sidecar philosophy)
                         }),
-                ])->button()->hiddenLabel()->size('sm'),
+                ])->button()->hiddenLabel()->size('sm')->tooltip(__('Open action menu')),
                 EditAction::make()
-                    ->button()->hiddenLabel()->size('sm'),
+                    ->button()->hiddenLabel()->size('sm')->tooltip(__('Edit media server')),
             ], position: RecordActionsPosition::BeforeCells)
             ->toolbarActions([
                 BulkActionGroup::make([
