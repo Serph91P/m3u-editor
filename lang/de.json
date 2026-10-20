@@ -1,4 +1,11 @@
 {
+    "Edit media server": "Medienserver bearbeiten",
+    "Enable or disable publishing this mapping.": "Veröffentlichung dieser Zuordnung aktivieren oder deaktivieren.",
+    "This library is managed by m3u-editor.": "Diese Bibliothek wird von m3u-editor verwaltet.",
+    "This is an existing Emby library.": "Dies ist eine bereits vorhandene Emby-Bibliothek.",
+    "Delete this mapping": "Diese Zuordnung löschen",
+    "Edit this mapping": "Diese Zuordnung bearbeiten",
+    "Reconcile the published library with Emby": "Bibliothekszustand mit Emby abgleichen",
     "\":name\" already merges this playlist with your media server libraries.": "„:name“ führt diese Playlist bereits mit deinen Medienserver-Bibliotheken zusammen.",
     "\":name\" was created. Assign auths to it to start using it.": "„:name“ wurde erstellt. Weise ihr Zugänge zu, um sie zu verwenden.",
     "\":title\" request has been rejected.": "Die Anfrage für \":title\" wurde abgelehnt.",

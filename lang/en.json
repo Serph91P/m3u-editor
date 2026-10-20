@@ -1,4 +1,11 @@
 {
+    "Edit media server": "Edit media server",
+    "Enable or disable publishing this mapping.": "Enable or disable publishing this mapping.",
+    "This library is managed by m3u-editor.": "This library is managed by m3u-editor.",
+    "This is an existing Emby library.": "This is an existing Emby library.",
+    "Delete this mapping": "Delete this mapping",
+    "Edit this mapping": "Edit this mapping",
+    "Reconcile the published library with Emby": "Reconcile the published library with Emby",
     "\":name\" already merges this playlist with your media server libraries.": "\":name\" already merges this playlist with your media server libraries.",
     "\":name\" was created. Assign auths to it to start using it.": "\":name\" was created. Assign auths to it to start using it.",
     "\":title\" request has been rejected.": "\":title\" request has been rejected.",
