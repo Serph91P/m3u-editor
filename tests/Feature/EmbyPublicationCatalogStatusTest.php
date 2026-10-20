@@ -5,6 +5,7 @@ use App\Models\MediaServerIntegration;
 use App\Models\User;
 use App\Services\EmbyPublicationCatalogService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 
 uses(RefreshDatabase::class);
 
@@ -100,6 +101,21 @@ it('does not erase failure or drift diagnostics by reading a catalog', function 
         ->and($mapping->fresh()->error_summary)->toBe('Synthetic preserved diagnostic')
         ->and($mapping->fresh()->last_planned_revision)->toMatch('/^[a-f0-9]{64}$/');
 })->with(['failed', 'drifted']);
+
+it('does not add a per-mapping state reload to catalog construction', function () {
+    $mapping = createSyntheticStatusMapping();
+    $user = $mapping->user;
+    $mappingSelects = 0;
+    DB::listen(function ($query) use (&$mappingSelects): void {
+        if (preg_match('/^select .* from ["`]?emby_library_mappings["`]? /i', $query->sql)) {
+            $mappingSelects++;
+        }
+    });
+
+    app(EmbyPublicationCatalogService::class)->buildForUser($user);
+
+    expect($mappingSelects)->toBe(1);
+});
 
 it('does not overwrite a successful callback received while building the catalog', function () {
     $mapping = createSyntheticStatusMapping();

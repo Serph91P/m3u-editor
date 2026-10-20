@@ -48,37 +48,27 @@ class EmbyPublicationCatalogService
             }
 
             $catalog = $this->buildMapping($mapping, $username, $password);
-            // Catalog construction can overlap a companion callback. Read and
-            // update the latest row under its lock, not the planning snapshot.
-            $include = $mapping->getConnection()->transaction(function () use ($mapping, $catalog): bool {
-                $current = EmbyLibraryMapping::query()->lockForUpdate()->find($mapping->getKey());
-                if ($current === null || ! $current->enabled || $current->status === 'cleanup_pending'
-                    || ($current->is_managed && $current->target_library_id === null)) {
-                    return false;
-                }
+            $connection = $mapping->getConnection();
+            $revision = $connection->getPdo()->quote($catalog['revision']);
+            $plannedSummary = $connection->getPdo()->quote(count($catalog['items']).' top-level items planned.');
+            $syncedSummary = $connection->getPdo()->quote(__('Published revision is up to date.'));
+            $preserve = "status IN ('failed', 'drifted', 'cleanup_pending')";
+            $applied = "last_applied_revision = {$revision} AND last_success_at IS NOT NULL";
 
-                $updates = ['last_planned_revision' => $catalog['revision']];
-                // A catalog read cannot resolve publishing failures or drift.
-                if (! in_array($current->status, ['failed', 'drifted'], true)) {
-                    $applied = $current->last_applied_revision === $catalog['revision']
-                        && $current->last_success_at !== null;
-                    $updates += [
-                        'status' => $applied ? 'synced' : 'planned',
-                        'status_summary' => $applied
-                            ? ($current->status === 'synced' && filled($current->status_summary)
-                                ? $current->status_summary
-                                : __('Published revision is up to date.'))
-                            : count($catalog['items']).' top-level items planned.',
-                        'error_summary' => null,
-                    ];
-                }
-                $current->updateQuietly($updates);
-
-                return true;
-            });
-            if ($include) {
-                $mappings[] = $catalog;
-            }
+            // Evaluate against the current database row in one atomic update.
+            // This preserves concurrent callbacks without a per-mapping reload.
+            $mapping->newQuery()->whereKey($mapping->getKey())->update([
+                'last_planned_revision' => $catalog['revision'],
+                'status_summary' => $connection->raw("CASE WHEN {$preserve} THEN status_summary
+                    WHEN {$applied} THEN CASE WHEN status = 'synced' AND status_summary <> ''
+                        THEN status_summary ELSE {$syncedSummary} END
+                    ELSE {$plannedSummary} END"),
+                'error_summary' => $connection->raw("CASE WHEN {$preserve} THEN error_summary ELSE NULL END"),
+                // Keep status last: MySQL evaluates assignments left-to-right.
+                'status' => $connection->raw("CASE WHEN {$preserve} THEN status
+                    WHEN {$applied} THEN 'synced' ELSE 'planned' END"),
+            ]);
+            $mappings[] = $catalog;
         }
 
         usort($mappings, fn (array $left, array $right): int => $left['mapping_uuid'] <=> $right['mapping_uuid']);
