@@ -48,13 +48,37 @@ class EmbyPublicationCatalogService
             }
 
             $catalog = $this->buildMapping($mapping, $username, $password);
-            $mapping->updateQuietly([
-                'last_planned_revision' => $catalog['revision'],
-                'status' => 'planned',
-                'status_summary' => count($catalog['items']).' top-level items planned.',
-                'error_summary' => null,
-            ]);
-            $mappings[] = $catalog;
+            // Catalog construction can overlap a companion callback. Read and
+            // update the latest row under its lock, not the planning snapshot.
+            $include = $mapping->getConnection()->transaction(function () use ($mapping, $catalog): bool {
+                $current = EmbyLibraryMapping::query()->lockForUpdate()->find($mapping->getKey());
+                if ($current === null || ! $current->enabled || $current->status === 'cleanup_pending'
+                    || ($current->is_managed && $current->target_library_id === null)) {
+                    return false;
+                }
+
+                $updates = ['last_planned_revision' => $catalog['revision']];
+                // A catalog read cannot resolve publishing failures or drift.
+                if (! in_array($current->status, ['failed', 'drifted'], true)) {
+                    $applied = $current->last_applied_revision === $catalog['revision']
+                        && $current->last_success_at !== null;
+                    $updates += [
+                        'status' => $applied ? 'synced' : 'planned',
+                        'status_summary' => $applied
+                            ? ($current->status === 'synced' && filled($current->status_summary)
+                                ? $current->status_summary
+                                : __('Published revision is up to date.'))
+                            : count($catalog['items']).' top-level items planned.',
+                        'error_summary' => null,
+                    ];
+                }
+                $current->updateQuietly($updates);
+
+                return true;
+            });
+            if ($include) {
+                $mappings[] = $catalog;
+            }
         }
 
         usort($mappings, fn (array $left, array $right): int => $left['mapping_uuid'] <=> $right['mapping_uuid']);
