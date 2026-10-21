@@ -34,6 +34,16 @@ return [
     // from outside — it re-enables the old accept-all behavior for those routes.
     'allow_unauthenticated_callbacks' => env('M3U_PROXY_ALLOW_UNAUTHENTICATED_CALLBACKS', false),
 
+    // Opt in to separate per-route/IP callback buckets. False keeps the existing
+    // shared throttle:120,1 policy. Invalid per-minute values fall back to 120.
+    'isolated_callback_rate_limits' => filter_var(env('M3U_PROXY_ISOLATED_CALLBACK_RATE_LIMITS', false), FILTER_VALIDATE_BOOLEAN),
+    'callback_rate_limits' => [
+        'resolver' => env('M3U_PROXY_CALLBACK_RESOLVER_PER_MINUTE', 120),
+        'webhook' => env('M3U_PROXY_CALLBACK_WEBHOOK_PER_MINUTE', 120),
+        'broadcast' => env('M3U_PROXY_CALLBACK_BROADCAST_PER_MINUTE', 120),
+        'dvr' => env('M3U_PROXY_CALLBACK_DVR_PER_MINUTE', 120),
+    ],
+
     // Logo Proxy Configuration
     'url_override' => env('PROXY_URL_OVERRIDE', null),
     'url_override_include_logos' => env('PROXY_URL_OVERRIDE_INCLUDE_LOGOS', default: null),
