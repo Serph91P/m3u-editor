@@ -1,15 +1,29 @@
 <?php
 
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Foundation\Bootstrap\LoadConfiguration;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+
+// Fail closed even when invoked directly, before booting the application.
+require_once __DIR__.'/callback-redis-environment.php';
+$redisEnvironment = callbackRedisEnvironment(getenv('CALLBACK_TEST_REDIS_PORT'), (string) getenv('REDIS_PREFIX'));
+foreach ($redisEnvironment as $key => $value) {
+    putenv($key.'='.$value);
+    $_ENV[$key] = $_SERVER[$key] = $value;
+}
 
 // Fresh-process probe: do not use tests/bootstrap.php, which clears caches.
 require __DIR__.'/../../vendor/autoload.php';
 $app = require __DIR__.'/../../bootstrap/app.php';
+// Validate cached config before providers can resolve a Redis connection.
+$app->afterBootstrapping(LoadConfiguration::class, function ($app) use ($redisEnvironment) {
+    assertCallbackRedisConfiguration($app['config']['database.redis'], $redisEnvironment);
+});
 $app->instance('request', Request::create('http://localhost'));
 $kernel = $app->make(Kernel::class);
 $kernel->bootstrap();
+assertCallbackRedisConfiguration(config('database.redis'), $redisEnvironment);
 Http::preventStrayRequests();
 
 $send = function (string $path) use ($kernel) {

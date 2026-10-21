@@ -94,19 +94,24 @@ it('accepts positive integer bounds', function ($limit) {
 })->with([1, '3', 60000]);
 
 it('honors cached configuration and routes in fresh application processes', function (string $enabled, string $limit, int $expectedLimit) {
+    require_once base_path('tests/Fixtures/callback-redis-environment.php');
+    if (getenv('CALLBACK_TEST_REDIS_PORT') === false) {
+        $this->markTestSkipped('Set CALLBACK_TEST_REDIS_PORT to an explicitly disposable loopback Redis; never uses application Redis settings.');
+    }
+    $redisEnvironment = callbackRedisEnvironment(getenv('CALLBACK_TEST_REDIS_PORT'), 'callback-cache-test-'.Str::uuid().':');
     $directory = storage_path('framework/testing/callback-cache-'.Str::uuid());
     mkdir($directory, 0755, true);
     $environment = [
         'APP_ENV' => 'testing',
         'APP_CONFIG_CACHE' => $directory.'/config.php',
         'APP_ROUTES_CACHE' => $directory.'/routes.php',
+        'LOG_CHANNEL' => 'null',
         'M3U_PROXY_TOKEN' => 'cached-callback-test-token',
         'M3U_PROXY_ALLOW_UNAUTHENTICATED_CALLBACKS' => 'false',
         'M3U_PROXY_ISOLATED_CALLBACK_RATE_LIMITS' => $enabled,
         'M3U_PROXY_CALLBACK_WEBHOOK_PER_MINUTE' => $limit,
         'M3U_PROXY_CALLBACK_RESOLVER_PER_MINUTE' => '2',
-        'REDIS_PREFIX' => 'callback-cache-test-'.Str::uuid().':',
-    ];
+    ] + $redisEnvironment;
     $run = function (array $command, array $overrides = []) use ($environment) {
         $process = new Process($command, base_path(), array_merge($environment, $overrides));
         $process->setTimeout(60);
