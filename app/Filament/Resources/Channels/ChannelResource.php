@@ -50,6 +50,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Group as SchemaGroup;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
@@ -1957,6 +1958,20 @@ class ChannelResource extends Resource implements CopilotResource
                         ->dehydrated()
                         ->inline(false)
                         ->default(false),
+                    SchemaGroup::make()
+                        ->statePath('proxy_options')
+                        ->columnSpanFull()
+                        ->dehydrateStateUsing(fn ($state, $record): array => array_replace($record?->proxy_options ?? [], $state ?? []))
+                        ->schema([
+                            Toggle::make('normalize_live_output')
+                                ->label(__('Normalize live MPEG-TS output (CPU transcoding)'))
+                                ->columnSpanFull()
+                                ->inline(false)
+                                ->afterStateHydrated(fn (Toggle $component, $record) => $component->state((bool) ($record?->proxy_options['normalize_live_output'] ?? config('proxy.normalize_live_output', false))))
+                                ->dehydrateStateUsing(fn ($state, $record): ?bool => ($record?->proxy_options['normalize_live_output'] ?? null) === null
+                                    && (bool) $state === config('proxy.normalize_live_output', false) ? null : (bool) $state)
+                                ->helperText(__('Opt-in persistent FFmpeg normalization for compatible live MPEG-TS inputs only. Adds CPU/transcoding overhead for smoother failover; not transparent support for arbitrary codecs. Ignored for VOD, HLS, DASH, catchup and Stream Profiles. Unchanged inherited values continue to use M3U_PROXY_NORMALIZE_LIVE_OUTPUT.')),
+                        ]),
                     Select::make('stream_profile_id')
                         ->label(__('Stream Profile'))
                         ->options(fn () => StreamProfile::where('user_id', auth()->id())->pluck('name', 'id'))

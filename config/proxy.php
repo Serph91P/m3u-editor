@@ -24,6 +24,7 @@ return [
     'm3u_proxy_host' => env('M3U_PROXY_HOST', 'localhost'), // Host for proxy (embedded and external)
     'm3u_proxy_port' => env('M3U_PROXY_PORT', 8085), // Port for proxy (embedded and external)
     'm3u_proxy_token' => env('M3U_PROXY_TOKEN'), // API token for authenticating with the proxy service
+    'normalize_live_output' => filter_var(env('M3U_PROXY_NORMALIZE_LIVE_OUTPUT', false), FILTER_VALIDATE_BOOLEAN),
     'm3u_proxy_public_url' => env('M3U_PROXY_PUBLIC_URL'), // Public URL for the proxy (auto-set in start-container)
     'm3u_resolver_url' => env('M3U_PROXY_FAILOVER_RESOLVER_URL', null), // Base URL for the editor that the proxy can use to resolve URLs if needed (for smart failover with capacity checks)
 
