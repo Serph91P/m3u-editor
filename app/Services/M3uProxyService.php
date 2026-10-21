@@ -1443,6 +1443,7 @@ class M3uProxyService
                         'channels.url_custom',
                         'channels.playlist_id',
                         'channels.custom_playlist_id',
+                        'channels.is_vod',
                     ])->get();
 
                 foreach ($failoverChannels as $failoverChannel) {
@@ -3226,7 +3227,7 @@ class M3uProxyService
      */
     private function isNormalizableLiveChannel(Channel $channel, ?string $url): bool
     {
-        return ! $channel->is_vod && in_array(strtolower($this->getFormatFromUrl($url)), ['', 'ts', 'mpegts'], true);
+        return $channel->is_vod === false && in_array(strtolower($this->getFormatFromUrl($url)), ['', 'ts', 'mpegts'], true);
     }
 
     private function getFormatFromUrl(?string $url): string
@@ -3346,9 +3347,27 @@ class M3uProxyService
                 }
 
                 $isTranscoded = ($metadata['transcoding'] ?? null) === 'true';
-                if ($type === 'channel' && $profileId === null
-                    && (($metadata['normalize_live_output'] ?? null) === 'true') !== $normalizeLiveOutput) {
-                    continue;
+                if ($type === 'channel' && $profileId === null) {
+                    $expectedNormalization = false;
+                    if ($normalizeLiveOutput) {
+                        // Capacity failover may have selected a non-TS or VOD source.
+                        // Match creation's effective mode using the pool's actual source,
+                        // never the original requested URL. Unknown opt-in sources fail closed.
+                        $sourceUrl = $stream['url'] ?? null;
+                        if (($metadata['type'] ?? null) !== 'channel'
+                            || empty($metadata['id']) || empty($metadata['playlist_uuid'])
+                            || ! is_string($sourceUrl) || $sourceUrl === '') {
+                            continue;
+                        }
+                        $sourceChannel = Channel::withoutGlobalScope(ExcludeAioFailoverClonesScope::class)->find($metadata['id']);
+                        if (! $sourceChannel || $sourceChannel->is_vod === null) {
+                            continue;
+                        }
+                        $expectedNormalization = $this->isNormalizableLiveChannel($sourceChannel, $sourceUrl);
+                    }
+                    if ((($metadata['normalize_live_output'] ?? null) === 'true') !== $expectedNormalization) {
+                        continue;
+                    }
                 }
                 $transcodingMatch = $profileId !== null
                     ? ($isTranscoded && ($metadata['profile_id'] ?? null) == $profileId)

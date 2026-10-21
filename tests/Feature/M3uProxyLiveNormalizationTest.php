@@ -120,11 +120,12 @@ it('does not apply normalization to a Stream Profile', function () {
 it('matches direct normalization mode before provider selection and capacity checks', function (bool $wanted) {
     config(['proxy.normalize_live_output' => $wanted]);
     $this->playlist->update(['profiles_enabled' => true, 'available_streams' => 1]);
-    $metadata = ['original_channel_id' => (string) $this->channel->id, 'original_playlist_uuid' => $this->playlist->uuid];
+    $metadata = ['type' => 'channel', 'id' => (string) $this->channel->id, 'playlist_uuid' => $this->playlist->uuid,
+        'original_channel_id' => (string) $this->channel->id, 'original_playlist_uuid' => $this->playlist->uuid];
     $this->proxyStreams = [
         'matching_streams' => [
-            ['stream_id' => 'wrong-mode', 'client_count' => 1, 'metadata' => $metadata + ['normalize_live_output' => $wanted ? 'false' : 'true']],
-            ['stream_id' => 'right-mode', 'client_count' => 1, 'metadata' => $metadata + ($wanted ? ['normalize_live_output' => 'true'] : [])],
+            ['stream_id' => 'wrong-mode', 'client_count' => 1, 'url' => $this->channel->url, 'metadata' => $metadata + ['normalize_live_output' => $wanted ? 'false' : 'true']],
+            ['stream_id' => 'right-mode', 'client_count' => 1, 'url' => $this->channel->url, 'metadata' => $metadata + ($wanted ? ['normalize_live_output' => 'true'] : [])],
         ], 'total_matching' => 2,
     ];
     expect(app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel))->toContain('/stream/right-mode');
@@ -135,9 +136,10 @@ it('creates a new stream rather than reusing the opposite mode when capacity is 
     config(['proxy.normalize_live_output' => $wanted]);
     $this->proxyStreams = [
         'matching_streams' => [[
-            'stream_id' => 'wrong-mode', 'client_count' => 1,
+            'stream_id' => 'wrong-mode', 'client_count' => 1, 'url' => $this->channel->url,
             'metadata' => ['original_channel_id' => (string) $this->channel->id,
-                'original_playlist_uuid' => $this->playlist->uuid, 'normalize_live_output' => $wanted ? 'false' : 'true'],
+                'original_playlist_uuid' => $this->playlist->uuid, 'id' => (string) $this->channel->id,
+                'type' => 'channel', 'playlist_uuid' => $this->playlist->uuid, 'normalize_live_output' => $wanted ? 'false' : 'true'],
         ]], 'total_matching' => 1,
     ];
     expect(app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel))->toContain('/stream/new-outer');
@@ -151,9 +153,10 @@ it('does not reuse an incompatible pool even when capacity is exhausted', functi
     $this->channel->unsetRelation('playlist');
     $this->proxyStreams = [
         'matching_streams' => [[
-            'stream_id' => 'wrong-mode', 'client_count' => 1,
-            'metadata' => ['type' => 'channel', 'channel_id' => (string) $this->channel->id, 'original_channel_id' => (string) $this->channel->id,
-                'original_playlist_uuid' => $this->playlist->uuid, 'normalize_live_output' => $wanted ? 'false' : 'true'],
+            'stream_id' => 'wrong-mode', 'client_count' => 1, 'url' => $this->channel->url,
+            'metadata' => ['channel_id' => (string) $this->channel->id, 'original_channel_id' => (string) $this->channel->id,
+                'original_playlist_uuid' => $this->playlist->uuid, 'id' => (string) $this->channel->id,
+                'type' => 'channel', 'playlist_uuid' => $this->playlist->uuid, 'normalize_live_output' => $wanted ? 'false' : 'true'],
         ]], 'total_matching' => 1,
     ];
     expect(fn () => app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel))
