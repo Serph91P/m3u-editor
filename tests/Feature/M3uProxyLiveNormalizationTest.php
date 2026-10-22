@@ -175,8 +175,12 @@ it('saves persistent global normalization and encoder settings ahead of ENV defa
     expect(app(GeneralSettings::class)->proxy_normalize_live_output)->toBeNull()
         ->and(app(GeneralSettings::class)->proxy_normalization_encoder)->toBe('cpu');
     Livewire::test(ManageProxySettings::class)
+        ->assertFormFieldIsVisible('proxy_normalization_encoder')
         ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'cpu'])
-        ->fillForm(['proxy_normalize_live_output' => false, 'proxy_normalization_encoder' => 'vaapi'])
+        ->fillForm(['proxy_normalization_encoder' => 'vaapi'])
+        ->call('save')->assertHasNoFormErrors();
+    Livewire::test(ManageProxySettings::class)
+        ->set('data.proxy_normalize_live_output', false)
         ->call('save')->assertHasNoFormErrors();
     $settings = app(GeneralSettings::class)->refresh();
     expect($settings->proxy_normalize_live_output)->toBeFalse()
@@ -196,10 +200,37 @@ it('saves persistent global normalization and encoder settings ahead of ENV defa
         ->and($payload['metadata'])->not->toHaveKey('normalization_encoder');
 });
 
+it('only shows the encoder while normalization is enabled and retains the hidden selection', function () {
+    $this->actingAs($this->user);
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalize_live_output = false;
+    $settings->proxy_normalization_encoder = 'vaapi';
+    $settings->save();
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormFieldIsHidden('proxy_normalization_encoder')
+        ->assertFormSet(['proxy_normalization_encoder' => 'vaapi'])
+        ->set('data.proxy_normalize_live_output', true)
+        ->assertFormFieldIsVisible('proxy_normalization_encoder')
+        ->assertFormSet(['proxy_normalization_encoder' => 'vaapi'])
+        ->set('data.proxy_normalize_live_output', false)
+        ->assertFormFieldIsHidden('proxy_normalization_encoder')
+        ->call('save')->assertHasNoFormErrors();
+    expect(app(GeneralSettings::class)->refresh()->proxy_normalize_live_output)->toBeFalse()
+        ->and(app(GeneralSettings::class)->proxy_normalization_encoder)->toBe('vaapi');
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormFieldIsHidden('proxy_normalization_encoder')
+        ->assertFormSet(['proxy_normalization_encoder' => 'vaapi'])
+        ->set('data.proxy_normalize_live_output', true)
+        ->call('save')->assertHasNoFormErrors();
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormFieldIsVisible('proxy_normalization_encoder')
+        ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'vaapi']);
+});
+
 it('rejects unsupported encoders without persisting them', function (string $encoder) {
     $this->actingAs($this->user);
     Livewire::test(ManageProxySettings::class)
-        ->fillForm(['proxy_normalization_encoder' => $encoder])
+        ->fillForm(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => $encoder])
         ->call('save')->assertHasFormErrors(['proxy_normalization_encoder']);
     expect(app(GeneralSettings::class)->refresh()->proxy_normalization_encoder)->toBe('cpu');
 })->with(['cuda', 'CPU', 'vaapi -i arbitrary']);
