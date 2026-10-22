@@ -8,7 +8,6 @@ use Filament\Actions\Action;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
-use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Illuminate\Contracts\Support\Htmlable;
@@ -84,134 +83,132 @@ class SystemHealth extends Page
     public function content(Schema $schema): Schema
     {
         return $schema->components([
-            Grid::make(['default' => 1, 'lg' => 2])->schema([
-                Section::make(__('Health checks'))
-                    ->icon('heroicon-o-heart')
-                    ->compact()
-                    ->schema($this->checkEntries()),
-                Section::make(__('Container services'))
-                    ->icon('heroicon-o-server-stack')
-                    ->description(__('Processes managed by the container\'s supervisor.'))
-                    ->compact()
-                    ->schema($this->serviceEntries()),
-                Section::make(__('Application'))
-                    ->icon('heroicon-o-cube')
-                    ->compact()
-                    ->schema([
-                        $this->entry('application.version', __('Version')),
-                        $this->entry('application.latest_version', __('Latest version')),
-                        $this->entry('application.branch', __('Branch')),
-                        $this->entry('application.commit', __('Commit'))->fontFamily('mono'),
-                        $this->entry('application.build_date', __('Build date')),
-                        $this->entry('application.environment', __('Environment')),
-                        $this->toggleEntry('application.debug', __('Debug mode'), warnWhenOn: true),
-                        $this->entry('application.timezone', __('Timezone')),
-                        $this->entry('application.url', __('URL'))->extraAttributes(['class' => 'privacy-sensitive']),
-                        $this->entry('application.laravel_version', 'Laravel'),
-                        $this->entry('application.filament_version', 'Filament'),
-                        $this->entry('application.livewire_version', 'Livewire'),
-                    ]),
-                Section::make('PHP')
-                    ->icon('heroicon-o-code-bracket')
-                    ->compact()
-                    ->schema([
-                        $this->entry('php.version', __('Version')),
-                        $this->entry('php.sapi', __('Server API')),
-                        $this->entry('php.ini_file', __('Configuration file'))->fontFamily('mono'),
-                        $this->entry('php.memory_limit', __('Memory limit')),
-                        $this->entry('php.max_execution_time', __('Max execution time'))
-                            ->formatStateUsing(fn (string $state): string => $state === '0' ? __('Unlimited') : $state.'s'),
-                        $this->entry('php.upload_max_filesize', __('Upload max file size')),
-                        $this->entry('php.post_max_size', __('Post max size')),
-                        $this->toggleEntry('php.opcache', 'OPcache'),
-                        $this->toggleEntry('php.jit', 'JIT'),
-                    ]),
-                Section::make(__('Operating system'))
-                    ->icon('heroicon-o-cpu-chip')
-                    ->compact()
-                    ->schema([
-                        $this->entry('os.name', __('Operating system')),
-                        $this->entry('os.kernel', __('Kernel')),
-                        $this->entry('os.architecture', __('Architecture')),
-                        $this->entry('os.hostname', __('Hostname'))->extraAttributes(['class' => 'privacy-sensitive']),
-                        $this->entry('os.container', __('Docker container'))
-                            ->formatStateUsing(fn (bool $state): string => $state ? __('Yes') : __('No')),
-                        $this->entry('os.cpu_count', __('CPU cores')),
-                        $this->entry('os.memory', __('Memory'))
-                            ->state(fn (): ?string => $this->usage('os.memory_available', 'os.memory_total')),
-                        $this->entry('os.disk', __('Disk'))
-                            ->state(fn (): ?string => $this->usage('os.disk_free', 'os.disk_total')),
-                        $this->entry('os.load_average', __('Load average')),
-                        $this->entry('os.uptime_seconds', __('Uptime'))
-                            ->formatStateUsing(fn (int $state): string => CarbonInterval::seconds($state)->cascade()->forHumans(short: true, parts: 3)),
-                        $this->entry('os.ffmpeg_version', 'FFmpeg'),
-                        $this->toggleEntry('os.comskip', 'Comskip', on: __('Installed'), off: __('Not installed')),
-                    ]),
-                Section::make(__('Database'))
-                    ->icon('heroicon-o-circle-stack')
-                    ->compact()
-                    ->schema([
-                        $this->entry('database.driver', __('Driver')),
-                        $this->toggleEntry('database.connected', __('Status'), on: __('Connected'), off: __('Unavailable'), offColor: 'danger'),
-                        $this->entry('database.server_version', __('Server version')),
-                        $this->entry('database.database', __('Database')),
-                        $this->entry('database.host', __('Host'))
-                            ->extraAttributes(['class' => 'privacy-sensitive'])
-                            ->visible(fn (): bool => $this->value('database.driver') !== 'sqlite'),
-                        $this->placementEntry('database.placement', __('Location')),
-                        $this->entry('database.size', __('Size'))
-                            ->formatStateUsing(fn (int $state): string => Number::fileSize($state, precision: 1)),
-                    ]),
-                Section::make(__('Cache & queue'))
-                    ->icon('heroicon-o-bolt')
-                    ->compact()
-                    ->schema([
-                        $this->entry('cache.cache_driver', __('Cache driver')),
-                        $this->entry('cache.queue_driver', __('Queue driver')),
-                        $this->entry('cache.session_driver', __('Session driver')),
-                        $this->entry('cache.broadcast_driver', __('Broadcast driver')),
-                        ...array_map(
-                            fn (TextEntry $entry): TextEntry => $entry->visible(fn (): bool => (bool) $this->value('cache.redis_used')),
-                            [
-                                $this->toggleEntry('cache.redis_connected', __('Redis'), on: __('Connected'), off: __('Unavailable'), offColor: 'danger'),
-                                $this->entry('cache.redis_version', __('Redis version')),
-                                $this->entry('cache.redis_memory', __('Redis memory')),
-                                $this->entry('cache.redis_host', __('Redis host'))->extraAttributes(['class' => 'privacy-sensitive']),
-                                $this->placementEntry('cache.redis_placement', __('Redis location')),
-                            ],
-                        ),
-                    ]),
-                Section::make('m3u-proxy')
-                    ->icon('heroicon-o-arrows-right-left')
-                    ->compact()
-                    ->schema([
-                        $this->entry('proxy.status', __('Status'))
-                            ->state(fn (): string => match (true) {
-                                ! $this->value('proxy.enabled') => 'disabled',
-                                (bool) $this->value('proxy.reachable') => 'running',
-                                default => 'stopped',
-                            })
-                            ->badge()
-                            ->formatStateUsing(fn (string $state): string => match ($state) {
-                                'disabled' => __('Disabled'),
-                                'running' => __('Connected'),
-                                default => __('Unavailable'),
-                            })
-                            ->color(fn (string $state): string => self::statusColor($state)),
-                        ...array_map(
-                            fn (TextEntry $entry): TextEntry => $entry->visible(fn (): bool => (bool) $this->value('proxy.enabled')),
-                            [
-                                $this->placementEntry('proxy.mode', __('Mode')),
-                                $this->entry('proxy.version', __('Version')),
-                                $this->entry('proxy.python_version', 'Python'),
-                                $this->entry('proxy.ffmpeg_version', 'FFmpeg'),
-                                $this->entry('proxy.streamlink_version', 'Streamlink')->placeholder(__('Disabled')),
-                                $this->entry('proxy.ytdlp_version', 'yt-dlp')->placeholder(__('Disabled')),
-                                $this->entry('proxy.hardware_acceleration', __('Hardware acceleration'))->placeholder(__('Disabled')),
-                            ],
-                        ),
-                    ]),
-            ]),
+            Section::make(__('Health checks'))
+                ->icon('heroicon-o-heart')
+                ->compact()
+                ->schema($this->checkEntries()),
+            Section::make(__('Container services'))
+                ->icon('heroicon-o-server-stack')
+                ->description(__('Processes managed by the container\'s supervisor.'))
+                ->compact()
+                ->schema($this->serviceEntries()),
+            Section::make(__('Application'))
+                ->icon('heroicon-o-cube')
+                ->compact()
+                ->schema([
+                    $this->entry('application.version', __('Version')),
+                    $this->entry('application.latest_version', __('Latest version')),
+                    $this->entry('application.branch', __('Branch')),
+                    $this->entry('application.commit', __('Commit'))->fontFamily('mono'),
+                    $this->entry('application.build_date', __('Build date')),
+                    $this->entry('application.environment', __('Environment')),
+                    $this->toggleEntry('application.debug', __('Debug mode'), warnWhenOn: true),
+                    $this->entry('application.timezone', __('Timezone')),
+                    $this->entry('application.url', __('URL'))->extraAttributes(['class' => 'privacy-sensitive']),
+                    $this->entry('application.laravel_version', 'Laravel'),
+                    $this->entry('application.filament_version', 'Filament'),
+                    $this->entry('application.livewire_version', 'Livewire'),
+                ]),
+            Section::make('PHP')
+                ->icon('heroicon-o-code-bracket')
+                ->compact()
+                ->schema([
+                    $this->entry('php.version', __('Version')),
+                    $this->entry('php.sapi', __('Server API')),
+                    $this->entry('php.ini_file', __('Configuration file'))->fontFamily('mono'),
+                    $this->entry('php.memory_limit', __('Memory limit')),
+                    $this->entry('php.max_execution_time', __('Max execution time'))
+                        ->formatStateUsing(fn (string $state): string => $state === '0' ? __('Unlimited') : $state.'s'),
+                    $this->entry('php.upload_max_filesize', __('Upload max file size')),
+                    $this->entry('php.post_max_size', __('Post max size')),
+                    $this->toggleEntry('php.opcache', 'OPcache'),
+                    $this->toggleEntry('php.jit', 'JIT'),
+                ]),
+            Section::make(__('Operating system'))
+                ->icon('heroicon-o-cpu-chip')
+                ->compact()
+                ->schema([
+                    $this->entry('os.name', __('Operating system')),
+                    $this->entry('os.kernel', __('Kernel')),
+                    $this->entry('os.architecture', __('Architecture')),
+                    $this->entry('os.hostname', __('Hostname'))->extraAttributes(['class' => 'privacy-sensitive']),
+                    $this->entry('os.container', __('Docker container'))
+                        ->formatStateUsing(fn (bool $state): string => $state ? __('Yes') : __('No')),
+                    $this->entry('os.cpu_count', __('CPU cores')),
+                    $this->entry('os.memory', __('Memory'))
+                        ->state(fn (): ?string => $this->usage('os.memory_available', 'os.memory_total')),
+                    $this->entry('os.disk_free', __('Disk free'))
+                        ->formatStateUsing(fn (int $state): string => Number::fileSize($state, precision: 1)),
+                    $this->entry('os.load_average', __('Load average')),
+                    $this->entry('os.uptime_seconds', __('Uptime'))
+                        ->formatStateUsing(fn (int $state): string => CarbonInterval::seconds($state)->cascade()->forHumans(short: true, parts: 3)),
+                    $this->entry('os.ffmpeg_version', 'FFmpeg'),
+                    $this->toggleEntry('os.comskip', 'Comskip', on: __('Installed'), off: __('Not installed')),
+                ]),
+            Section::make(__('Database'))
+                ->icon('heroicon-o-circle-stack')
+                ->compact()
+                ->schema([
+                    $this->entry('database.driver', __('Driver')),
+                    $this->toggleEntry('database.connected', __('Status'), on: __('Connected'), off: __('Unavailable'), offColor: 'danger'),
+                    $this->entry('database.server_version', __('Server version')),
+                    $this->entry('database.database', __('Database')),
+                    $this->entry('database.host', __('Host'))
+                        ->extraAttributes(['class' => 'privacy-sensitive'])
+                        ->visible(fn (): bool => $this->value('database.driver') !== 'sqlite'),
+                    $this->placementEntry('database.placement', __('Location')),
+                    $this->entry('database.size', __('Size'))
+                        ->formatStateUsing(fn (int $state): string => Number::fileSize($state, precision: 1)),
+                ]),
+            Section::make(__('Cache & queue'))
+                ->icon('heroicon-o-bolt')
+                ->compact()
+                ->schema([
+                    $this->entry('cache.cache_driver', __('Cache driver')),
+                    $this->entry('cache.queue_driver', __('Queue driver')),
+                    $this->entry('cache.session_driver', __('Session driver')),
+                    $this->entry('cache.broadcast_driver', __('Broadcast driver')),
+                    ...array_map(
+                        fn (TextEntry $entry): TextEntry => $entry->visible(fn (): bool => (bool) $this->value('cache.redis_used')),
+                        [
+                            $this->toggleEntry('cache.redis_connected', __('Redis'), on: __('Connected'), off: __('Unavailable'), offColor: 'danger'),
+                            $this->entry('cache.redis_version', __('Redis version')),
+                            $this->entry('cache.redis_memory', __('Redis memory')),
+                            $this->entry('cache.redis_host', __('Redis host'))->extraAttributes(['class' => 'privacy-sensitive']),
+                            $this->placementEntry('cache.redis_placement', __('Redis location')),
+                        ],
+                    ),
+                ]),
+            Section::make('m3u-proxy')
+                ->icon('heroicon-o-arrows-right-left')
+                ->compact()
+                ->schema([
+                    $this->entry('proxy.status', __('Status'))
+                        ->state(fn (): string => match (true) {
+                            ! $this->value('proxy.enabled') => 'disabled',
+                            (bool) $this->value('proxy.reachable') => 'running',
+                            default => 'stopped',
+                        })
+                        ->badge()
+                        ->formatStateUsing(fn (string $state): string => match ($state) {
+                            'disabled' => __('Disabled'),
+                            'running' => __('Connected'),
+                            default => __('Unavailable'),
+                        })
+                        ->color(fn (string $state): string => self::statusColor($state)),
+                    ...array_map(
+                        fn (TextEntry $entry): TextEntry => $entry->visible(fn (): bool => (bool) $this->value('proxy.enabled')),
+                        [
+                            $this->placementEntry('proxy.mode', __('Mode')),
+                            $this->entry('proxy.version', __('Version')),
+                            $this->entry('proxy.python_version', 'Python'),
+                            $this->entry('proxy.ffmpeg_version', 'FFmpeg'),
+                            $this->entry('proxy.streamlink_version', 'Streamlink')->placeholder(__('Disabled')),
+                            $this->entry('proxy.ytdlp_version', 'yt-dlp')->placeholder(__('Disabled')),
+                            $this->entry('proxy.hardware_acceleration', __('Hardware acceleration'))->placeholder(__('Disabled')),
+                        ],
+                    ),
+                ]),
             Section::make(__('PHP extensions'))
                 ->icon('heroicon-o-puzzle-piece')
                 ->description(fn (): string => __(':count loaded', ['count' => count($this->value('php.extensions') ?? [])]))
