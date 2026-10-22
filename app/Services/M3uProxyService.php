@@ -3297,7 +3297,9 @@ class M3uProxyService
     protected function normalizationEncoder(): string
     {
         // Only expose the worker's supported presets; never send arbitrary commands/devices.
-        return app(GeneralSettings::class)->proxy_normalization_encoder === 'vaapi' ? 'vaapi' : 'cpu';
+        $encoder = app(GeneralSettings::class)->proxy_normalization_encoder;
+
+        return in_array($encoder, ['cpu', 'vaapi', 'qsv'], true) ? $encoder : 'cpu';
     }
 
     /**

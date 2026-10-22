@@ -500,13 +500,13 @@ class ManageProxySettings extends BaseSettingsPage
                         Select::make('proxy_normalization_encoder')
                             ->label(__('Live normalization encoder'))
                             ->visible(fn (Get $get): bool => (bool) $get('proxy_normalize_live_output'))
-                            ->options(['cpu' => __('CPU (libx264)'), 'vaapi' => __('GPU (VAAPI)')])
+                            ->options(['cpu' => __('CPU (libx264)'), 'vaapi' => __('GPU (VAAPI)'), 'qsv' => __('Intel Quick Sync (QSV)')])
                             ->required()
-                            ->in(['cpu', 'vaapi'])
+                            ->in(['cpu', 'vaapi', 'qsv'])
                             ->native(false)
                             ->hintIcon(
                                 'heroicon-m-question-mark-circle',
-                                tooltip: __('CPU is the default and retains the proxy CPU custom profile configuration. VAAPI requires a compatible GPU and render device available to the proxy worker. Applies only to normalized live streams, not Stream Profiles.')
+                                tooltip: __('CPU is the default and retains the proxy CPU custom profile configuration. VAAPI requires a compatible GPU; QSV requires a compatible Intel GPU with Quick Sync support. Both require a render device available to the proxy worker and use worker-owned presets and hardware probes. Applies only to normalized live streams, not Stream Profiles.')
                             ),
                     ]),
 

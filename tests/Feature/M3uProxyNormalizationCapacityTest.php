@@ -93,6 +93,9 @@ it('reuses the created capacity failover pool before checking saturated provider
     expect($service->getChannelUrl($this->primary, $this->channel))->toContain('capacity-backup');
     expect($this->pool['url'])->toBe($this->fallback->url)
         ->and(($this->pool['metadata']['normalize_live_output'] ?? null) === 'true')->toBe($normalized);
+    if ($normalized) {
+        expect($this->pool['metadata']['normalization_encoder'])->toBe($encoder);
+    }
     $this->backup->update(['available_streams' => 1]);
     $before = count(Http::recorded());
     expect($service->getChannelUrl($this->primary, $this->channel))->toContain('capacity-backup');
@@ -109,14 +112,19 @@ it('reuses the created capacity failover pool before checking saturated provider
     'VOD TS VAAPI' => ['.ts', true, false, 'vaapi'],
     'VOD extensionless VAAPI' => ['', true, false, 'vaapi'],
     'normalized live TS VAAPI' => ['.ts', false, true, 'vaapi'],
+    'HLS QSV' => ['.m3u8', false, false, 'qsv'],
+    'DASH QSV' => ['.mpd', false, false, 'qsv'],
+    'VOD TS QSV' => ['.ts', true, false, 'qsv'],
+    'VOD extensionless QSV' => ['', true, false, 'qsv'],
+    'normalized live TS QSV' => ['.ts', false, true, 'qsv'],
 ]);
 
-it('does not reuse the other encoder after a capacity failover', function (bool $saturated) {
+it('does not reuse the other encoder after a capacity failover', function (bool $saturated, string $encoder) {
     $service = app(M3uProxyService::class);
     $service->getChannelUrl($this->primary, $this->channel);
     expect($this->pool['metadata']['normalization_encoder'])->toBe('cpu');
     $settings = app(GeneralSettings::class);
-    $settings->proxy_normalization_encoder = 'vaapi';
+    $settings->proxy_normalization_encoder = $encoder;
     $settings->save();
     if ($saturated) {
         $this->backup->update(['available_streams' => 1]);
@@ -124,10 +132,10 @@ it('does not reuse the other encoder after a capacity failover', function (bool 
         expect(Http::recorded(fn (Request $r) => $r->method() === 'POST'))->toHaveCount(1);
     } else {
         $service->getChannelUrl($this->primary, $this->channel);
-        expect($this->pool['metadata']['normalization_encoder'])->toBe('vaapi');
+        expect($this->pool['metadata']['normalization_encoder'])->toBe($encoder);
         expect(Http::recorded(fn (Request $r) => $r->method() === 'POST'))->toHaveCount(2);
     }
-})->with([true, false]);
+})->with([true, false])->with(['vaapi', 'qsv']);
 
 it('rejects an unnormalized normalizable TS pool at capacity', function () {
     $this->backup->update(['available_streams' => 1]);
