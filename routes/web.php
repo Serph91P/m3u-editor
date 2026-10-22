@@ -102,15 +102,6 @@ Route::post('/webhook/test', WebhookTestController::class)
 Route::get('/webhook/test', WebhookTestController::class)
     ->name('webhook.test.get');
 
-// If local env, show PHP info screen
-Route::get('/phpinfo', function () {
-    if (app()->environment('local')) {
-        phpinfo();
-    } else {
-        abort(404);
-    }
-});
-
 /*
  * Logo proxy route - cache and serve remote logos
  */
