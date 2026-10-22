@@ -2875,30 +2875,27 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->label(fn (Get $get): string => $get('target') === 'series_categories' ? __('Categories') : __('Groups'))
                                 ->options(function (Get $get, ?Playlist $record): array {
                                     if ($get('target') === 'series_categories') {
-                                        return [
-                                            'all' => 'All categories',
-                                            ...($record
-                                                ? SourceCategory::where('playlist_id', $record->id)
-                                                    ->orderBy('name')
-                                                    ->pluck('name', 'name')
-                                                    ->toArray()
-                                                : []),
-                                        ];
-                                    }
-
-                                    return [
-                                        'all' => 'All groups',
-                                        ...($record
-                                            ? SourceGroup::where('playlist_id', $record->id)
-                                                ->where('type', match ($get('target')) {
-                                                    'vod_groups' => 'vod',
-                                                    default => 'live',
-                                                })
+                                        // Use array union (+) rather than spread (...) so numeric
+                                        // string names (e.g. "2024") keep their name as the array
+                                        // key instead of being reindexed to an integer position.
+                                        return ['all' => 'All categories'] + ($record
+                                            ? SourceCategory::where('playlist_id', $record->id)
                                                 ->orderBy('name')
                                                 ->pluck('name', 'name')
                                                 ->toArray()
-                                            : []),
-                                    ];
+                                            : []);
+                                    }
+
+                                    return ['all' => 'All groups'] + ($record
+                                        ? SourceGroup::where('playlist_id', $record->id)
+                                            ->where('type', match ($get('target')) {
+                                                'vod_groups' => 'vod',
+                                                default => 'live',
+                                            })
+                                            ->orderBy('name')
+                                            ->pluck('name', 'name')
+                                            ->toArray()
+                                        : []);
                                 })
                                 ->default(['all'])
                                 ->multiple()
@@ -3734,6 +3731,31 @@ class PlaylistResource extends Resource implements CopilotResource
                 ->label(__('Category Name'))
                 ->placeholder(__('e.g. Trending Now, Top Comedy, Netflix'))
                 ->required()
+                ->rules([
+                    // Reject a sibling rule with the same (type, source, name) identity,
+                    // consistently with the separate Dynamic Group Create/Edit action's
+                    // conflict check (see DynamicGroupRuleActions::save()). Two conflicting
+                    // rules would otherwise both save, but materialize onto the same row,
+                    // silently keeping only the last rule's membership.
+                    fn (Get $get): \Closure => function (string $attribute, $value, \Closure $fail) use ($get): void {
+                        $type = (string) ($get('type') ?? '');
+                        $source = (string) ($get('source') ?? '');
+                        $name = trim((string) $value);
+
+                        if ($type === '' || $source === '' || $name === '') {
+                            return;
+                        }
+
+                        $siblings = collect($get('../../dynamic_groups_config') ?? []);
+                        $duplicateCount = $siblings->filter(fn (array $rule): bool => (string) ($rule['type'] ?? '') === $type
+                            && (string) ($rule['source'] ?? '') === $source
+                            && trim((string) ($rule['name'] ?? '')) === $name)->count();
+
+                        if ($duplicateCount > 1) {
+                            $fail(__('Another dynamic group rule already uses this content type, source and category name.'));
+                        }
+                    },
+                ])
                 ->columnSpan(fn (Get $get): int => in_array($get('source'), [
                     'trending',
                     'top_genre',

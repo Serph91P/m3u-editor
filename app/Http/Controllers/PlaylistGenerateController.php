@@ -141,7 +141,7 @@ class PlaylistGenerateController extends Controller
                     // A group folded into a merged group reports the parent's name for
                     // all standard (non-custom) output. Custom playlists key their
                     // grouping off tags, handled just below, so leave those untouched.
-                    if (! $isCustomContext && ! empty($channel->merged_group_name)) {
+                    if (! $isCustomContext && $channel->merged_group_name !== null && $channel->merged_group_name !== '') {
                         $group = $channel->merged_group_name;
                     }
                     $channelNo = $numberSequence->next($channelNo);

@@ -156,6 +156,40 @@ it('removes stale channels from source group in full_sync mode', function () {
     expect($this->customPlaylist->channels()->where('channels.id', $staleChannel->id)->exists())->toBeFalse();
 });
 
+it('does not detach a manually attached groupless custom channel the rule never managed (issue #1695)', function () {
+    // A manually created custom channel on the same source playlist, never
+    // assigned to any group, manually added to the custom playlist - the
+    // rule below (selecting $this->group) never touched it.
+    $manualChannel = Channel::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'group_id' => null,
+        'is_custom' => true,
+    ]);
+    $this->customPlaylist->channels()->attach($manualChannel->id);
+
+    // Currently-active channel from the selected group, so the rule has
+    // something to actually sync.
+    $activeChannel = Channel::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'group_id' => $this->group->id,
+    ]);
+
+    (new AutoSyncGroupsToCustomPlaylist(
+        userId: $this->user->id,
+        playlistId: $this->playlist->id,
+        groupIds: [$this->group->id],
+        customPlaylistId: $this->customPlaylist->id,
+        data: ['mode' => 'original'],
+        type: 'channel',
+        syncMode: 'full_sync',
+    ))->handle();
+
+    expect($this->customPlaylist->channels()->where('channels.id', $activeChannel->id)->exists())->toBeTrue();
+    expect($this->customPlaylist->channels()->where('channels.id', $manualChannel->id)->exists())->toBeTrue();
+});
+
 it('does not remove channels from other groups in full_sync mode', function () {
     $otherGroup = Group::factory()->create([
         'user_id' => $this->user->id,

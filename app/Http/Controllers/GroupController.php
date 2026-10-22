@@ -160,7 +160,10 @@ class GroupController extends Controller
     /**
      * Update a group
      *
-     * Update specific fields of a group. Only the provided fields will be updated. Updated values are stored in custom fields (e.g., `name_internal`).
+     * Update specific fields of a group. Only the provided fields will be updated. A `name`
+     * update is stored as the group's effective display name (`name`), the same column the
+     * Filament Name field writes to, so the rename is reflected consistently everywhere -
+     * list/detail responses, the channel's group field and generated playlist output.
      */
     public function update(Request $request, int $id): JsonResponse
     {
@@ -183,7 +186,7 @@ class GroupController extends Controller
         ]);
 
         if (array_key_exists('name', $validated)) {
-            $group->name_internal = $validated['name'];
+            $group->name = $validated['name'];
         }
         if (array_key_exists('sort_order', $validated)) {
             $group->sort_order = $validated['sort_order'];

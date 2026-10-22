@@ -2469,6 +2469,7 @@
     "An administrator still needs to trust this plugin. Review the declared permissions, owned schema, and file integrity before enabling it.": "An administrator still needs to trust this plugin. Review the declared permissions, owned schema, and file integrity before enabling it.",
     "An error occurred while processing \":playlist\". Please check the logs for details.": "An error occurred while processing \":playlist\". Please check the logs for details.",
     "Another Emby publication is already in progress. Retry when it finishes.": "Another Emby publication is already in progress. Retry when it finishes.",
+    "Another dynamic group rule already uses this content type, source and category name.": "Another dynamic group rule already uses this content type, source and category name.",
     "Another of your playlists already uses this password.": "Another of your playlists already uses this password.",
     "Any": "Any",
     "Any Language": "Any Language",

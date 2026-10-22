@@ -103,6 +103,11 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
 
         // Full sync: delete pivot rows for items that were previously in the source
         // groups (or have since lost their group assignment) but are no longer there.
+        // A manually created (is_custom) groupless item is excluded from the
+        // "lost their group assignment" branch below - it was never attached by a
+        // provider sync losing its group, so it can only have reached this custom
+        // playlist by a deliberate manual "Add to Custom Playlist", never by this
+        // rule, and must never be swept up by this cleanup.
         // Done entirely in the database — no PHP-level ID collection or diff needed.
         if ($this->syncMode === 'full_sync') {
             $itemTable = $isSeries ? 'series' : 'channels';
@@ -120,13 +125,16 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
                 ->where($pivotForeignKey, $this->customPlaylistId)
                 ->whereIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn): void {
                     // Items attached to this custom playlist that came from a source group
-                    // (or have since lost their group assignment)
+                    // (or have since lost their group assignment) - except a manually
+                    // created, groupless item, which this rule could never have added.
                     $query->select('id')
                         ->from($itemTable)
                         ->where('playlist_id', $this->playlistId)
                         ->where(function ($q) use ($groupColumn): void {
                             $q->whereIn($groupColumn, $this->groupIds)
-                                ->orWhereNull($groupColumn);
+                                ->orWhere(function ($q2) use ($groupColumn): void {
+                                    $q2->whereNull($groupColumn)->where('is_custom', false);
+                                });
                         });
                 })
                 ->whereNotIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn, $activeGroupIds): void {
