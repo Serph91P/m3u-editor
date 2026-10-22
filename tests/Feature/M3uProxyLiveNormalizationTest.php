@@ -239,6 +239,25 @@ it('only shows the encoder while normalization is enabled and retains the hidden
         ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => $encoder]);
 })->with(['cpu', 'vaapi', 'qsv']);
 
+it('registers the QSV option and guidance in the English language catalogue', function () {
+    $this->actingAs($this->user);
+    app()->setLocale('en');
+    $translations = json_decode(file_get_contents(lang_path('en.json')), true, flags: JSON_THROW_ON_ERROR);
+
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormFieldExists('proxy_normalization_encoder', function ($field) use ($translations) {
+            $label = $field->getOptions()['qsv'];
+            $tooltip = $field->getHintIconTooltip();
+
+            expect($label)->toBe('Intel Quick Sync (QSV)')
+                ->and($tooltip)->toContain('QSV requires a compatible Intel GPU with Quick Sync support.')
+                ->and($translations)->toHaveKey($label)
+                ->and($translations)->toHaveKey($tooltip);
+
+            return true;
+        });
+});
+
 it('rejects unsupported encoders without persisting them', function (string $encoder) {
     $this->actingAs($this->user);
     Livewire::test(ManageProxySettings::class)
@@ -298,6 +317,18 @@ it('matches encoder metadata before capacity selection and treats legacy metadat
     ['cpu', 'qsv', false], ['vaapi', 'qsv', false],
     ['qsv', null, false], ['qsv', 'cpu', false], ['qsv', 'vaapi', false], ['qsv', 'qsv', true],
 ]);
+
+it('describes the global CPU VAAPI and QSV encoders in the channel normalization guidance', function () {
+    $this->actingAs($this->user);
+    app()->setLocale('en');
+    $translations = json_decode(file_get_contents(lang_path('en.json')), true, flags: JSON_THROW_ON_ERROR);
+
+    $helper = 'Inherit Settings → Proxy → Failover & Recovery, or explicitly enable/disable normalization for this channel. Uses the global CPU/VAAPI/QSV encoder. Only compatible live MPEG-TS inputs; ignored for VOD, HLS, DASH, catchup and Stream Profiles.';
+
+    Livewire::test(EditChannel::class, ['record' => $this->channel->id])
+        ->assertSee($helper);
+    expect($translations)->toHaveKey($helper);
+});
 
 it('roundtrips all channel normalization states without losing proxy siblings', function () {
     config(['proxy.normalize_live_output' => true]);
