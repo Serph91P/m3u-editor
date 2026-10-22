@@ -287,21 +287,6 @@ class ManageProxySettings extends BaseSettingsPage
                             }),
                     ])
                     ->schema([
-                        Toggle::make('proxy_normalize_live_output')
-                            ->label(__('Normalize live MPEG-TS output'))
-                            ->columnSpanFull()
-                            ->live()
-                            ->afterStateHydrated(fn (Toggle $component) => $component->state(app(GeneralSettings::class)->proxy_normalize_live_output ?? config('proxy.normalize_live_output', false)))
-                            ->helperText(__('Persistent FFmpeg normalization for compatible live MPEG-TS inputs. Adds transcoding overhead for smoother failover. Channels may inherit, enable or disable it. Excludes VOD, HLS, DASH, catchup and Stream Profiles. Saving overrides the legacy M3U_PROXY_NORMALIZE_LIVE_OUTPUT default, even when that environment variable is false.')),
-                        Select::make('proxy_normalization_encoder')
-                            ->label(__('Live normalization encoder'))
-                            ->visible(fn (Get $get): bool => (bool) $get('proxy_normalize_live_output'))
-                            ->options(['cpu' => __('CPU (libx264)'), 'vaapi' => __('GPU (VAAPI)')])
-                            ->required()
-                            ->in(['cpu', 'vaapi'])
-                            ->native(false)
-                            ->helperText(__('CPU is the default and retains the proxy CPU custom profile configuration. VAAPI requires a compatible GPU and render device available to the proxy worker. Applies only to normalized live streams, not Stream Profiles.')),
-
                         TextInput::make('failover_resolver_url')
                             ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Resolver URL'))
@@ -502,6 +487,27 @@ class ManageProxySettings extends BaseSettingsPage
                                     ->suffix('s')
                                     ->helperText(__('Delay after stream start before silence monitoring begins. Allows for initial buffering and audio decoder startup. Default: 15 seconds.')),
                             ])->hidden(fn (Get $get) => ! (bool) $get('enable_silence_detection')),
+
+                        Toggle::make('proxy_normalize_live_output')
+                            ->label(__('Normalize live MPEG-TS output'))
+                            ->columnSpanFull()
+                            ->live()
+                            ->afterStateHydrated(fn (Toggle $component) => $component->state(app(GeneralSettings::class)->proxy_normalize_live_output ?? config('proxy.normalize_live_output', false)))
+                            ->hintIcon(
+                                'heroicon-m-question-mark-circle',
+                                tooltip: __('Persistent FFmpeg normalization for compatible live MPEG-TS inputs. Adds transcoding overhead for smoother failover. Channels may inherit, enable or disable it. Excludes VOD, HLS, DASH, catchup and Stream Profiles. Saving overrides the legacy M3U_PROXY_NORMALIZE_LIVE_OUTPUT default, even when that environment variable is false.')
+                            ),
+                        Select::make('proxy_normalization_encoder')
+                            ->label(__('Live normalization encoder'))
+                            ->visible(fn (Get $get): bool => (bool) $get('proxy_normalize_live_output'))
+                            ->options(['cpu' => __('CPU (libx264)'), 'vaapi' => __('GPU (VAAPI)')])
+                            ->required()
+                            ->in(['cpu', 'vaapi'])
+                            ->native(false)
+                            ->hintIcon(
+                                'heroicon-m-question-mark-circle',
+                                tooltip: __('CPU is the default and retains the proxy CPU custom profile configuration. VAAPI requires a compatible GPU and render device available to the proxy worker. Applies only to normalized live streams, not Stream Profiles.')
+                            ),
                     ]),
 
                 Section::make(__('In-App Player Transcoding'))
