@@ -1180,7 +1180,7 @@ class M3uProxyService
         // all pool reuse paths when timeshift parameters are present on the request.
         $isTimeshiftRequest = PlaylistService::isTimeshiftRequest($request);
         $normalizeLiveOutput = ! $profile && ! $isTimeshiftRequest
-            && ($channel->proxy_options['normalize_live_output'] ?? config('proxy.normalize_live_output', false)) === true
+            && ($channel->proxy_options['normalize_live_output'] ?? app(GeneralSettings::class)->proxy_normalize_live_output ?? config('proxy.normalize_live_output', false)) === true
             && $this->isNormalizableLiveChannel($channel, PlaylistUrlService::getChannelUrl($channel, $playlist));
 
         // Catchup players request this URL again for every seek (each Range probe), while the
@@ -2746,6 +2746,7 @@ class M3uProxyService
 
             if ($normalizeLiveOutput) {
                 $payload['normalize_live_output'] = true;
+                $payload['normalization_encoder'] = $this->normalizationEncoder();
             }
 
             // Handle strict_live_ts flag if set in metadata
@@ -3293,6 +3294,12 @@ class M3uProxyService
         return ProxyFacade::getBaseUrl().'/m3u-proxy';
     }
 
+    protected function normalizationEncoder(): string
+    {
+        // Only expose the worker's supported presets; never send arbitrary commands/devices.
+        return app(GeneralSettings::class)->proxy_normalization_encoder === 'vaapi' ? 'vaapi' : 'cpu';
+    }
+
     /**
      * Find an existing pooled transcoded stream for the given channel.
      * This allows multiple clients to connect to the same transcoded stream without
@@ -3366,6 +3373,10 @@ class M3uProxyService
                         $expectedNormalization = $this->isNormalizableLiveChannel($sourceChannel, $sourceUrl);
                     }
                     if ((($metadata['normalize_live_output'] ?? null) === 'true') !== $expectedNormalization) {
+                        continue;
+                    }
+                    // Older normalized pools predate encoder metadata and always used CPU.
+                    if ($expectedNormalization && ($metadata['normalization_encoder'] ?? 'cpu') !== $this->normalizationEncoder()) {
                         continue;
                     }
                 }

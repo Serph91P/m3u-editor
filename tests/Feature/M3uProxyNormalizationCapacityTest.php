@@ -4,6 +4,7 @@ use App\Models\Channel;
 use App\Models\Playlist;
 use App\Models\User;
 use App\Services\M3uProxyService;
+use App\Settings\GeneralSettings;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -11,6 +12,8 @@ use Illuminate\Support\Facades\Redis;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
+    // Discard Settings resolved before the first RefreshDatabase migration.
+    app(GeneralSettings::class)->refresh();
     Queue::fake();
     Http::preventStrayRequests();
     Redis::shouldReceive('exists')->andReturn(0);
@@ -37,6 +40,8 @@ beforeEach(function () {
             $metadata = array_map(fn ($v) => is_bool($v) ? ($v ? 'true' : 'false') : (string) $v, $request['metadata']);
             if ($request['normalize_live_output'] ?? false) {
                 $metadata['normalize_live_output'] = 'true';
+                // Mirror server-owned outer metadata from the worker contract.
+                $metadata['normalization_encoder'] = $request['normalization_encoder'] ?? 'cpu';
             }
             $this->pool = ['stream_id' => 'capacity-backup', 'client_count' => 1,
                 'metadata' => $metadata, 'url' => $request['url']];
@@ -79,7 +84,10 @@ it('uses the selected capacity failover VOD flag for normalization', function (s
     'live extensionless control' => ['', false, true],
 ]);
 
-it('reuses the created capacity failover pool before checking saturated providers', function (string $extension, bool $vod, bool $normalized) {
+it('reuses the created capacity failover pool before checking saturated providers', function (string $extension, bool $vod, bool $normalized, string $encoder) {
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalization_encoder = $encoder;
+    $settings->save();
     $this->fallback->update(['url' => 'http://provider.invalid/backup'.$extension, 'is_vod' => $vod]);
     $service = app(M3uProxyService::class);
     expect($service->getChannelUrl($this->primary, $this->channel))->toContain('capacity-backup');
@@ -91,12 +99,35 @@ it('reuses the created capacity failover pool before checking saturated provider
     expect(count(Http::recorded()) - $before)->toBe(1);
     expect(Http::recorded(fn (Request $r) => $r->method() === 'POST'))->toHaveCount(1);
 })->with([
-    'HLS' => ['.m3u8', false, false],
-    'DASH' => ['.mpd', false, false],
-    'VOD TS' => ['.ts', true, false],
-    'VOD extensionless' => ['', true, false],
-    'normalized live TS' => ['.ts', false, true],
+    'HLS CPU' => ['.m3u8', false, false, 'cpu'],
+    'DASH CPU' => ['.mpd', false, false, 'cpu'],
+    'VOD TS CPU' => ['.ts', true, false, 'cpu'],
+    'VOD extensionless CPU' => ['', true, false, 'cpu'],
+    'normalized live TS CPU' => ['.ts', false, true, 'cpu'],
+    'HLS VAAPI' => ['.m3u8', false, false, 'vaapi'],
+    'DASH VAAPI' => ['.mpd', false, false, 'vaapi'],
+    'VOD TS VAAPI' => ['.ts', true, false, 'vaapi'],
+    'VOD extensionless VAAPI' => ['', true, false, 'vaapi'],
+    'normalized live TS VAAPI' => ['.ts', false, true, 'vaapi'],
 ]);
+
+it('does not reuse the other encoder after a capacity failover', function (bool $saturated) {
+    $service = app(M3uProxyService::class);
+    $service->getChannelUrl($this->primary, $this->channel);
+    expect($this->pool['metadata']['normalization_encoder'])->toBe('cpu');
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalization_encoder = 'vaapi';
+    $settings->save();
+    if ($saturated) {
+        $this->backup->update(['available_streams' => 1]);
+        expect(fn () => $service->getChannelUrl($this->primary, $this->channel))->toThrow(HttpException::class);
+        expect(Http::recorded(fn (Request $r) => $r->method() === 'POST'))->toHaveCount(1);
+    } else {
+        $service->getChannelUrl($this->primary, $this->channel);
+        expect($this->pool['metadata']['normalization_encoder'])->toBe('vaapi');
+        expect(Http::recorded(fn (Request $r) => $r->method() === 'POST'))->toHaveCount(2);
+    }
+})->with([true, false]);
 
 it('rejects an unnormalized normalizable TS pool at capacity', function () {
     $this->backup->update(['available_streams' => 1]);

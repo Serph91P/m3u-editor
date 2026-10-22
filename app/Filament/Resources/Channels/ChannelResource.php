@@ -1963,14 +1963,20 @@ class ChannelResource extends Resource implements CopilotResource
                         ->columnSpanFull()
                         ->dehydrateStateUsing(fn ($state, $record): array => array_replace($record?->proxy_options ?? [], $state ?? []))
                         ->schema([
-                            Toggle::make('normalize_live_output')
-                                ->label(__('Normalize live MPEG-TS output (CPU transcoding)'))
+                            Select::make('normalize_live_output')
+                                ->label(__('Normalize live MPEG-TS output'))
                                 ->columnSpanFull()
-                                ->inline(false)
-                                ->afterStateHydrated(fn (Toggle $component, $record) => $component->state((bool) ($record?->proxy_options['normalize_live_output'] ?? config('proxy.normalize_live_output', false))))
-                                ->dehydrateStateUsing(fn ($state, $record): ?bool => ($record?->proxy_options['normalize_live_output'] ?? null) === null
-                                    && (bool) $state === config('proxy.normalize_live_output', false) ? null : (bool) $state)
-                                ->helperText(__('Opt-in persistent FFmpeg normalization for compatible live MPEG-TS inputs only. Adds CPU/transcoding overhead for smoother failover; not transparent support for arbitrary codecs. Ignored for VOD, HLS, DASH, catchup and Stream Profiles. Unchanged inherited values continue to use M3U_PROXY_NORMALIZE_LIVE_OUTPUT.')),
+                                ->options(['1' => __('Enabled'), '0' => __('Disabled')])
+                                ->placeholder(__('Inherit global setting'))
+                                ->nullable()
+                                ->native(false)
+                                ->in(['0', '1'])
+                                ->afterStateHydrated(fn (Select $component, $record) => $component->state(
+                                    ($record?->proxy_options['normalize_live_output'] ?? null) === null
+                                        ? null : ($record->proxy_options['normalize_live_output'] ? '1' : '0')
+                                ))
+                                ->dehydrateStateUsing(fn ($state): ?bool => $state === null || $state === '' ? null : in_array($state, [true, 1, '1'], true))
+                                ->helperText(__('Inherit Settings → Proxy → Failover & Recovery, or explicitly enable/disable normalization for this channel. Uses the global CPU/VAAPI encoder. Only compatible live MPEG-TS inputs; ignored for VOD, HLS, DASH, catchup and Stream Profiles.')),
                         ]),
                     Select::make('stream_profile_id')
                         ->label(__('Stream Profile'))

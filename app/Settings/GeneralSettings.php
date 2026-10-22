@@ -67,6 +67,11 @@ class GeneralSettings extends Settings
 
     public ?bool $proxy_stop_oldest_on_limit = false;
 
+    // Null keeps the legacy ENV default until the proxy settings page is saved.
+    public ?bool $proxy_normalize_live_output = null;
+
+    public string $proxy_normalization_encoder = 'cpu';
+
     // Silence detection - detect silent audio streams and trigger failover
     public ?bool $enable_silence_detection = false;
 

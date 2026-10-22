@@ -5,6 +5,7 @@ namespace App\Filament\Clusters\Settings\Pages;
 use App\Filament\Clusters\Settings\Pages\Concerns\BaseSettingsPage;
 use App\Models\StreamProfile;
 use App\Services\M3uProxyService;
+use App\Settings\GeneralSettings;
 use BackedEnum;
 use Exception;
 use Filament\Actions\Action;
@@ -286,6 +287,19 @@ class ManageProxySettings extends BaseSettingsPage
                             }),
                     ])
                     ->schema([
+                        Toggle::make('proxy_normalize_live_output')
+                            ->label(__('Normalize live MPEG-TS output'))
+                            ->columnSpanFull()
+                            ->afterStateHydrated(fn (Toggle $component) => $component->state(app(GeneralSettings::class)->proxy_normalize_live_output ?? config('proxy.normalize_live_output', false)))
+                            ->helperText(__('Persistent FFmpeg normalization for compatible live MPEG-TS inputs. Adds transcoding overhead for smoother failover. Channels may inherit, enable or disable it. Excludes VOD, HLS, DASH, catchup and Stream Profiles. Saving overrides the legacy M3U_PROXY_NORMALIZE_LIVE_OUTPUT default, even when that environment variable is false.')),
+                        Select::make('proxy_normalization_encoder')
+                            ->label(__('Live normalization encoder'))
+                            ->options(['cpu' => __('CPU (libx264)'), 'vaapi' => __('GPU (VAAPI)')])
+                            ->required()
+                            ->in(['cpu', 'vaapi'])
+                            ->native(false)
+                            ->helperText(__('CPU is the default and retains the proxy CPU custom profile configuration. VAAPI requires a compatible GPU and render device available to the proxy worker. Applies only to normalized live streams, not Stream Profiles.')),
+
                         TextInput::make('failover_resolver_url')
                             ->extraInputAttributes(['class' => 'privacy-sensitive'])
                             ->label(__('Resolver URL'))

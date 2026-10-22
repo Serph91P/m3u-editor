@@ -1,11 +1,13 @@
 <?php
 
+use App\Filament\Clusters\Settings\Pages\ManageProxySettings;
 use App\Filament\Resources\Channels\Pages\EditChannel;
 use App\Models\Channel;
 use App\Models\Playlist;
 use App\Models\StreamProfile;
 use App\Models\User;
 use App\Services\M3uProxyService;
+use App\Settings\GeneralSettings;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -14,6 +16,9 @@ use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
+    // The first application boot can resolve Settings before RefreshDatabase migrates.
+    // Reload from the migrated fixture rather than saving default-only boot values.
+    app(GeneralSettings::class)->refresh();
     Queue::fake();
     Http::preventStrayRequests();
     config([
@@ -85,7 +90,7 @@ it('preserves the entire direct API payload when explicitly disabled under a glo
     $this->channel->update(['proxy_options' => ['normalize_live_output' => true]]);
     $service->getChannelUrl($this->playlist, $this->channel);
     $enabled = Http::recorded(fn (Request $r) => $r->method() === 'POST')->last()[0]->data();
-    expect($enabled)->toEqual($legacy + ['normalize_live_output' => true]);
+    expect($enabled)->toEqual($legacy + ['normalize_live_output' => true, 'normalization_encoder' => 'cpu']);
 });
 
 it('allows explicitly opted-in raw TS endpoints', function (string $suffix) {
@@ -164,20 +169,95 @@ it('does not reuse an incompatible pool even when capacity is exhausted', functi
     Http::assertNotSent(fn (Request $r) => $r->method() === 'POST');
 })->with([true, false]);
 
-it('saves the nested checkbox without pinning inherited settings or losing sibling options', function () {
+it('saves persistent global normalization and encoder settings ahead of ENV defaults', function () {
+    $this->actingAs($this->user);
+    config(['proxy.normalize_live_output' => true]);
+    expect(app(GeneralSettings::class)->proxy_normalize_live_output)->toBeNull()
+        ->and(app(GeneralSettings::class)->proxy_normalization_encoder)->toBe('cpu');
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'cpu'])
+        ->fillForm(['proxy_normalize_live_output' => false, 'proxy_normalization_encoder' => 'vaapi'])
+        ->call('save')->assertHasNoFormErrors();
+    $settings = app(GeneralSettings::class)->refresh();
+    expect($settings->proxy_normalize_live_output)->toBeFalse()
+        ->and($settings->proxy_normalization_encoder)->toBe('vaapi');
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormSet(['proxy_normalize_live_output' => false, 'proxy_normalization_encoder' => 'vaapi']);
+    app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel);
+    Http::assertSent(fn (Request $r) => $r->method() === 'POST' && ! array_key_exists('normalize_live_output', $r->data()));
+    config(['proxy.normalize_live_output' => false]);
+    Livewire::test(ManageProxySettings::class)
+        ->fillForm(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'vaapi'])
+        ->call('save')->assertHasNoFormErrors();
+    expect(app(GeneralSettings::class)->refresh()->proxy_normalize_live_output)->toBeTrue();
+    app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel);
+    $payload = Http::recorded(fn (Request $r) => $r->method() === 'POST')->last()[0]->data();
+    expect($payload['normalize_live_output'])->toBeTrue()->and($payload['normalization_encoder'])->toBe('vaapi')
+        ->and($payload['metadata'])->not->toHaveKey('normalization_encoder');
+});
+
+it('rejects unsupported encoders without persisting them', function (string $encoder) {
+    $this->actingAs($this->user);
+    Livewire::test(ManageProxySettings::class)
+        ->fillForm(['proxy_normalization_encoder' => $encoder])
+        ->call('save')->assertHasFormErrors(['proxy_normalization_encoder']);
+    expect(app(GeneralSettings::class)->refresh()->proxy_normalization_encoder)->toBe('cpu');
+})->with(['cuda', 'CPU', 'vaapi -i arbitrary']);
+
+it('keeps explicit channel overrides ahead of saved global settings', function (bool $global, bool $override) {
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalize_live_output = $global;
+    $settings->proxy_normalization_encoder = 'vaapi';
+    $settings->save();
+    config(['proxy.normalize_live_output' => ! $global]);
+    $this->channel->update(['proxy_options' => ['normalize_live_output' => $override]]);
+    app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel);
+    Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+        && array_key_exists('normalization_encoder', $r->data()) === $override);
+})->with([[true, false], [false, true]]);
+
+it('matches encoder metadata before capacity selection and treats legacy metadata as CPU', function (string $encoder, ?string $metadataEncoder, bool $reuse) {
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalize_live_output = true;
+    $settings->proxy_normalization_encoder = $encoder;
+    $settings->save();
+    $this->playlist->update(['profiles_enabled' => true, 'available_streams' => 1]);
+    $this->channel->unsetRelation('playlist');
+    $metadata = ['type' => 'channel', 'id' => (string) $this->channel->id, 'playlist_uuid' => $this->playlist->uuid,
+        'original_channel_id' => (string) $this->channel->id, 'original_playlist_uuid' => $this->playlist->uuid,
+        'normalize_live_output' => 'true'];
+    if ($metadataEncoder !== null) {
+        $metadata['normalization_encoder'] = $metadataEncoder;
+    }
+    $this->proxyStreams = ['matching_streams' => [['stream_id' => 'encoder-pool', 'client_count' => 1,
+        'url' => $this->channel->url, 'metadata' => $metadata]], 'total_matching' => 1];
+    if ($reuse) {
+        expect(app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel))->toContain('/stream/encoder-pool');
+        Http::assertSentCount(1);
+    } else {
+        expect(fn () => app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel))->toThrow(HttpException::class);
+    }
+    Http::assertNotSent(fn (Request $r) => $r->method() === 'POST');
+})->with([
+    ['cpu', null, true], ['cpu', 'cpu', true], ['cpu', 'vaapi', false],
+    ['vaapi', null, false], ['vaapi', 'cpu', false], ['vaapi', 'vaapi', true],
+]);
+
+it('roundtrips all channel normalization states without losing proxy siblings', function () {
     config(['proxy.normalize_live_output' => true]);
     $this->channel->update(['proxy_options' => ['unrelated' => 'preserve']]);
     $this->actingAs($this->user);
-    Livewire::test(EditChannel::class, ['record' => $this->channel->id])
-        ->assertFormSet(['proxy_options.normalize_live_output' => true])
-        ->call('save')->assertHasNoFormErrors();
-    expect($this->channel->fresh()->proxy_options['normalize_live_output'] ?? null)->toBeNull();
-    Livewire::test(EditChannel::class, ['record' => $this->channel->id])
-        ->fillForm(['proxy_options.normalize_live_output' => false])
-        ->call('save')->assertHasNoFormErrors();
-    expect($this->channel->fresh()->proxy_options)->toMatchArray(['normalize_live_output' => false, 'unrelated' => 'preserve']);
-    Livewire::test(EditChannel::class, ['record' => $this->channel->id])
-        ->assertFormSet(['proxy_options.normalize_live_output' => false])
-        ->call('save')->assertHasNoFormErrors();
-    expect($this->channel->fresh()->proxy_options['normalize_live_output'])->toBeFalse();
+    foreach ([null, '0', '1', null, '1', '0'] as $state) {
+        $expected = $state === null ? null : $state === '1';
+        Livewire::test(EditChannel::class, ['record' => $this->channel->id])
+            ->fillForm(['proxy_options.normalize_live_output' => $state])
+            ->call('save')->assertHasNoFormErrors();
+        expect($this->channel->fresh()->proxy_options)->toMatchArray([
+            'normalize_live_output' => $expected, 'unrelated' => 'preserve',
+        ]);
+        Livewire::test(EditChannel::class, ['record' => $this->channel->id])
+            ->assertFormSet(['proxy_options.normalize_live_output' => $state])
+            ->call('save')->assertHasNoFormErrors();
+        expect($this->channel->fresh()->proxy_options['normalize_live_output'])->toBe($expected);
+    }
 });
