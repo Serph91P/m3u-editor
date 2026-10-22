@@ -132,7 +132,7 @@ services:
     #devices:
     #  - /dev/dri:/dev/dri
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:${PROXY_PORT:-38085}/health?api_token=${M3U_PROXY_TOKEN:-changeme}"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:${M3U_PROXY_PORT:-38085}/health?api_token=${M3U_PROXY_TOKEN:-changeme}"]
       interval: 30s
       timeout: 2s
       retries: 12
@@ -174,7 +174,7 @@ services:
 
       # M3U Proxy port (exposed through Gluetun)
       # Uncomment if you need direct external access to m3u-proxy
-      # - "${PROXY_PORT:-38085}:${PROXY_PORT:-38085}" # Change if needed
+      # - "${M3U_PROXY_PORT:-38085}:${M3U_PROXY_PORT:-38085}" # Change if needed
       
       # Gluetun control server (optional, for VPN management)
       # - "8000:8000/tcp"  # HTTP control server
