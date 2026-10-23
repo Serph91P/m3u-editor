@@ -1987,7 +1987,7 @@ class ChannelResource extends Resource implements CopilotResource
                                         ? null : ($record->proxy_options['normalize_live_output'] ? '1' : '0')
                                 ))
                                 ->dehydrateStateUsing(fn ($state): ?bool => $state === null || $state === '' ? null : in_array($state, [true, 1, '1'], true))
-                                ->helperText(__('Inherit Settings → Proxy → Failover & Recovery, or explicitly enable/disable normalization for this channel. Uses the global CPU/VAAPI encoder. Only compatible live MPEG-TS inputs; ignored for VOD, HLS, DASH, catchup and Stream Profiles.')),
+                                ->helperText(__('Inherit Settings → Proxy → Failover & Recovery, or explicitly enable/disable normalization for this channel. Uses the global CPU/VAAPI/QSV encoder. Only compatible live MPEG-TS inputs; ignored for VOD, HLS, DASH, catchup and Stream Profiles.')),
                         ]),
                     Select::make('stream_profile_id')
                         ->label(__('Stream Profile'))

@@ -78,7 +78,10 @@ it('sends only an active live opt-in and preserves legacy payload otherwise', fu
     'explicit true beats global' => [false, ['normalize_live_output' => true], true],
 ]);
 
-it('preserves the entire direct API payload when explicitly disabled under a global opt-in', function () {
+it('preserves the entire direct API payload when explicitly disabled under a global opt-in', function (string $encoder) {
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalization_encoder = $encoder;
+    $settings->save();
     $service = app(M3uProxyService::class);
     $service->getChannelUrl($this->playlist, $this->channel);
     $legacy = Http::recorded(fn (Request $r) => $r->method() === 'POST')->last()[0]->data();
@@ -90,8 +93,8 @@ it('preserves the entire direct API payload when explicitly disabled under a glo
     $this->channel->update(['proxy_options' => ['normalize_live_output' => true]]);
     $service->getChannelUrl($this->playlist, $this->channel);
     $enabled = Http::recorded(fn (Request $r) => $r->method() === 'POST')->last()[0]->data();
-    expect($enabled)->toEqual($legacy + ['normalize_live_output' => true, 'normalization_encoder' => 'cpu']);
-});
+    expect($enabled)->toEqual($legacy + ['normalize_live_output' => true, 'normalization_encoder' => $encoder]);
+})->with(['cpu', 'vaapi', 'qsv']);
 
 it('allows explicitly opted-in raw TS endpoints', function (string $suffix) {
     $this->channel->update(['url' => 'http://provider.invalid/live/test/test/123'.$suffix,
@@ -100,8 +103,11 @@ it('allows explicitly opted-in raw TS endpoints', function (string $suffix) {
     Http::assertSent(fn (Request $r) => $r->method() === 'POST' && ($r['normalize_live_output'] ?? null) === true);
 })->with(['', '.TS?token=synthetic', '.mpegts']);
 
-it('excludes VOD HLS DASH other containers and catchup from normalization', function (bool $vod, string $extension, bool $catchup) {
+it('excludes VOD HLS DASH other containers and catchup from normalization', function (bool $vod, string $extension, bool $catchup, string $encoder) {
     config(['proxy.normalize_live_output' => true]);
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalization_encoder = $encoder;
+    $settings->save();
     $this->channel->update(['is_vod' => $vod, 'url' => 'http://provider.invalid/live/test/test/123'.$extension]);
     $request = $catchup ? Illuminate\Http\Request::create('/test', 'GET', ['timeshift_date' => '2026-10-20:12-00', 'timeshift_duration' => 60]) : null;
     app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel, $request);
@@ -112,15 +118,18 @@ it('excludes VOD HLS DASH other containers and catchup from normalization', func
     'dash' => [false, '.mpd', false],
     'mp4' => [false, '.mp4', false],
     'catchup' => [false, '.ts', true],
-]);
+])->with(['cpu', 'vaapi', 'qsv']);
 
-it('does not apply normalization to a Stream Profile', function () {
+it('does not apply normalization to a Stream Profile', function (string $encoder) {
     config(['proxy.normalize_live_output' => true]);
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalization_encoder = $encoder;
+    $settings->save();
     $profile = StreamProfile::factory()->for($this->user)->create();
     app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel, null, $profile);
     Http::assertSent(fn (Request $r) => $r->method() === 'POST'
         && str_ends_with($r->url(), '/transcode') && ! array_key_exists('normalize_live_output', $r->data()));
-});
+})->with(['cpu', 'vaapi', 'qsv']);
 
 it('matches direct normalization mode before provider selection and capacity checks', function (bool $wanted) {
     config(['proxy.normalize_live_output' => $wanted]);
@@ -169,64 +178,84 @@ it('does not reuse an incompatible pool even when capacity is exhausted', functi
     Http::assertNotSent(fn (Request $r) => $r->method() === 'POST');
 })->with([true, false]);
 
-it('saves persistent global normalization and encoder settings ahead of ENV defaults', function () {
+it('saves persistent global normalization and encoder settings ahead of ENV defaults', function (string $encoder) {
     $this->actingAs($this->user);
     config(['proxy.normalize_live_output' => true]);
     expect(app(GeneralSettings::class)->proxy_normalize_live_output)->toBeNull()
         ->and(app(GeneralSettings::class)->proxy_normalization_encoder)->toBe('cpu');
     Livewire::test(ManageProxySettings::class)
         ->assertFormFieldIsVisible('proxy_normalization_encoder')
+        ->assertFormFieldExists('proxy_normalization_encoder', fn ($field) => array_keys($field->getOptions()) === ['cpu', 'vaapi', 'qsv'])
         ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'cpu'])
-        ->fillForm(['proxy_normalization_encoder' => 'vaapi'])
+        ->fillForm(['proxy_normalization_encoder' => $encoder])
         ->call('save')->assertHasNoFormErrors();
     Livewire::test(ManageProxySettings::class)
         ->set('data.proxy_normalize_live_output', false)
         ->call('save')->assertHasNoFormErrors();
     $settings = app(GeneralSettings::class)->refresh();
     expect($settings->proxy_normalize_live_output)->toBeFalse()
-        ->and($settings->proxy_normalization_encoder)->toBe('vaapi');
+        ->and($settings->proxy_normalization_encoder)->toBe($encoder);
     Livewire::test(ManageProxySettings::class)
-        ->assertFormSet(['proxy_normalize_live_output' => false, 'proxy_normalization_encoder' => 'vaapi']);
+        ->assertFormSet(['proxy_normalize_live_output' => false, 'proxy_normalization_encoder' => $encoder]);
     app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel);
     Http::assertSent(fn (Request $r) => $r->method() === 'POST' && ! array_key_exists('normalize_live_output', $r->data()));
     config(['proxy.normalize_live_output' => false]);
     Livewire::test(ManageProxySettings::class)
-        ->fillForm(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'vaapi'])
+        ->fillForm(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => $encoder])
         ->call('save')->assertHasNoFormErrors();
     expect(app(GeneralSettings::class)->refresh()->proxy_normalize_live_output)->toBeTrue();
     app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel);
     $payload = Http::recorded(fn (Request $r) => $r->method() === 'POST')->last()[0]->data();
-    expect($payload['normalize_live_output'])->toBeTrue()->and($payload['normalization_encoder'])->toBe('vaapi')
+    expect($payload['normalize_live_output'])->toBeTrue()->and($payload['normalization_encoder'])->toBe($encoder)
         ->and($payload['metadata'])->not->toHaveKey('normalization_encoder');
-});
+})->with(['cpu', 'vaapi', 'qsv']);
 
-it('only shows the encoder while normalization is enabled and retains the hidden selection', function () {
+it('only shows the encoder while normalization is enabled and retains the hidden selection', function (string $encoder) {
     $this->actingAs($this->user);
     $settings = app(GeneralSettings::class);
     $settings->proxy_normalize_live_output = false;
-    $settings->proxy_normalization_encoder = 'vaapi';
+    $settings->proxy_normalization_encoder = $encoder;
     $settings->save();
     Livewire::test(ManageProxySettings::class)
         ->assertFormFieldIsHidden('proxy_normalization_encoder')
-        ->assertFormSet(['proxy_normalization_encoder' => 'vaapi'])
+        ->assertFormSet(['proxy_normalization_encoder' => $encoder])
         ->set('data.proxy_normalize_live_output', true)
         ->assertFormFieldIsVisible('proxy_normalization_encoder')
         ->assertFormFieldExists('proxy_normalize_live_output', fn ($field) => $field->getHintIcon() === 'heroicon-m-question-mark-circle' && filled($field->getHintIconTooltip()))
         ->assertFormFieldExists('proxy_normalization_encoder', fn ($field) => $field->getHintIcon() === 'heroicon-m-question-mark-circle' && filled($field->getHintIconTooltip()))
-        ->assertFormSet(['proxy_normalization_encoder' => 'vaapi'])
+        ->assertFormSet(['proxy_normalization_encoder' => $encoder])
         ->set('data.proxy_normalize_live_output', false)
         ->assertFormFieldIsHidden('proxy_normalization_encoder')
         ->call('save')->assertHasNoFormErrors();
     expect(app(GeneralSettings::class)->refresh()->proxy_normalize_live_output)->toBeFalse()
-        ->and(app(GeneralSettings::class)->proxy_normalization_encoder)->toBe('vaapi');
+        ->and(app(GeneralSettings::class)->proxy_normalization_encoder)->toBe($encoder);
     Livewire::test(ManageProxySettings::class)
         ->assertFormFieldIsHidden('proxy_normalization_encoder')
-        ->assertFormSet(['proxy_normalization_encoder' => 'vaapi'])
+        ->assertFormSet(['proxy_normalization_encoder' => $encoder])
         ->set('data.proxy_normalize_live_output', true)
         ->call('save')->assertHasNoFormErrors();
     Livewire::test(ManageProxySettings::class)
         ->assertFormFieldIsVisible('proxy_normalization_encoder')
-        ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => 'vaapi']);
+        ->assertFormSet(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => $encoder]);
+})->with(['cpu', 'vaapi', 'qsv']);
+
+it('registers the QSV option and guidance in the English language catalogue', function () {
+    $this->actingAs($this->user);
+    app()->setLocale('en');
+    $translations = json_decode(file_get_contents(lang_path('en.json')), true, flags: JSON_THROW_ON_ERROR);
+
+    Livewire::test(ManageProxySettings::class)
+        ->assertFormFieldExists('proxy_normalization_encoder', function ($field) use ($translations) {
+            $label = $field->getOptions()['qsv'];
+            $tooltip = $field->getHintIconTooltip();
+
+            expect($label)->toBe('Intel Quick Sync (QSV)')
+                ->and($tooltip)->toContain('QSV requires a compatible Intel GPU with Quick Sync support.')
+                ->and($translations)->toHaveKey($label)
+                ->and($translations)->toHaveKey($tooltip);
+
+            return true;
+        });
 });
 
 it('rejects unsupported encoders without persisting them', function (string $encoder) {
@@ -235,7 +264,18 @@ it('rejects unsupported encoders without persisting them', function (string $enc
         ->fillForm(['proxy_normalize_live_output' => true, 'proxy_normalization_encoder' => $encoder])
         ->call('save')->assertHasFormErrors(['proxy_normalization_encoder']);
     expect(app(GeneralSettings::class)->refresh()->proxy_normalization_encoder)->toBe('cpu');
-})->with(['cuda', 'CPU', 'vaapi -i arbitrary']);
+})->with(['cuda', 'CPU', 'vaapi -i arbitrary', 'QSV', 'qsv -i arbitrary', 'h264_qsv']);
+
+it('falls back to CPU for unsupported persisted encoder values', function (string $encoder) {
+    $settings = app(GeneralSettings::class);
+    $settings->proxy_normalize_live_output = true;
+    $settings->proxy_normalization_encoder = $encoder;
+    $settings->save();
+    app(M3uProxyService::class)->getChannelUrl($this->playlist, $this->channel);
+    Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+        && ($r['normalize_live_output'] ?? false) === true
+        && ($r['normalization_encoder'] ?? null) === 'cpu');
+})->with(['', 'cuda', 'QSV', 'qsv -i arbitrary', 'h264_qsv']);
 
 it('keeps explicit channel overrides ahead of saved global settings', function (bool $global, bool $override) {
     $settings = app(GeneralSettings::class);
@@ -274,7 +314,21 @@ it('matches encoder metadata before capacity selection and treats legacy metadat
 })->with([
     ['cpu', null, true], ['cpu', 'cpu', true], ['cpu', 'vaapi', false],
     ['vaapi', null, false], ['vaapi', 'cpu', false], ['vaapi', 'vaapi', true],
+    ['cpu', 'qsv', false], ['vaapi', 'qsv', false],
+    ['qsv', null, false], ['qsv', 'cpu', false], ['qsv', 'vaapi', false], ['qsv', 'qsv', true],
 ]);
+
+it('describes the global CPU VAAPI and QSV encoders in the channel normalization guidance', function () {
+    $this->actingAs($this->user);
+    app()->setLocale('en');
+    $translations = json_decode(file_get_contents(lang_path('en.json')), true, flags: JSON_THROW_ON_ERROR);
+
+    $helper = 'Inherit Settings → Proxy → Failover & Recovery, or explicitly enable/disable normalization for this channel. Uses the global CPU/VAAPI/QSV encoder. Only compatible live MPEG-TS inputs; ignored for VOD, HLS, DASH, catchup and Stream Profiles.';
+
+    Livewire::test(EditChannel::class, ['record' => $this->channel->id])
+        ->assertSee($helper);
+    expect($translations)->toHaveKey($helper);
+});
 
 it('roundtrips all channel normalization states without losing proxy siblings', function () {
     config(['proxy.normalize_live_output' => true]);
