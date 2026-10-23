@@ -77,6 +77,7 @@ class EmbyPublicationCatalogService
         $items = $mapping->collection_type === 'movies'
             ? $this->buildMovies($mapping, $username, $password)
             : $this->buildSeries($mapping, $username, $password);
+        $items = $this->disambiguateItemFolders($items);
 
         return $this->withRevision([
             'mapping_uuid' => $mapping->uuid,
@@ -93,6 +94,43 @@ class EmbyPublicationCatalogService
             'full_snapshot' => true,
             'items' => $items,
         ]);
+    }
+
+    /**
+     * Keep human-readable paths unless distinct canonical items share a slug.
+     * Reserve all original names first so generated suffixes cannot shadow them.
+     *
+     * @param  list<array<string, mixed>>  $items
+     * @return list<array<string, mixed>>
+     */
+    private function disambiguateItemFolders(array $items): array
+    {
+        $counts = array_count_values(array_map(
+            fn (array $item): string => strtolower($item['relative_folder']),
+            $items,
+        ));
+        $used = array_fill_keys(array_keys($counts), true);
+
+        foreach ($items as &$item) {
+            $folder = $item['relative_folder'];
+            if ($counts[strtolower($folder)] < 2) {
+                continue;
+            }
+
+            $base = Str::limit($folder, 130, '').'-'.substr(hash('sha256', $item['canonical_id']), 0, 16);
+            $candidate = $base;
+            $suffix = 1;
+            while (isset($used[strtolower($candidate)])) {
+                $candidate = $base.'-'.$suffix++;
+            }
+
+            $used[strtolower($candidate)] = true;
+            $item['relative_folder'] = $candidate;
+            $item['base_filename'] = $candidate;
+        }
+        unset($item);
+
+        return $items;
     }
 
     /**
