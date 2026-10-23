@@ -59,7 +59,9 @@ it('refuses cached Redis URLs and prefixes before callback requests', function (
 });
 
 it('fails a directly invoked fresh process probe closed without explicit disposable Redis', function () {
-    $process = new Process([PHP_BINARY, 'tests/Fixtures/probe-callback-cache.php'], base_path(), [
+    // Force errors onto stderr regardless of the host php.ini's own display_errors
+    // value (e.g. local CLI defaults often use "stdout", not "stderr").
+    $process = new Process([PHP_BINARY, '-d', 'display_errors=stderr', 'tests/Fixtures/probe-callback-cache.php'], base_path(), [
         'CALLBACK_TEST_REDIS_PORT' => false,
         'REDIS_URL' => 'tcp://production.invalid:6379?prefix=production-bucket:',
     ]);
