@@ -2001,7 +2001,7 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->label(__('Auto-reclassify Series categories to TMDB genres on sync'))
                         ->hintIcon(
                             'heroicon-m-question-mark-circle',
-                            tooltip: __('After each sync, route each enabled series out of any category that doesn\'t match a TMDB genre into its own genre category (or "Uncategorized" if no genre data). Categories referenced by an Auto-Add to Custom Playlist rule, or merged categories, are never touched. Independent of the VOD toggle — turn this on/off separately if genre-based categorization doesn\'t fit how you organize series.')
+                            tooltip: __('After each sync, route each enabled series out of any category that doesn\'t match a TMDB genre into its own genre category (or "Uncategorized" if no genre data). Categories referenced by an Auto-Add to Custom Playlist rule, or merged categories, are never touched. Independent of the VOD toggle, turn this on/off separately if genre-based categorization doesn\'t fit how you organize series.')
                         )
                         ->default(false)
                         ->inline(false),

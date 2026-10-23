@@ -189,7 +189,7 @@
                                 x-bind:class="{ 'rotate-90': open }"
                             />
                             <span class="flex-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
-                                {{ __('Interactive Search') }}{{ $detailReleasesLabel ? ' — ' . $detailReleasesLabel : '' }}
+                                {{ __('Interactive Search') }}{{ $detailReleasesLabel ? ' - ' . $detailReleasesLabel : '' }}
                             </span>
                             <span wire:loading wire:target="loadDetailReleases,loadEpisodeReleases"
                                 ><x-filament::loading-indicator class="text-primary-500 h-3 w-3"
