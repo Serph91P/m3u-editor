@@ -45,6 +45,11 @@ it('resolves a network playlist stream via the projected channel network_id, eve
             DB::table('networks')->max('id') ?? 0,
         ) + 1;
 
+        // channels.network_id has a real FK to networks.id (channels_network_id_foreign), so
+        // moving the network's id straight to its new value fails on Postgres while the
+        // channel row still references the old one. Break the reference first (the column is
+        // nullable), move the network, then re-point the channel at its new id in one update.
+        DB::table('channels')->where('id', $projectedChannel->id)->update(['network_id' => null]);
         DB::table('networks')->where('id', $network->id)->update(['id' => $collisionId]);
         DB::table('channels')->where('id', $projectedChannel->id)->update([
             'id' => $collisionId,
