@@ -143,6 +143,24 @@ class SyncVodStrmFiles implements ShouldQueue
         if ($totalCount === 0) {
             Log::info('STRM Sync: No VOD channels to process');
 
+            // Cleanup must still run with zero enabled channels - e.g. disabling the
+            // last enabled VOD at this location leaves its tracked file/mapping behind
+            // otherwise, since there's no batch left to carry the cleanup chain forward.
+            // CheckVodStrmProgress treats totalChannels=0 as already complete and
+            // dispatches cleanup immediately.
+            dispatch(new CheckVodStrmProgress(
+                currentOffset: 0,
+                totalChannels: 0,
+                notify: $this->notify,
+                all_playlists: $this->all_playlists,
+                playlist_id: $this->resolvePlaylistId(),
+                user_id: $this->resolveUserId(),
+                needsCleanup: true,
+                channel_ids: $this->channel_ids,
+                syncRunId: $this->syncRunId,
+                completionPhase: $this->completionPhase,
+            ));
+
             return;
         }
 

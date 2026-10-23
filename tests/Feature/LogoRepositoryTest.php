@@ -74,6 +74,26 @@ it('resolves a canonical filename to its own logo even when an earlier entry has
     $this->get('/logo-repository/logos/weather.png')->assertRedirect('https://example.com/b.png');
 });
 
+it('includes a channel whose name is the literal string "0" in the index', function () {
+    /** @var TestCase $this */
+    Channel::factory()->create([
+        'enabled' => true,
+        'is_vod' => false,
+        'name' => '0',
+        'name_custom' => null,
+        'logo' => 'https://example.com/zero.png',
+    ]);
+
+    app(LogoRepositoryService::class)->clearCache();
+
+    $response = $this->get('/logo-repository/index.json');
+
+    $response->assertOk();
+    $response->assertJsonPath('count', 1);
+
+    $this->get('/logo-repository/logos/0.png')->assertRedirect('https://example.com/zero.png');
+});
+
 it('returns 404 when logo repository is disabled', function () {
     /** @var TestCase $this */
     $mockSettings = Mockery::mock(GeneralSettings::class);

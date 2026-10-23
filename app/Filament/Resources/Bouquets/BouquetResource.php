@@ -87,9 +87,16 @@ class BouquetResource extends Resource
                 ->rules(fn (Get $get, ?Bouquet $record): array => [
                     Rule::unique('bouquets', 'name')
                         ->where('user_id', auth()->id())
-                        ->where(fn ($query) => $get('custom_playlist_id')
-                            ? $query->where('custom_playlist_id', $get('custom_playlist_id'))
-                            : $query->where('playlist_id', $get('playlist_id')))
+                        ->where(function ($query) use ($get) {
+                            if ($get('custom_playlist_id')) {
+                                return $query->where('custom_playlist_id', $get('custom_playlist_id'));
+                            }
+                            if ($get('merged_playlist_id')) {
+                                return $query->where('merged_playlist_id', $get('merged_playlist_id'));
+                            }
+
+                            return $query->where('playlist_id', $get('playlist_id'));
+                        })
                         ->ignore($record?->id),
                 ])
                 ->helperText(__('A short name for this bouquet. Unique per playlist.')),
