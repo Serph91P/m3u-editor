@@ -19,7 +19,6 @@ use App\Models\Playlist;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Spatie\Tags\Tag;
 
 uses(RefreshDatabase::class);
@@ -32,28 +31,19 @@ beforeEach(function () {
     // The fallback provider group and the custom tag are rows in independent
     // auto-increment sequences. On a fresh database they'd naturally land on the
     // same primary key, but RefreshDatabase doesn't reset sequences between tests
-    // in the same worker process, so pad whichever sequence is behind with
-    // disposable filler rows until both are level - forcing the exact overlap the
-    // issue describes regardless of how many prior tests already advanced either
-    // table's counter.
-    $nextGroupId = (int) (DB::table('groups')->max('id') ?? 0) + 1;
-    $nextTagId = (int) (DB::table('tags')->max('id') ?? 0) + 1;
-
-    while ($nextGroupId < $nextTagId) {
-        Group::factory()->for($this->user)->for($this->playlist)->create(['name' => "Filler {$nextGroupId}"]);
-        $nextGroupId++;
-    }
-    while ($nextTagId < $nextGroupId) {
-        // A deterministic slug would collide with (and get silently reused
-        // instead of re-inserted by findOrCreate as) leftover filler tags
-        // from earlier full-suite runs in this same worker, so the random
-        // suffix guarantees every call actually inserts a fresh row.
-        $suffix = Str::random(8);
-        Tag::findOrCreate("Filler Tag {$nextTagId} {$suffix}", "filler-{$nextTagId}-{$suffix}");
-        $nextTagId++;
-    }
+    // in the same worker process, and padding one sequence up to meet the other
+    // proved unreliable under a real full-suite/parallel run (something keeps
+    // advancing one side between our read and our inserts). Forcing both rows
+    // onto the same explicit, unused id sidesteps that race entirely - model
+    // factories bypass mass-assignment guarding (Model::unguarded()), so 'id'
+    // can be set directly regardless of either model's $guarded/$fillable.
+    $collisionId = (int) max(
+        DB::table('groups')->max('id') ?? 0,
+        DB::table('tags')->max('id') ?? 0,
+    ) + 1;
 
     $this->fallbackGroup = Group::factory()->for($this->user)->for($this->playlist)->create([
+        'id' => $collisionId,
         'type' => 'live',
         'name' => 'Provider fallback',
     ]);
@@ -68,7 +58,11 @@ beforeEach(function () {
     $this->customPlaylist->channels()->attach($this->taggedChannel->id);
     $this->customPlaylist->channels()->attach($this->fallbackChannel->id);
 
-    $this->tag = Tag::findOrCreate('My Sports', $this->customPlaylist->uuid);
+    $this->tag = Tag::create([
+        'id' => $collisionId,
+        'name' => [app()->getLocale() => 'My Sports'],
+        'type' => $this->customPlaylist->uuid,
+    ]);
     $this->customPlaylist->attachTag($this->tag);
     $this->taggedChannel->attachTag($this->tag);
 

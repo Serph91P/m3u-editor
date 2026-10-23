@@ -25,33 +25,28 @@ beforeEach(function () {
 it('resolves a network playlist stream via the projected channel network_id, even when their primary keys collide', function () {
     // channels and networks are independent auto-increment sequences, and
     // RefreshDatabase doesn't reset either between tests in the same worker
-    // process. Pad whichever is behind with disposable filler rows so the
-    // Network we create and the Channel its own creation projects land on
-    // genuinely equal primary keys - the exact collision #1684 describes -
-    // regardless of how many prior tests already advanced either counter.
+    // process. Padding whichever side was behind up to meet the other proved
+    // unreliable under a real full-suite/parallel run (something keeps
+    // advancing one side between the read and the padding inserts), so force
+    // the collision directly instead: pick an id past both sequences' current
+    // max, pad channels up to one below it (so the Channel the Network's own
+    // creation projects lands exactly there), then set the Network's own id
+    // to that same value explicitly - model factories bypass mass-assignment
+    // guarding (Model::unguarded()), so 'id' can be set regardless of either
+    // model's $guarded/$fillable.
+    $collisionId = (int) max(
+        DB::table('channels')->max('id') ?? 0,
+        DB::table('networks')->max('id') ?? 0,
+    ) + 1;
+
     $nextChannelId = (int) (DB::table('channels')->max('id') ?? 0) + 1;
-    $nextNetworkId = (int) (DB::table('networks')->max('id') ?? 0) + 1;
-
-    // A plain Network with no network_playlist_id projects no Channel (see
-    // NetworkChannelSyncService::syncNetwork), so filler networks can close
-    // the gap from this side alone when channels is the one running ahead.
-    while ($nextNetworkId < $nextChannelId) {
-        Network::factory()->for($this->user)->create();
-        $nextNetworkId++;
-    }
-
-    // The network's own creation projects exactly one Channel row, consuming
-    // the next id in each sequence at the same moment - so levelling the two
-    // sequences beforehand makes that projected channel's id land exactly on
-    // the network's own new id.
-    $targetChannelId = $nextNetworkId;
-
-    while ($nextChannelId < $targetChannelId) {
+    while ($nextChannelId < $collisionId) {
         Channel::factory()->for($this->user)->for($this->playlist)->create(['enabled' => true]);
         $nextChannelId++;
     }
 
     $network = Network::factory()->for($this->user)->create([
+        'id' => $collisionId,
         'network_playlist_id' => $this->playlist->id,
         'enabled' => true,
         'broadcast_enabled' => true,
