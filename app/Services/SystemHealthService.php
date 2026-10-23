@@ -24,6 +24,15 @@ class SystemHealthService
     private const REPORT_TTL_SECONDS = 30;
 
     /**
+     * disk_total_space() on the container's overlay filesystem is unreliable
+     * (observed returning a value only a few KB above disk_free_space() on
+     * ZFS-backed Docker hosts, where the overlay's reported "total" tracks
+     * used+free rather than the real volume size). Only free space is shown,
+     * so "low disk" is judged against an absolute floor instead of a percent.
+     */
+    private const LOW_DISK_THRESHOLD_BYTES = 5 * 1024 * 1024 * 1024;
+
+    /**
      * Container processes started by docker/8.4/supervisord.conf, keyed by
      * service, matched against each /proc/<pid>/cmdline. nginx, php-fpm and
      * postgres child processes rewrite their titles, so the patterns match the
@@ -99,15 +108,14 @@ class SystemHealthService
             },
         ];
 
-        $free = $this->safe(fn () => (int) disk_free_space(base_path()), 0);
-        $total = $this->safe(fn () => (int) disk_total_space(base_path()), 0);
-        $freePct = $total > 0 ? (int) round($free / $total * 100) : null;
+        $free = $this->safe(fn () => disk_free_space(base_path()), null);
+        $free = is_numeric($free) ? (int) $free : null;
         $checks[] = [
             'key' => 'disk',
             'label' => __('Disk free'),
-            'ok' => $freePct === null || $freePct > 10,
-            'detail' => $freePct !== null
-                ? __(':size free (:percent%)', ['size' => Number::fileSize($free, precision: 1), 'percent' => $freePct])
+            'ok' => $free === null || $free >= self::LOW_DISK_THRESHOLD_BYTES,
+            'detail' => $free !== null
+                ? __(':size free', ['size' => Number::fileSize($free, precision: 1)])
                 : __('Unknown'),
         ];
 
@@ -205,29 +213,137 @@ class SystemHealthService
         $osRelease = $this->readFile('/etc/os-release');
         preg_match('/^PRETTY_NAME="?([^"\n]+)"?$/m', (string) $osRelease, $osName);
 
+        $containerized = file_exists('/.dockerenv');
+
+        // /proc/meminfo and /proc/cpuinfo are views onto the host kernel, not
+        // namespaced per-container, so they report the Docker host's totals
+        // (e.g. the TrueNAS host) rather than this container's cgroup limits.
+        // Prefer the cgroup when containerized and fall back to /proc otherwise.
+        $containerMemory = $containerized ? $this->containerMemory() : null;
         $meminfo = (string) $this->readFile('/proc/meminfo');
         $memoryKb = fn (string $field): ?int => preg_match('/^'.$field.':\s+(\d+)\s+kB/m', $meminfo, $match) ? (int) $match[1] * 1024 : null;
 
-        $uptime = $this->readFile('/proc/uptime');
+        $cpuCount = $containerized ? $this->containerCpuCount() : null;
+        $cpuCount ??= (preg_match_all('/^processor\s*:/m', (string) $this->readFile('/proc/cpuinfo')) ?: null);
+
+        // /proc/uptime is likewise host uptime; approximate container uptime
+        // from PID 1's start time instead.
+        $uptime = $containerized ? $this->containerUptimeSeconds() : null;
+        if ($uptime === null) {
+            $raw = $this->readFile('/proc/uptime');
+            $uptime = $raw !== null ? (int) (float) $raw : null;
+        }
+
         $load = $this->safe(fn () => sys_getloadavg() ?: null, null);
-        $cpuCount = preg_match_all('/^processor\s*:/m', (string) $this->readFile('/proc/cpuinfo'));
 
         return [
             'name' => $osName[1] ?? php_uname('s').' '.php_uname('r'),
             'kernel' => php_uname('r'),
             'architecture' => php_uname('m'),
             'hostname' => gethostname() ?: null,
-            'container' => file_exists('/.dockerenv'),
-            'cpu_count' => $cpuCount ?: null,
-            'memory_total' => $memoryKb('MemTotal'),
-            'memory_available' => $memoryKb('MemAvailable'),
+            'container' => $containerized,
+            'cpu_count' => $cpuCount,
+            'memory_total' => $containerMemory['total'] ?? $memoryKb('MemTotal'),
+            'memory_available' => $containerMemory['available'] ?? $memoryKb('MemAvailable'),
             'load_average' => $load ? implode(' / ', array_map(fn ($value) => number_format($value, 2), $load)) : null,
-            'uptime_seconds' => $uptime !== null ? (int) (float) $uptime : null,
+            'uptime_seconds' => $uptime,
+            // disk_total_space() is unreliable on the container's overlay
+            // filesystem (see LOW_DISK_THRESHOLD_BYTES), so only free space
+            // is reported here.
             'disk_free' => $this->safe(fn () => (int) disk_free_space(base_path()), null),
-            'disk_total' => $this->safe(fn () => (int) disk_total_space(base_path()), null),
             'ffmpeg_version' => $this->binaryVersion((string) config('dvr.ffmpeg_path', '/usr/bin/ffmpeg'), '/ffmpeg version (\S+)/'),
             'comskip' => is_executable((string) config('dvr.comskip_path')),
         ];
+    }
+
+    /**
+     * Memory limit/usage from the container's cgroup, or null when unset
+     * (unconstrained) or not running under cgroup v1/v2 memory accounting.
+     *
+     * @return array{total: int, available: int}|null
+     */
+    protected function containerMemory(): ?array
+    {
+        $max = $this->readFile('/sys/fs/cgroup/memory.max');
+        if ($max !== null) {
+            $max = trim($max);
+            $current = $this->readFile('/sys/fs/cgroup/memory.current');
+            if ($max === 'max' || $current === null) {
+                return null;
+            }
+
+            return ['total' => (int) $max, 'available' => max((int) $max - (int) trim($current), 0)];
+        }
+
+        $limit = $this->readFile('/sys/fs/cgroup/memory/memory.limit_in_bytes');
+        $usage = $this->readFile('/sys/fs/cgroup/memory/memory.usage_in_bytes');
+        if ($limit !== null && $usage !== null) {
+            $total = (int) trim($limit);
+            // Unconstrained cgroup v1 containers report a huge sentinel
+            // instead of a real limit (close to PHP_INT_MAX, rounded to a
+            // page boundary) rather than "max".
+            if ($total <= 0 || $total > (int) (PHP_INT_MAX / 2)) {
+                return null;
+            }
+
+            return ['total' => $total, 'available' => max($total - (int) trim($usage), 0)];
+        }
+
+        return null;
+    }
+
+    /**
+     * CPU core count the container is actually entitled to, from its cgroup
+     * CFS quota or cpuset, or null when unconstrained.
+     */
+    protected function containerCpuCount(): ?int
+    {
+        $max = $this->readFile('/sys/fs/cgroup/cpu.max');
+        if ($max !== null) {
+            [$quota, $period] = array_pad(explode(' ', trim($max)), 2, null);
+            if ($quota !== null && $quota !== 'max' && is_numeric($quota) && is_numeric($period) && (int) $period > 0) {
+                return max((int) ceil((int) $quota / (int) $period), 1);
+            }
+        }
+
+        $quota = $this->readFile('/sys/fs/cgroup/cpu/cpu.cfs_quota_us');
+        $period = $this->readFile('/sys/fs/cgroup/cpu/cpu.cfs_period_us');
+        if ($quota !== null && $period !== null && (int) trim($quota) > 0 && (int) trim($period) > 0) {
+            return max((int) ceil((int) trim($quota) / (int) trim($period)), 1);
+        }
+
+        $cpuset = $this->readFile('/sys/fs/cgroup/cpuset.cpus.effective') ?? $this->readFile('/sys/fs/cgroup/cpuset/cpuset.cpus');
+
+        return $cpuset !== null ? $this->countCpuSet(trim($cpuset)) : null;
+    }
+
+    /**
+     * Expands a cpuset list like "0-2,5" into a core count.
+     */
+    protected function countCpuSet(string $cpuset): int
+    {
+        $count = 0;
+        foreach (explode(',', $cpuset) as $range) {
+            if (str_contains($range, '-')) {
+                [$start, $end] = explode('-', $range, 2);
+                $count += (int) $end - (int) $start + 1;
+            } elseif ($range !== '') {
+                $count++;
+            }
+        }
+
+        return $count ?: 1;
+    }
+
+    /**
+     * Approximates container (not host) uptime from PID 1's start time,
+     * since /proc/uptime reports the host's time since boot.
+     */
+    protected function containerUptimeSeconds(): ?int
+    {
+        $stat = $this->safe(fn () => @stat('/proc/1') ?: null, null);
+
+        return $stat !== null ? max((int) (now()->timestamp - $stat['ctime']), 0) : null;
     }
 
     /**

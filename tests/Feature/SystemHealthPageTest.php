@@ -156,3 +156,52 @@ it('skips the services section outside the container', function () {
     expect(invade(systemHealthServiceWithProcesses(null))->services())->toBeNull()
         ->and(invade(systemHealthServiceWithProcesses(['/usr/sbin/crond -f']))->services())->toBeNull();
 });
+
+it('reports only disk free space, not an unreliable overlay-fs total', function () {
+    $checks = app(SystemHealthService::class)->checks();
+    $disk = collect($checks)->firstWhere('key', 'disk');
+
+    expect($disk['detail'])->not->toContain('%')->not->toContain('of ');
+});
+
+/**
+ * A SystemHealthService whose /sys/fs/cgroup reads are replaced by $files
+ * (path => contents), simulating a containerized cgroup v2 environment.
+ *
+ * @param  array<string, string>  $files
+ */
+function systemHealthServiceWithCgroupFiles(array $files): SystemHealthService
+{
+    return new class($files) extends SystemHealthService
+    {
+        public function __construct(private array $files) {}
+
+        protected function readFile(string $path): ?string
+        {
+            return $this->files[$path] ?? null;
+        }
+    };
+}
+
+it('reads container memory and CPU limits from the cgroup, not the host', function () {
+    $service = systemHealthServiceWithCgroupFiles([
+        '/sys/fs/cgroup/memory.max' => (string) (2 * 1024 * 1024 * 1024)."\n",
+        '/sys/fs/cgroup/memory.current' => (string) (512 * 1024 * 1024)."\n",
+        '/sys/fs/cgroup/cpu.max' => "200000 100000\n",
+    ]);
+
+    expect(invade($service)->containerMemory())->toBe([
+        'total' => 2 * 1024 * 1024 * 1024,
+        'available' => (2 * 1024 - 512) * 1024 * 1024,
+    ])->and(invade($service)->containerCpuCount())->toBe(2);
+});
+
+it('treats an unconstrained cgroup as unknown rather than the host total', function () {
+    $service = systemHealthServiceWithCgroupFiles([
+        '/sys/fs/cgroup/memory.max' => "max\n",
+        '/sys/fs/cgroup/cpu.max' => "max 100000\n",
+    ]);
+
+    expect(invade($service)->containerMemory())->toBeNull()
+        ->and(invade($service)->containerCpuCount())->toBeNull();
+});

@@ -243,9 +243,17 @@ class XtreamStreamController extends Controller
         $format = $format ?? 'ts'; // Default to 'ts' if no format provided
         [$playlist, $channel, $playlistAuth] = $this->findAuthenticatedPlaylistAndStreamModel($username, $password, $streamId, 'live');
 
-        // Handle network playlists - stream_id is actually a network ID
+        // Handle network playlists. The stream_id in a network playlist's HDHR/Xtream
+        // URLs is the projected Channel's own primary key (see
+        // NetworkChannelSyncService::upsertChannel()), not the Network's primary key -
+        // those are independently allocated and can collide. Resolve the Network via
+        // the projected Channel's network_id instead of treating stream_id as a Network id.
         if ($playlist instanceof Playlist && $playlist->is_network_playlist) {
-            return $this->handleNetworkStream($playlist, $streamId);
+            if (! $channel instanceof Channel || $channel->network_id === null) {
+                return response()->json(['error' => 'Network not found or not enabled'], 404);
+            }
+
+            return $this->handleNetworkStream($playlist, $channel->network_id);
         }
 
         if ($channel instanceof Channel) {
@@ -463,9 +471,11 @@ class XtreamStreamController extends Controller
 
         $timeshiftChannel = $this->resolveCatchupChannel($channel);
 
-        // Convert Unix timestamp to Xtream format if the player sends a numeric date string
+        // Convert Unix timestamp to Xtream format if the player sends a numeric date string.
+        // The result is reinterpreted downstream using config('app.timezone'), so it must be
+        // formatted in that same timezone to preserve the absolute instant the client sent.
         if (ctype_digit($date)) {
-            $date = Carbon::createFromTimestamp((int) $date)->format('Y-m-d:H-i-s');
+            $date = Carbon::createFromTimestamp((int) $date, config('app.timezone', 'UTC'))->format('Y-m-d:H-i-s');
         }
 
         // Parse the date parameter and add timeshift parameters to the request

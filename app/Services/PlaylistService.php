@@ -528,7 +528,10 @@ class PlaylistService
      */
     public function authenticate($username, $password): array|bool
     {
-        if (empty($username) || empty($password)) {
+        // empty() treats the string "0" as empty, which would reject a deliberately
+        // saved Custom Password of "0" before it ever reaches the resolver below,
+        // even though every other default-login consumer accepts that value (#1761).
+        if (! filled($username) || ! filled($password)) {
             return false;
         }
 
@@ -709,11 +712,13 @@ class PlaylistService
         // SIPTV/TiviMate sends utc/lutc as UNIX epochs (UTC)
         $xtreamTimeshiftPresent = $request->filled('timeshift_duration') && $request->filled('timeshift_date');
 
-        // Use the portal/provider timezone (DST-aware). Standard playlists carry their own
-        // server_timezone; Custom/Merged/Alias playlists can be composed of channels from
-        // several different source playlists, so resolve via the channel's own originating
-        // playlist instead. Last resort UTC.
-        $timezoneSource = $playlist instanceof Playlist ? $playlist : $channel?->playlist;
+        // Use the portal/provider timezone (DST-aware). Resolve via the channel's own
+        // originating playlist first: a catchup failover can swap in a channel from a
+        // different provider than the credentials playlist, and the archive window must be
+        // built using that provider's timezone, not the one the client authenticated against.
+        // Custom/Merged/Alias playlists can likewise be composed of channels from several
+        // different source playlists. Last resort UTC.
+        $timezoneSource = $channel?->playlist ?? ($playlist instanceof Playlist ? $playlist : null);
         $providerTz = $timezoneSource?->server_timezone
             ?? $timezoneSource?->xtream_status['server_info']['timezone']
             ?? 'Etc/UTC';

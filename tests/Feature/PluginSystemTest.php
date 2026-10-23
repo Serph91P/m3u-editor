@@ -1,6 +1,8 @@
 <?php
 
+use App\Filament\Resources\Plugins\Pages\EditPlugin;
 use App\Filament\Resources\Plugins\Pages\ViewPluginRun;
+use App\Filament\Resources\QueueMonitor\QueueMonitorResource;
 use App\Jobs\ExecutePluginInvocation;
 use App\Models\Plugin;
 use App\Models\PluginInstallReview;
@@ -8,6 +10,8 @@ use App\Models\PluginRun;
 use App\Models\User;
 use App\Plugins\PluginManager;
 use App\Plugins\PluginValidator;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -826,6 +830,82 @@ it('downgrades trust when a trusted fixture plugin file changes', function () {
         if (isset($originalManifest)) {
             File::put($manifestPath, $originalManifest);
         }
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('warns about a possibly stale queue worker when re-trusting a previously active plugin (issue #1667)', function () {
+    $pluginId = 'restale-fixture-'.Str::lower(Str::random(6));
+    $pluginManager = app(PluginManager::class);
+
+    try {
+        $installed = installFixturePluginForTests($pluginId, trust: true, enabled: true);
+        $plugin = $installed['plugin'];
+        $manifestPath = rtrim((string) $plugin?->path, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'plugin.json';
+        $originalManifest = File::get($manifestPath);
+        $decoded = json_decode($originalManifest, true, flags: JSON_THROW_ON_ERROR);
+        $decoded['description'] = 'Tampered during test '.Str::random(6);
+        File::put($manifestPath, json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES).PHP_EOL);
+
+        $plugin = $pluginManager->verifyIntegrity($plugin->fresh());
+        expect($plugin->integrity_status)->toBe('changed')
+            ->and($plugin->enabled)->toBeFalse();
+
+        // Re-trusting a hash the plugin manager has never seen approved needs a fresh
+        // review for the tampered files first - this is the real "Submit for Review" ->
+        // scan -> approve path, matching how an admin would actually clear the way to
+        // re-trust after changing a plugin's files on disk.
+        $review = $pluginManager->stageDirectoryReview((string) $plugin->path);
+        $review = $pluginManager->scanInstallReview($review);
+        $pluginManager->approveInstallReview($review, trust: false);
+
+        $admin = User::factory()->create(['is_admin' => true]);
+        $this->actingAs($admin);
+
+        Livewire::test(EditPlugin::class, ['record' => $plugin->getKey()])
+            ->callAction('trust')
+            ->assertNotified(
+                Notification::make()
+                    ->success()
+                    ->title(__('Plugin trusted and activated'))
+                    ->body(__('Updated files have been trusted and the plugin is now active. A queue worker that already ran this plugin may keep executing the previous version until it recycles - use Reset Queue on the Queue Monitor page if you need the update to take effect immediately.'))
+                    ->persistent()
+                    ->actions([
+                        Action::make('view_queue_monitor')
+                            ->label(__('Reset Queue'))
+                            ->url(QueueMonitorResource::getUrl('index')),
+                    ])
+            );
+
+        $plugin->refresh();
+        expect($plugin->enabled)->toBeTrue();
+    } finally {
+        if (isset($originalManifest)) {
+            File::put($manifestPath, $originalManifest);
+        }
+        cleanupReviewFixturePlugin($pluginId);
+    }
+});
+
+it('does not warn about a stale worker when trusting a plugin for the first time', function () {
+    $pluginId = 'first-trust-fixture-'.Str::lower(Str::random(6));
+
+    try {
+        $installed = installFixturePluginForTests($pluginId, trust: false, enabled: false);
+        $plugin = $installed['plugin'];
+
+        $admin = User::factory()->create(['is_admin' => true]);
+        $this->actingAs($admin);
+
+        Livewire::test(EditPlugin::class, ['record' => $plugin->getKey()])
+            ->callAction('trust')
+            ->assertNotified(
+                Notification::make()
+                    ->success()
+                    ->title(__('Plugin trusted'))
+                    ->body(__('The plugin is now trusted. You can enable it when you are ready.'))
+            );
+    } finally {
         cleanupReviewFixturePlugin($pluginId);
     }
 });

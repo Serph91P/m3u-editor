@@ -340,8 +340,10 @@ class ProcessEpgImport implements ShouldQueue
                             // Close the inner XMLReader
                             $innerReader->close();
 
-                            // Only return valid channels
-                            if ($elementData['channel_id']) {
+                            // Only return valid channels. The XMLTV DTD allows any nonempty
+                            // string as a channel id, including "0", so this must check for an
+                            // empty string rather than PHP truthiness.
+                            if ($elementData['channel_id'] !== '' && $elementData['channel_id'] !== null) {
                                 // Collision-relative hashing: first occurrence gets the base md5;
                                 // duplicates in the same feed get a :dup:N suffix so all survive
                                 // as distinct records. epg_id/user_id are included in the hash for
@@ -741,13 +743,16 @@ class ProcessEpgImport implements ShouldQueue
 
                     if ($reader->name === 'channel') {
                         $channelId = trim((string) $reader->getAttribute('id'));
-                        if ($channelId && array_key_exists($channelId, $seenChannelIds)) {
+                        // "0" is a valid nonempty XMLTV channel id, so this must check for an
+                        // empty string rather than PHP truthiness, or it would be deduplicated
+                        // and counted incorrectly.
+                        if ($channelId !== '' && array_key_exists($channelId, $seenChannelIds)) {
                             $reader->readOuterXml();
 
                             continue;
                         }
 
-                        if ($channelId) {
+                        if ($channelId !== '') {
                             $seenChannelIds[$channelId] = true;
                             $channelCount++;
                         }

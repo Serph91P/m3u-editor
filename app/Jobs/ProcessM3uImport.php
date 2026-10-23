@@ -1824,29 +1824,63 @@ class ProcessM3uImport implements ShouldQueue
     /**
      * Assign source_id via collision-relative hashing.
      *
-     * M3U channels carry a raw `source_key` (title + name + group). The first occurrence
-     * keeps the base md5 hash (backwards-compatible), each subsequent duplicate gets a
-     * :dup:N suffix so all entries survive as distinct channel records. Because the key
-     * includes the group, duplicates can only occur within one group, so the counter map
-     * only needs to span the group being chunked. Channels without a `source_key`
-     * (Xtream) pass through with their existing source_id.
+     * M3U channels carry a raw `source_key` (title + name + group). A key that occurs only
+     * once keeps the base md5 hash, unchanged from before (backwards-compatible). For a key
+     * that collides (several entries share the same title/name/group), each entry's own
+     * tvg-id - when the feed provides one - is folded into the hash instead of the entry's
+     * position in the file: a feed-order-only change (the entries simply get reordered on
+     * reimport) must not swap which existing channel row a duplicate-named entry's URL/config
+     * lands on, and position is the only thing that changes when that happens. Entries with
+     * no tvg-id of their own fall back to the previous :dup:N encounter-order numbering,
+     * since there is no better signal available for them. Because the key includes the group,
+     * duplicates can only occur within one group, so this only needs to span the group being
+     * chunked. Channels without a `source_key` (Xtream) pass through with their existing
+     * source_id.
      */
     public static function assignCollisionSourceIds(Enumerable $channels): Enumerable
     {
-        $seen = [];
+        $items = $channels->all();
 
-        return $channels->map(function (array $item) use (&$seen) {
+        $occurrences = [];
+        foreach ($items as $item) {
             if (! empty($item['source_key'])) {
-                $count = $seen[$item['source_key']] ?? 0;
-                $item['source_id'] = $count === 0
-                    ? md5($item['source_key'])
-                    : md5($item['source_key'].':dup:'.$count);
-                $seen[$item['source_key']] = $count + 1;
+                $occurrences[$item['source_key']] = ($occurrences[$item['source_key']] ?? 0) + 1;
             }
-            unset($item['source_key']);
+        }
 
-            return $item;
-        });
+        $ordinalSeen = [];
+        $stableSeen = [];
+
+        foreach ($items as $index => $item) {
+            $sourceKey = $item['source_key'] ?? null;
+
+            if (! empty($sourceKey)) {
+                if (($occurrences[$sourceKey] ?? 0) <= 1) {
+                    $items[$index]['source_id'] = md5($sourceKey);
+                } else {
+                    $stableId = $item['stream_id'] ?? null;
+
+                    if (! empty($stableId)) {
+                        $compositeKey = $sourceKey.'|sid:'.$stableId;
+                        $count = $stableSeen[$compositeKey] ?? 0;
+                        $items[$index]['source_id'] = $count === 0
+                            ? md5($compositeKey)
+                            : md5($compositeKey.':dup:'.$count);
+                        $stableSeen[$compositeKey] = $count + 1;
+                    } else {
+                        $count = $ordinalSeen[$sourceKey] ?? 0;
+                        $items[$index]['source_id'] = $count === 0
+                            ? md5($sourceKey)
+                            : md5($sourceKey.':dup:'.$count);
+                        $ordinalSeen[$sourceKey] = $count + 1;
+                    }
+                }
+            }
+
+            unset($items[$index]['source_key']);
+        }
+
+        return collect($items);
     }
 
     /**

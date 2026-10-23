@@ -373,6 +373,9 @@ return [
         // from likeOperator() which returns 'LIKE'|'ILIKE'. The actual user
         // input $genre is bound via the ? placeholder.
         '3489035c968f',
+        // Same call, now wrapped in a closure to fix a NULL-group exclusion bug
+        // (issue #1733) — finding text changed enough to produce a new hash.
+        '498c2c960be3',
 
         // ChannelController: $sortOrder was unsanitized — now validated to
         // 'ASC'|'DESC' before use. Hashes left here in case pattern still

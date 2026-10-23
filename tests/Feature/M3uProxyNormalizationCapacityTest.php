@@ -136,7 +136,6 @@ it('does not reuse the other encoder after a capacity failover', function (bool 
         expect(Http::recorded(fn (Request $r) => $r->method() === 'POST'))->toHaveCount(2);
     }
 })->with([true, false])->with(['vaapi', 'qsv']);
-
 it('rejects an unnormalized normalizable TS pool at capacity', function () {
     $this->backup->update(['available_streams' => 1]);
     $this->pool = ['stream_id' => 'legacy-ts', 'client_count' => 1, 'url' => $this->fallback->url,

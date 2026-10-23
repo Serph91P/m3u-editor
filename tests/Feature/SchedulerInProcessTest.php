@@ -28,7 +28,7 @@ it('runs the frequent checks in the scheduler process with a short overlap lock'
     ['app:refresh-media-server-integrations', '* * * * *'],
     ['app:refresh-epg', '* * * * *'],
     ['app:epg-cache-health-check', '*/15 * * * *'],
-    ['app:run-scheduled-backups', '*/2 * * * *'],
+    ['app:run-scheduled-backups', '* * * * *'],
     ['plugins:recover-stale-runs', '* * * * *'],
     ['app:dvr-scheduler-tick', '* * * * *'],
     ['m3u-proxy:register-webhook', '*/5 * * * *'],

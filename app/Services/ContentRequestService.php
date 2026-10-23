@@ -464,10 +464,17 @@ class ContentRequestService
         }
 
         if (in_array($status, ['completed', 'imported'], true)) {
-            $status = 'completed';
-            if ($canPersistCompleted) {
+            if ($canPersistCompleted && $this->requestedSeasonsAreAvailable($mediaRequest, $integration)) {
+                $status = 'completed';
                 $this->completeRequest($mediaRequest);
                 $formatted = $this->formatRequest($mediaRequest);
+            } else {
+                // A Download/imported event with this external ID exists, but for a
+                // season-specific series request it doesn't (yet) cover every
+                // monitored season - e.g. an import from an unrequested season must
+                // not complete the whole request. Keep reporting progress instead
+                // of finalizing prematurely.
+                $status = 'downloading';
             }
         }
 
@@ -525,6 +532,64 @@ class ContentRequestService
         $this->transitionRequest($request, 'approved', [
             'status' => 'completed',
         ], 'Request Completed', 'success');
+    }
+
+    /**
+     * For a series request scoped to specific seasons, only treat it as
+     * fulfilled once every monitored season actually has episode files in
+     * the provider's library. A Download/imported webhook event only
+     * carries the series-level external ID, so without this check an
+     * import from any season of the same series - including one that
+     * wasn't requested - would complete the whole request.
+     *
+     * Requests without a recorded season scope (movies, episode-level
+     * requests, or series requests made before this field existed) are
+     * unaffected and always considered available.
+     */
+    private function requestedSeasonsAreAvailable(MediaRequest $mediaRequest, ArrIntegration $integration): bool
+    {
+        if ($mediaRequest->request_type !== 'series') {
+            return true;
+        }
+
+        $monitoredSeasons = collect($mediaRequest->payload['seasons'] ?? [])
+            ->filter(fn (array $season): bool => (bool) ($season['monitored'] ?? false))
+            ->pluck('seasonNumber')
+            ->map(fn (mixed $season): int => (int) $season)
+            ->values();
+
+        if ($monitoredSeasons->isEmpty() || $mediaRequest->external_id === null) {
+            return true;
+        }
+
+        try {
+            $service = ArrService::make($integration);
+
+            if (! $service instanceof SonarrService || ! $service->supportsEpisodes()) {
+                return true;
+            }
+
+            $exists = $service->checkExists((int) $mediaRequest->external_id);
+            if (! ($exists['exists'] ?? false)) {
+                return false;
+            }
+
+            $episodeStatus = $service->fetchEpisodeData((int) $exists['id'])['status'];
+
+            return $monitoredSeasons->every(function (int $season) use ($episodeStatus): bool {
+                $episodes = $episodeStatus[$season] ?? [];
+
+                return $episodes !== [] && in_array(true, $episodes, true);
+            });
+        } catch (Throwable $throwable) {
+            Log::warning('Content request season availability check failed', [
+                'integration_id' => $integration->id,
+                'error' => $throwable->getMessage(),
+            ]);
+
+            // Can't verify availability - don't mark the request complete prematurely.
+            return false;
+        }
     }
 
     /**
