@@ -61,6 +61,7 @@ class Channel extends Model
         'is_custom' => 'boolean',
         'is_vod' => 'boolean',
         'enable_proxy' => 'boolean',
+        'proxy_options' => 'array',
         'tmdb_id' => 'integer',
         'tvdb_id' => 'integer',
         'imdb_id' => 'string',
@@ -1049,14 +1050,17 @@ class Channel extends Model
                 ->orWhereNotNull('imdb_id');
 
             if ($isPgsql) {
-                $q->orWhereRaw("info::jsonb ?? 'tmdb_id'")
-                    ->orWhereRaw("info::jsonb ?? 'tmdb'")
-                    ->orWhereRaw("movie_data::jsonb ?? 'tmdb_id'")
-                    ->orWhereRaw("movie_data::jsonb ?? 'tmdb'")
-                    ->orWhereRaw("info::jsonb ?? 'imdb_id'")
-                    ->orWhereRaw("info::jsonb ?? 'imdb'")
-                    ->orWhereRaw("movie_data::jsonb ?? 'imdb_id'")
-                    ->orWhereRaw("movie_data::jsonb ?? 'imdb'");
+                // ->>'key' (value), not ?? 'key' (key existence): a key can be present with a
+                // null/empty value (e.g. a prior failed enrichment), which should still count
+                // as "no ID" - the ?? operator would wrongly call that "has an ID" (issue #1645).
+                $q->orWhereRaw("info::jsonb->>'tmdb_id' IS NOT NULL AND info::jsonb->>'tmdb_id' != ''")
+                    ->orWhereRaw("info::jsonb->>'tmdb' IS NOT NULL AND info::jsonb->>'tmdb' != ''")
+                    ->orWhereRaw("movie_data::jsonb->>'tmdb_id' IS NOT NULL AND movie_data::jsonb->>'tmdb_id' != ''")
+                    ->orWhereRaw("movie_data::jsonb->>'tmdb' IS NOT NULL AND movie_data::jsonb->>'tmdb' != ''")
+                    ->orWhereRaw("info::jsonb->>'imdb_id' IS NOT NULL AND info::jsonb->>'imdb_id' != ''")
+                    ->orWhereRaw("info::jsonb->>'imdb' IS NOT NULL AND info::jsonb->>'imdb' != ''")
+                    ->orWhereRaw("movie_data::jsonb->>'imdb_id' IS NOT NULL AND movie_data::jsonb->>'imdb_id' != ''")
+                    ->orWhereRaw("movie_data::jsonb->>'imdb' IS NOT NULL AND movie_data::jsonb->>'imdb' != ''");
             }
         });
     }
@@ -1069,22 +1073,26 @@ class Channel extends Model
             return $query;
         }
 
+        // ->>'key' (value), not ?? 'key' (key existence): a key can be present with a
+        // null/empty value (e.g. a prior failed enrichment), which should still count as
+        // "no ID" here too, so this stays the exact negation of scopeHasMovieId() above
+        // instead of excluding rows that ought to match (issue #1645).
         return $query->where(function (Builder $q) {
             $q->where(function (Builder $inner) {
                 $inner->whereNull('info')
                     ->orWhere(function (Builder $i) {
-                        $i->whereRaw("NOT (info::jsonb ?? 'tmdb_id')")
-                            ->whereRaw("NOT (info::jsonb ?? 'tmdb')")
-                            ->whereRaw("NOT (info::jsonb ?? 'imdb_id')")
-                            ->whereRaw("NOT (info::jsonb ?? 'imdb')");
+                        $i->whereRaw("(info::jsonb->>'tmdb_id' IS NULL OR info::jsonb->>'tmdb_id' = '')")
+                            ->whereRaw("(info::jsonb->>'tmdb' IS NULL OR info::jsonb->>'tmdb' = '')")
+                            ->whereRaw("(info::jsonb->>'imdb_id' IS NULL OR info::jsonb->>'imdb_id' = '')")
+                            ->whereRaw("(info::jsonb->>'imdb' IS NULL OR info::jsonb->>'imdb' = '')");
                     });
             })->where(function (Builder $inner) {
                 $inner->whereNull('movie_data')
                     ->orWhere(function (Builder $i) {
-                        $i->whereRaw("NOT (movie_data::jsonb ?? 'tmdb_id')")
-                            ->whereRaw("NOT (movie_data::jsonb ?? 'tmdb')")
-                            ->whereRaw("NOT (movie_data::jsonb ?? 'imdb_id')")
-                            ->whereRaw("NOT (movie_data::jsonb ?? 'imdb')");
+                        $i->whereRaw("(movie_data::jsonb->>'tmdb_id' IS NULL OR movie_data::jsonb->>'tmdb_id' = '')")
+                            ->whereRaw("(movie_data::jsonb->>'tmdb' IS NULL OR movie_data::jsonb->>'tmdb' = '')")
+                            ->whereRaw("(movie_data::jsonb->>'imdb_id' IS NULL OR movie_data::jsonb->>'imdb_id' = '')")
+                            ->whereRaw("(movie_data::jsonb->>'imdb' IS NULL OR movie_data::jsonb->>'imdb' = '')");
                     });
             });
         });

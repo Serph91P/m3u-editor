@@ -650,8 +650,13 @@ class FetchTmdbIds implements ShouldQueue
             return;
         }
 
-        // If we already have tmdb_id but missing metadata, use it directly
-        // Otherwise, search TMDB for the movie
+        // If we already have tmdb_id but missing metadata, use it directly.
+        // Otherwise (or when overwriting), search TMDB for the movie - overwrite is also how
+        // a wrongly-matched ID gets corrected. But if that search comes back with no
+        // confident match, fall back to the known ID instead of reporting "not found" and
+        // discarding it: overwriteExisting means "let a search correct the ID", not "throw
+        // away a perfectly good one when the search for a replacement happens to fail"
+        // (issue #1647).
         if ($tmdbId && ! $this->overwriteExisting) {
             $result = [
                 'tmdb_id' => $tmdbId,
@@ -664,6 +669,17 @@ class FetchTmdbIds implements ShouldQueue
         } else {
             // Search TMDB
             $result = $tmdb->searchMovie($title, $year);
+
+            if (! $result && $tmdbId) {
+                $result = [
+                    'tmdb_id' => $tmdbId,
+                    'imdb_id' => $channel->imdb_id ?? $info['imdb_id'] ?? null,
+                ];
+                Log::debug('FetchTmdbIds: Search found no confident match, falling back to existing TMDB ID', [
+                    'channel_id' => $channel->id,
+                    'tmdb_id' => $tmdbId,
+                ]);
+            }
         }
 
         if ($result && isset($result['tmdb_id'])) {
