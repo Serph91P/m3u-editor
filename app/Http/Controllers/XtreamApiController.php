@@ -609,16 +609,15 @@ class XtreamApiController extends Controller
                 }
             }
 
-            // A single category is numbered as it is in the full listing, rather than
-            // restarting the sequence from the start number.
+            // Type and category selections keep the numbering of the canonical mixed output.
             $numberSequence = new ChannelNumberSequence($playlist);
-            $categoryNumbers = ($categoryId && $categoryId !== 'all' && $numberSequence->isPositional())
-                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist, isVod: false), $channelsQuery, $isCustomPlaylist)
+            $outputNumbers = ($numberSequence->isPositional() && ($playlist->include_vod_in_m3u || ($categoryId && $categoryId !== 'all')))
+                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist), $channelsQuery, $isCustomPlaylist)
                 : null;
 
             $cursor = $channelsQuery->cursor();
 
-            return response()->stream(function () use ($cursor, $playlist, $baseUrl, $isCustomPlaylist, $disableCatchup, $numberSequence, $categoryNumbers) {
+            return response()->stream(function () use ($cursor, $playlist, $baseUrl, $isCustomPlaylist, $disableCatchup, $numberSequence, $outputNumbers) {
                 $idChannelBy = $playlist->id_channel_by;
 
                 echo '[';
@@ -659,8 +658,8 @@ class XtreamApiController extends Controller
                         $isCustomPlaylist ? $channel->ccp_channel_number : null,
                         $isCustomPlaylist ? $channel->ccp_channel_minor : null,
                     );
-                    $channelNo = $categoryNumbers !== null
-                        ? ($categoryNumbers[$channel->id] ?? $channelNo)
+                    $channelNo = $outputNumbers !== null
+                        ? ($outputNumbers[$channel->id] ?? $channelNo)
                         : $numberSequence->next($channelNo);
 
                     $tvgId = $channel->resolveTvgId($idChannelBy, $channelNo);
@@ -777,11 +776,10 @@ class XtreamApiController extends Controller
                 }
             }
 
-            // A single category is numbered as it is in the full listing, rather than
-            // restarting the sequence from the start number.
+            // VOD shares mixed output numbers when included; otherwise keep its own listing sequence.
             $numberSequence = new ChannelNumberSequence($playlist);
-            $categoryNumbers = ($categoryId && $categoryId !== 'all' && $numberSequence->isPositional())
-                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist, isVod: true), $channelsQuery, $isCustomPlaylist)
+            $outputNumbers = ($numberSequence->isPositional() && ($playlist->include_vod_in_m3u || ($categoryId && $categoryId !== 'all')))
+                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist, isVod: $playlist->include_vod_in_m3u ? null : true), $channelsQuery, $isCustomPlaylist)
                 : null;
 
             $cursor = $channelsQuery->cursor();
@@ -797,7 +795,7 @@ class XtreamApiController extends Controller
                 $dynamicCategoryIdsByChannel = XtreamCategoryService::dynamicCategoryIdsByItem($sourcePlaylist, isVod: true);
             }
 
-            return response()->stream(function () use ($cursor, $playlist, $baseUrl, $isCustomPlaylist, $vodFileNameService, $categoryId, $dynamicGroupId, $dynamicCategoryIdsByChannel, $numberSequence, $categoryNumbers) {
+            return response()->stream(function () use ($cursor, $playlist, $baseUrl, $isCustomPlaylist, $vodFileNameService, $categoryId, $dynamicGroupId, $dynamicCategoryIdsByChannel, $numberSequence, $outputNumbers) {
                 $num = 0;
                 echo '[';
                 $first = true;
@@ -845,8 +843,8 @@ class XtreamApiController extends Controller
                         $isCustomPlaylist ? $channel->ccp_channel_number : null,
                         $isCustomPlaylist ? $channel->ccp_channel_minor : null,
                     );
-                    $vodChannelNo = $categoryNumbers !== null
-                        ? ($categoryNumbers[$channel->id] ?? $vodChannelNo)
+                    $vodChannelNo = $outputNumbers !== null
+                        ? ($outputNumbers[$channel->id] ?? $vodChannelNo)
                         : $numberSequence->next($vodChannelNo);
 
                     echo json_encode([

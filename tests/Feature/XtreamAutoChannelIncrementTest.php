@@ -1,16 +1,22 @@
 <?php
 
+use App\Enums\PlaylistChannelId;
 use App\Models\Channel;
 use App\Models\Group;
 use App\Models\Playlist;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    Queue::fake();
+    Bus::fake();
+    Notification::fake();
+    Http::preventStrayRequests();
+    config(['queue.default' => 'sync']);
 
     $this->user = User::factory()->create();
     $this->playlist = Playlist::factory()->for($this->user)->create([
@@ -196,6 +202,87 @@ it('Xtream API get_vod_streams overrides imported provider numbers when force ch
 
     expect($streams)->toBeArray()->toHaveCount(2)
         ->and(array_column($streams, 'num'))->toBe([7000, 7001]);
+});
+
+it('keeps mixed output numbering in Xtream live listings', function (bool $force, bool $filtered) {
+    $this->playlist->update([
+        'include_vod_in_m3u' => true,
+        'force_channel_numbering' => $force,
+        'channel_start' => 100,
+        'id_channel_by' => PlaylistChannelId::Number,
+    ]);
+
+    $channels = collect([false, true, false])->map(fn (bool $isVod, int $index) => Channel::factory()
+        ->for($this->user)->for($this->playlist)->for($this->group)->create([
+            'enabled' => true,
+            'is_vod' => $isVod,
+            'sort' => $index + 1,
+            'channel' => $force ? 500 + $index : null,
+            'title' => 'Mixed '.$index,
+        ]));
+
+    $url = '/player_api.php?'.http_build_query([
+        'username' => $this->user->name,
+        'password' => $this->playlist->uuid,
+        'action' => 'get_live_streams',
+        'category_id' => $filtered ? $this->group->id : null,
+    ]);
+    $streams = json_decode($this->get($url)->assertOk()->streamedContent(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(array_column($streams, 'num', 'stream_id'))->toBe([
+        $channels[0]->id => 100,
+        $channels[2]->id => 102,
+    ])->and(array_column($streams, 'epg_channel_id'))->toBe(['100', '102']);
+})->with([true, false])->with([true, false]);
+
+it('keeps mixed output numbering in Xtream VOD listings', function (bool $filtered) {
+    $this->playlist->update([
+        'include_vod_in_m3u' => true,
+        'force_channel_numbering' => true,
+        'channel_start' => 100,
+    ]);
+    $channels = collect([false, true, false])->map(fn (bool $isVod, int $index) => Channel::factory()
+        ->for($this->user)->for($this->playlist)->for($this->group)->create([
+            'enabled' => true,
+            'is_vod' => $isVod,
+            'sort' => $index + 1,
+            'channel' => null,
+        ]));
+    $streams = json_decode($this->get('/player_api.php?'.http_build_query([
+        'username' => $this->user->name,
+        'password' => $this->playlist->uuid,
+        'action' => 'get_vod_streams',
+        'category_id' => $filtered ? $this->group->id : null,
+    ]))->assertOk()->streamedContent(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(array_column($streams, 'num', 'stream_id'))->toBe([$channels[1]->id => 101]);
+})->with([true, false]);
+
+it('keeps explicit provider numbers when mixed output numbering is not positional', function () {
+    $this->playlist->update([
+        'include_vod_in_m3u' => true,
+        'auto_channel_increment' => false,
+        'force_channel_numbering' => false,
+        'id_channel_by' => PlaylistChannelId::TvgId,
+    ]);
+    foreach ([false, true, false] as $index => $isVod) {
+        Channel::factory()->for($this->user)->for($this->playlist)->for($this->group)->create([
+            'enabled' => true,
+            'is_vod' => $isVod,
+            'sort' => $index + 1,
+            'channel' => 20 + $index,
+            'channel_minor' => 1,
+            'stream_id' => 'provider.'.$index,
+        ]);
+    }
+    $streams = json_decode($this->get('/player_api.php?'.http_build_query([
+        'username' => $this->user->name,
+        'password' => $this->playlist->uuid,
+        'action' => 'get_live_streams',
+    ]))->assertOk()->streamedContent(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(array_column($streams, 'num'))->toBe([20, 22])
+        ->and(array_column($streams, 'epg_channel_id'))->toBe(['provider.0', 'provider.2']);
 });
 
 it('M3U output overrides imported provider numbers when force channel numbering is enabled', function () {
