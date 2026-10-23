@@ -471,9 +471,11 @@ class XtreamStreamController extends Controller
 
         $timeshiftChannel = $this->resolveCatchupChannel($channel);
 
-        // Convert Unix timestamp to Xtream format if the player sends a numeric date string
+        // Convert Unix timestamp to Xtream format if the player sends a numeric date string.
+        // The result is reinterpreted downstream using config('app.timezone'), so it must be
+        // formatted in that same timezone to preserve the absolute instant the client sent.
         if (ctype_digit($date)) {
-            $date = Carbon::createFromTimestamp((int) $date)->format('Y-m-d:H-i-s');
+            $date = Carbon::createFromTimestamp((int) $date, config('app.timezone', 'UTC'))->format('Y-m-d:H-i-s');
         }
 
         // Parse the date parameter and add timeshift parameters to the request
