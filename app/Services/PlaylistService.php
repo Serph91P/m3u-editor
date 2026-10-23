@@ -528,7 +528,10 @@ class PlaylistService
      */
     public function authenticate($username, $password): array|bool
     {
-        if (empty($username) || empty($password)) {
+        // empty() treats the string "0" as empty, which would reject a deliberately
+        // saved Custom Password of "0" before it ever reaches the resolver below,
+        // even though every other default-login consumer accepts that value (#1761).
+        if (! filled($username) || ! filled($password)) {
             return false;
         }
 
