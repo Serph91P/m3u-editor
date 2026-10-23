@@ -83,37 +83,55 @@ class DvrRetentionService
      *
      * Keep_last is configured per-rule but enforced per-series_key so overlapping
      * rules targeting the same show don't multiply retention. When multiple rules
-     * share a series_key, the largest keep_last wins (the most generous policy).
+     * share a series_key, the most generous policy wins: an explicit unlimited
+     * rule (keep_last null or 0) protects every recording under that series_key,
+     * even if a sibling rule for the same series has a positive limit. Only when
+     * every rule sharing the key has a positive limit does the largest of those
+     * limits apply.
      *
      * Recordings without a series_key (legacy, or empty title) fall back to
      * grouping by dvr_recording_rule_id so behaviour is preserved for them.
      */
     private function enforceKeepLast(DvrSetting $setting): void
     {
-        $rules = $setting->recordingRules()
-            ->whereNotNull('keep_last')
-            ->where('keep_last', '>', 0)
-            ->get();
+        $rules = $setting->recordingRules()->get();
 
         if ($rules->isEmpty()) {
             return;
         }
 
-        // Group rules by series_key (or fallback rule_id) and pick the most
-        // generous keep_last per group.
+        // Group rules by series_key (or fallback rule_id). Track the largest
+        // positive keep_last per group, and whether the group contains any
+        // unlimited rule (keep_last null or 0) that must veto trimming entirely.
         $keepByKey = [];
+        $unlimitedKeys = [];
         $rulesWithoutKey = [];
 
         foreach ($rules as $rule) {
-            if (! empty($rule->series_key)) {
-                $key = $rule->series_key;
-                $keepByKey[$key] = max($keepByKey[$key] ?? 0, (int) $rule->keep_last);
+            if (empty($rule->series_key)) {
+                if ((int) $rule->keep_last > 0) {
+                    $rulesWithoutKey[] = $rule;
+                }
+
+                continue;
+            }
+
+            $key = $rule->series_key;
+
+            if ($rule->keep_last === null || (int) $rule->keep_last === 0) {
+                $unlimitedKeys[$key] = true;
             } else {
-                $rulesWithoutKey[] = $rule;
+                $keepByKey[$key] = max($keepByKey[$key] ?? 0, (int) $rule->keep_last);
             }
         }
 
         foreach ($keepByKey as $seriesKey => $keep) {
+            if (! empty($unlimitedKeys[$seriesKey])) {
+                // An unlimited rule shares this series_key - it must not lose
+                // recordings to a sibling rule's finite limit.
+                continue;
+            }
+
             $this->trimGroup(
                 DvrRecording::where('dvr_setting_id', $setting->id)
                     ->where('series_key', $seriesKey)

@@ -136,10 +136,12 @@ class NetworkScheduleService
 
             $contentCount = $contentItems->count();
 
-            // Network has pinned content only — no rotation items. Pinned
-            // occurrences have already been pre-placed above; skip the
-            // rotation loop to avoid an undefined-array-key on $contentItems[0].
-            if ($contentCount === 0) {
+            // Network has pinned content only (no rotation items), or the rotation
+            // list is exhausted with Loop Content off (e.g. Continue from current
+            // position was invoked during the last non-looping item). Pinned
+            // occurrences have already been pre-placed above; skip the rotation
+            // loop to avoid indexing $contentItems past its end.
+            if ($contentCount === 0 || (! $network->loop_content && $contentIndex >= $contentCount)) {
                 $network->update(['schedule_generated_at' => Carbon::now()]);
 
                 return;
