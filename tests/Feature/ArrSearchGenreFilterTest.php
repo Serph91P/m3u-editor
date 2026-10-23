@@ -1,21 +1,39 @@
 <?php
 
 use App\Livewire\ArrSearch;
+use App\Models\ArrIntegration;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
+use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    Bus::fake();
+    Notification::fake();
+    Http::preventStrayRequests();
+    config(['queue.default' => 'sync']);
     $this->user = User::factory()->create();
     $this->actingAs($this->user);
+    ArrIntegration::factory()->sonarr()->create(['user_id' => $this->user->id]);
 });
 
-it('returns all results when no genre is selected', function () {
-    $component = Livewire::test(ArrSearch::class);
+/** @param array<int, array<string, mixed>> $results */
+function searchArrGenreResults(array $results): Testable
+{
+    Http::fake([
+        '*/api/v3/series/lookup*' => Http::response($results),
+    ]);
 
-    $component->set('results', [
+    return Livewire::test(ArrSearch::class)->set('searchTerm', 'Show')->call('search');
+}
+
+it('returns all results when no genre is selected', function () {
+    $component = searchArrGenreResults([
         0 => ['title' => 'Show A', 'genres' => ['Drama', 'Action']],
         1 => ['title' => 'Show B', 'genres' => ['Comedy']],
     ]);
@@ -24,9 +42,7 @@ it('returns all results when no genre is selected', function () {
 });
 
 it('filters results to only those matching a selected genre', function () {
-    $component = Livewire::test(ArrSearch::class);
-
-    $component->set('results', [
+    $component = searchArrGenreResults([
         0 => ['title' => 'Show A', 'genres' => ['Drama', 'Action']],
         1 => ['title' => 'Show B', 'genres' => ['Comedy']],
         2 => ['title' => 'Show C', 'genres' => ['Drama']],
@@ -42,9 +58,7 @@ it('filters results to only those matching a selected genre', function () {
 });
 
 it('uses OR logic so results matching any selected genre are shown', function () {
-    $component = Livewire::test(ArrSearch::class);
-
-    $component->set('results', [
+    $component = searchArrGenreResults([
         0 => ['title' => 'Drama Show', 'genres' => ['Drama']],
         1 => ['title' => 'Comedy Show', 'genres' => ['Comedy']],
         2 => ['title' => 'Sci-Fi Show', 'genres' => ['Sci-Fi']],
@@ -62,10 +76,8 @@ it('uses OR logic so results matching any selected genre are shown', function ()
 });
 
 it('preserves original result indices so openDetail still resolves correctly', function () {
-    $component = Livewire::test(ArrSearch::class);
-
     // Index 0 = Action-only (will be hidden), index 1 = Drama (visible)
-    $component->set('results', [
+    $component = searchArrGenreResults([
         0 => ['title' => 'Action Show', 'genres' => ['Action']],
         1 => ['title' => 'Drama Show', 'genres' => ['Drama']],
     ]);
@@ -80,9 +92,7 @@ it('preserves original result indices so openDetail still resolves correctly', f
 });
 
 it('returns sorted unique genres from the current result set', function () {
-    $component = Livewire::test(ArrSearch::class);
-
-    $component->set('results', [
+    $component = searchArrGenreResults([
         0 => ['title' => 'Show A', 'genres' => ['Sci-Fi', 'Action']],
         1 => ['title' => 'Show B', 'genres' => ['Action', 'Drama']],
         2 => ['title' => 'Show C', 'genres' => ['Comedy']],
@@ -92,9 +102,7 @@ it('returns sorted unique genres from the current result set', function () {
 });
 
 it('toggleGenre removes a genre that is already selected', function () {
-    $component = Livewire::test(ArrSearch::class);
-
-    $component->set('results', [
+    $component = searchArrGenreResults([
         0 => ['title' => 'Show A', 'genres' => ['Drama']],
     ]);
 

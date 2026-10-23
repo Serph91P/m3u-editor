@@ -13,12 +13,15 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Livewire\Livewire;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Bus::fake();
+    Notification::fake();
+    config(['queue.default' => 'sync']);
     // Prevent any test from accidentally hitting the real network.
     // Specific tests can call Http::fake([...]) to override.
     Http::preventStrayRequests();
@@ -1580,16 +1583,20 @@ it('livewire downloadDetailRelease sends release to download client', function (
         '*/api/v3/series/lookup*' => Http::response([
             ['id' => 42, 'tvdbId' => 12345, 'title' => 'Breaking Bad', 'year' => 2008, 'seasons' => []],
         ], 200),
-        '*/api/v3/release*' => Http::response([], 201),
+        '*/api/v3/release*' => Http::response([
+            ['guid' => 'abc-guid', 'indexerId' => 7],
+            ['guid' => 'ep-guid', 'indexerId' => 5],
+        ], 200),
     ]);
 
     Livewire::test(ArrSearch::class)
         ->set('searchTerm', 'breaking')->call('search')
         ->call('openDetail', 0)
+        ->call('loadDetailReleases')
         ->call('downloadDetailRelease', 'abc-guid', 7)
         ->assertNotified();
 
-    Http::assertSent(fn ($req) => str_contains($req->url(), '/release')
+    Http::assertSent(fn ($req) => $req->method() === 'POST' && str_contains($req->url(), '/release')
         && $req->data()['guid'] === 'abc-guid'
         && $req->data()['indexerId'] === 7
         && $req->data()['seriesId'] === 42
@@ -1791,13 +1798,16 @@ it('downloadDetailRelease includes episodeId when in episode search context', fu
         '*/api/v3/episode*' => Http::response([
             ['id' => 101, 'episodeNumber' => 1, 'seasonNumber' => 1, 'title' => 'Pilot'],
         ], 200),
-        '*/api/v3/release*' => Http::response([], 201),
+        '*/api/v3/release*' => Http::response([
+            ['guid' => 'abc-guid', 'indexerId' => 7],
+            ['guid' => 'ep-guid', 'indexerId' => 5],
+        ], 200),
     ]);
 
     Livewire::test(ArrSearch::class)
         ->set('searchTerm', 'breaking')->call('search')
         ->call('openDetail', 0)
-        ->set('detailEpisodeId', 101)
+        ->call('loadEpisodeReleases', 1, 1)
         ->call('downloadDetailRelease', 'ep-guid', 5)
         ->assertNotified();
 

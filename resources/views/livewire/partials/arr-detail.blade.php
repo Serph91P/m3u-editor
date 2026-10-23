@@ -62,6 +62,25 @@
         </div>
 
         <div class="flex-1 overflow-y-auto">
+            @if ($detailIntegrations->count() > 1)
+                <div class="space-y-2 px-4 pt-4">
+                    <label
+                        for="arr-detail-integration"
+                        class="text-sm font-medium text-gray-900 dark:text-gray-100"
+                    >{{ __('pages.titles.target_instance') }}</label>
+                    <x-filament::input.wrapper>
+                        <x-filament::input.select
+                            id="arr-detail-integration"
+                            wire:model.live="detailIntegrationId"
+                            wire:loading.attr="disabled"
+                        >
+                            @foreach ($detailIntegrations as $integration)
+                                <option value="{{ $integration->id }}">{{ $integration->name }}</option>
+                            @endforeach
+                        </x-filament::input.select>
+                    </x-filament::input.wrapper>
+                </div>
+            @endif
             <div class="flex gap-3 px-4 py-4">
                 @if (! empty($detailResult['poster']))
                     <img
@@ -233,6 +252,7 @@
                                                     </div>
                                                     @if ($release['approved'])
                                                         <button
+                                                            type="button"
                                                             wire:click="downloadDetailRelease('{{ $release['guid'] }}', {{ (int) ($release['indexerId'] ?? 0) }})"
                                                             wire:loading.attr="disabled"
                                                             wire:target="downloadDetailRelease"
@@ -259,6 +279,7 @@
                                         </div>
                                         <div class="flex justify-end border-t border-gray-100 px-3 py-2 dark:border-gray-800">
                                             <button
+                                                type="button"
                                                 wire:click="loadDetailReleases"
                                                 wire:loading.attr="disabled"
                                                 wire:target="loadDetailReleases,loadEpisodeReleases"
@@ -364,6 +385,7 @@
                             <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ __('Seasons') }}</h3>
                             <div class="flex items-center gap-2">
                                 <button
+                                    type="button"
                                     wire:click="toggleAllSeasons(true)"
                                     class="text-primary-600 dark:text-primary-400 text-xs hover:underline"
                                 >
@@ -371,6 +393,7 @@
                                 </button>
                                 <span class="text-gray-300 dark:text-gray-600">·</span>
                                 <button
+                                    type="button"
                                     wire:click="toggleAllSeasons(false)"
                                     class="text-xs text-gray-500 hover:underline dark:text-gray-400"
                                 >
@@ -503,6 +526,7 @@
                                                             @endif
                                                             @if ($epHasFile)
                                                                 <button
+                                                                    type="button"
                                                                     wire:click="requestEpisode({{ $seasonNum }}, {{ $episode['episodeNumber'] }})"
                                                                     wire:loading.attr="disabled"
                                                                     wire:target="requestEpisode"
@@ -516,6 +540,7 @@
                                                                 </button>
                                                             @else
                                                                 <button
+                                                                    type="button"
                                                                     wire:click="requestEpisode({{ $seasonNum }}, {{ $episode['episodeNumber'] }})"
                                                                     wire:loading.attr="disabled"
                                                                     wire:target="requestEpisode"
@@ -530,6 +555,7 @@
                                                             @endif
                                                             @if (! $guestMode)
                                                                 <button
+                                                                    type="button"
                                                                     wire:click="loadEpisodeReleases({{ $seasonNum }}, {{ $episode['episodeNumber'] }})"
                                                                     wire:loading.attr="disabled"
                                                                     wire:target="loadEpisodeReleases,requestEpisode"

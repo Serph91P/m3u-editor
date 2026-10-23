@@ -21,6 +21,7 @@ use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\On;
 use Livewire\Attributes\Renderless;
 use Livewire\Component;
@@ -42,20 +43,24 @@ class ArrSearch extends Component implements HasActions, HasSchemas
      *
      * @var array<int>
      */
+    #[Locked]
     public array $guestIntegrationIds = [];
 
     /** Guest-mode: the PlaylistAuth ID for the authenticated guest. */
+    #[Locked]
     public ?int $playlistAuthId = null;
 
     /**
      * Resolved once at mount from PlaylistAuth. True = forward directly to Arr,
      * false = hold for admin approval. Null when not in guest mode.
      */
+    #[Locked]
     public ?bool $autoApproveRequests = null;
 
     public string $searchTerm = '';
 
     /** @var array<int, array<string, mixed>> */
+    #[Locked]
     public array $results = [];
 
     /**
@@ -68,6 +73,7 @@ class ArrSearch extends Component implements HasActions, HasSchemas
 
     public bool $isSearching = false;
 
+    #[Locked]
     public bool $guestMode = false;
 
     /** @var array<int, array<string, mixed>> */
@@ -78,8 +84,10 @@ class ArrSearch extends Component implements HasActions, HasSchemas
     public bool $showDetail = false;
 
     /** @var array<string, mixed>|null */
+    #[Locked]
     public ?array $detailResult = null;
 
+    #[Locked]
     public ?int $detailIndex = null;
 
     public ?int $detailIntegrationId = null;
@@ -106,6 +114,7 @@ class ArrSearch extends Component implements HasActions, HasSchemas
      *
      * @var array<int, array<string, mixed>>
      */
+    #[Locked]
     public array $detailReleases = [];
 
     /**
@@ -127,12 +136,15 @@ class ArrSearch extends Component implements HasActions, HasSchemas
     public bool $releasesLoading = false;
 
     /** Sonarr episode ID when the interactive search accordion is showing episode-level results. */
+    #[Locked]
     public ?int $detailEpisodeId = null;
 
     /** Season number for the episode-level search context, used to re-run on Refresh. */
+    #[Locked]
     public ?int $detailEpisodeSeason = null;
 
     /** Episode number for the episode-level search context, used to re-run on Refresh. */
+    #[Locked]
     public ?int $detailEpisodeNumber = null;
 
     /** Human-readable label shown in the accordion header when in episode context, e.g. "S01E05". */
@@ -185,7 +197,65 @@ class ArrSearch extends Component implements HasActions, HasSchemas
             return null;
         }
 
-        return ArrIntegration::find($this->detailIntegrationId);
+        return $this->detailIntegrations->firstWhere('id', $this->detailIntegrationId);
+    }
+
+    /**
+     * Eligible destinations for the content type currently shown in the detail panel.
+     *
+     * @return Collection<int, ArrIntegration>
+     */
+    public function getDetailIntegrationsProperty(): Collection
+    {
+        return $this->integrationsForSearch
+            ->where('type', $this->detailResult['integrationType'] ?? '')
+            ->values();
+    }
+
+    public function updatedDetailIntegrationId(): void
+    {
+        $integration = $this->detailIntegration;
+        abort_unless($integration && $this->detailResult, 403);
+
+        $item = $this->detailResult;
+        $externalKey = $integration->isSonarr() ? 'tvdbId' : 'tmdbId';
+        $externalId = (int) ($item[$externalKey] ?? 0);
+
+        $this->detailEpisodes = [];
+        $this->detailCast = [];
+        $this->detailSonarrEpisodeStatus = [];
+        $this->detailSonarrEpisodeFileInfo = [];
+        $this->detailReleases = [];
+        $this->detailEpisodeId = null;
+        $this->detailEpisodeSeason = null;
+        $this->detailEpisodeNumber = null;
+        $this->detailReleasesLabel = null;
+        $this->releasesLoading = false;
+
+        $this->detailResult = null;
+        $this->selectedSeasons = [];
+        $match = collect(ArrService::make($integration)->search(($integration->isSonarr() ? 'tvdb:' : 'tmdb:').$externalId))
+            ->first(fn (array $result): bool => (int) ($result[$externalKey] ?? 0) === $externalId);
+
+        if (! $match) {
+            $this->closeDetail();
+
+            return;
+        }
+
+        $this->detailResult = array_merge($match, [
+            'integrationId' => $integration->id,
+            'integrationName' => $integration->name,
+            'integrationType' => $integration->type,
+            'resolvedTmdbId' => $item['resolvedTmdbId'] ?? null,
+        ]);
+        if ($this->detailIndex !== null) {
+            $this->results[$this->detailIndex] = $this->detailResult;
+        }
+        $this->selectedSeasons = collect($this->detailResult['seasons'] ?? [])
+            ->mapWithKeys(fn ($season) => [(int) $season['seasonNumber'] => (int) $season['seasonNumber'] !== 0])
+            ->all();
+        $this->loadDetailEpisodes();
     }
 
     /**
@@ -389,7 +459,9 @@ class ArrSearch extends Component implements HasActions, HasSchemas
         }
 
         $item = $this->results[$index];
-        $integration = ArrIntegration::find($item['integrationId'] ?? null);
+        $integration = $this->integrationsForSearch
+            ->where('type', $item['integrationType'] ?? '')
+            ->firstWhere('id', $item['integrationId'] ?? null);
 
         if (! $integration) {
             return;
@@ -474,6 +546,9 @@ class ArrSearch extends Component implements HasActions, HasSchemas
 
         $this->detailEpisodes = [];
         $this->detailCast = [];
+        $this->detailSonarrEpisodeStatus = [];
+        $this->detailSonarrEpisodeFileInfo = [];
+        $this->releasesLoading = false;
         $this->detailReleases = [];
         $this->detailEpisodeId = null;
         $this->detailEpisodeSeason = null;
@@ -501,6 +576,7 @@ class ArrSearch extends Component implements HasActions, HasSchemas
                 'guestMode' => $this->guestMode,
                 'detailIndex' => $this->detailIndex,
                 'detailIntegration' => $this->detailIntegration,
+                'detailIntegrations' => $this->detailIntegrations,
             ]))
             ->modalSubmitAction(false)
             ->modalCancelAction(false);
@@ -888,6 +964,13 @@ class ArrSearch extends Component implements HasActions, HasSchemas
     public function downloadDetailRelease(string $guid, int $indexerId): void
     {
         if ($this->guestMode || ! $this->detailResult || ! $this->detailIntegration) {
+            return;
+        }
+
+        if (! collect($this->detailReleases)->contains(
+            fn (array $release): bool => ($release['guid'] ?? null) === $guid
+                && (int) ($release['indexerId'] ?? 0) === $indexerId
+        )) {
             return;
         }
 

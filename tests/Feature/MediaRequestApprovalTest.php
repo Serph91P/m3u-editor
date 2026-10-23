@@ -7,13 +7,24 @@ use App\Models\MediaRequest;
 use App\Models\PlaylistAuth;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Livewire\Livewire;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    Bus::fake();
+    Notification::fake();
+    config(['queue.default' => 'sync']);
     Http::preventStrayRequests();
+    Http::fake([
+        '*/api/v3/series/lookup*' => Http::response([[
+            'title' => 'Dark', 'titleSlug' => 'dark', 'tvdbId' => 12345, 'images' => [],
+        ]]),
+        '*/api/v3/queue*' => Http::response(['records' => []]),
+    ]);
     $this->adminUser = User::factory()->create(['permissions' => ['use_integrations']]);
     $this->actingAs($this->adminUser);
     $this->integration = ArrIntegration::factory()->sonarr()->create([
@@ -56,18 +67,12 @@ it('sends request directly to arr when auto_approve_requests is true', function 
         'playlistAuthId' => $auth->id,
     ]);
 
-    $component->set('results', [[
-        'integrationId' => $this->integration->id,
-        'title' => 'Dark',
-        'titleSlug' => 'dark',
-        'tvdbId' => 12345,
-        'images' => [],
-    ]]);
+    $component->set('searchTerm', 'Dark')->call('search');
 
     $component->call('request', 0);
 
     expect(MediaRequest::count())->toBe(0);
-    Http::assertSentCount(1);
+    Http::assertSent(fn ($request) => $request->method() === 'POST' && str_ends_with($request->url(), '/api/v3/series'));
 });
 
 it('creates a pending MediaRequest when auto_approve_requests is false', function () {
@@ -82,13 +87,7 @@ it('creates a pending MediaRequest when auto_approve_requests is false', functio
         'playlistAuthId' => $auth->id,
     ]);
 
-    $component->set('results', [[
-        'integrationId' => $this->integration->id,
-        'title' => 'Dark',
-        'titleSlug' => 'dark',
-        'tvdbId' => 12345,
-        'images' => [],
-    ]]);
+    $component->set('searchTerm', 'Dark')->call('search');
 
     $component->call('request', 0);
 
@@ -102,7 +101,7 @@ it('creates a pending MediaRequest when auto_approve_requests is false', functio
         ->and($request->arr_integration_id)->toBe($this->integration->id);
 
     // No HTTP call to Arr API.
-    Http::assertNothingSent();
+    Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
 });
 
 it('creates a pending episode MediaRequest when auto_approve_requests is false', function () {
@@ -117,12 +116,7 @@ it('creates a pending episode MediaRequest when auto_approve_requests is false',
         'playlistAuthId' => $auth->id,
     ]);
 
-    $component->set('detailResult', [
-        'integrationId' => $this->integration->id,
-        'title' => 'Severance',
-        'tvdbId' => 99999,
-    ]);
-    $component->set('detailIntegrationId', $this->integration->id);
+    $component->set('searchTerm', 'Dark')->call('search')->call('openDetail', 0);
 
     $component->call('requestEpisode', 1, 3);
 
@@ -134,7 +128,7 @@ it('creates a pending episode MediaRequest when auto_approve_requests is false',
         ->and($request->episode_number)->toBe(3)
         ->and($request->status)->toBe('pending');
 
-    Http::assertNothingSent();
+    Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
 });
 
 // ── ArrQueueMonitor approve/reject ─────────────────────────────────────────

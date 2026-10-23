@@ -13,6 +13,8 @@ return [
     'headings' => [],
     'subheadings' => [],
     'descriptions' => [],
-    'titles' => [],
+    'titles' => [
+        'target_instance' => 'Target instance',
+    ],
 
 ];
