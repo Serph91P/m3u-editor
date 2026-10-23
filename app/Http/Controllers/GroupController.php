@@ -207,6 +207,18 @@ class GroupController extends Controller
                 ], 422);
             }
 
+            // A merged group's own type must match every one of its children's
+            // (see Group::assertMergedGroupRulesHold()) - any existing child was
+            // created to match the CURRENT type, so changing the parent's type
+            // always breaks that invariant for it. Reject rather than silently
+            // leaving the parent and its children on different types.
+            if ($group->is_merged && $group->children()->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot change a merged group\'s type while it has child groups',
+                ], 422);
+            }
+
             $group->type = $validated['type'];
         }
 
@@ -273,6 +285,17 @@ class GroupController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Target group must be the same type as the source group',
+            ], 422);
+        }
+
+        // A merged group is a container only and never owns channels directly (see
+        // Group::scopeAssignableTarget()) - moving channels into one would create
+        // direct ownership the merged-group invariant doesn't allow, leaving the
+        // channel invisible to the merged parent's own enable/disable actions.
+        if ($targetGroup->is_merged) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Target group cannot be a merged group',
             ], 422);
         }
 
