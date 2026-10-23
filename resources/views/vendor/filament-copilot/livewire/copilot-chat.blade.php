@@ -155,6 +155,11 @@
             let buffer = '';
             let newConversationId = null;
             let assistantMessageId = null;
+            // Persists across reader.read() calls: an `event:` line and its `data:` line
+            // can land in separate browser reads (transport chunk boundaries are not SSE
+            // event boundaries), and resetting this per-read would silently drop the data
+            // line that arrives without its event line in the same chunk.
+            let currentEvent = null;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -163,8 +168,6 @@
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
-
-                let currentEvent = null;
 
                 for (const line of lines) {
                     if (line.startsWith('event: ')) {
