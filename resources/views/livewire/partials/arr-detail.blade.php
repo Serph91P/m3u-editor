@@ -1,4 +1,24 @@
 <div x-init="$wire.call('loadDetailEpisodes')">
+    @if ($detailResult && count($detailCandidates) > 1)
+        <div class="border-b border-gray-200 bg-gray-50/60 px-4 py-2.5 dark:border-gray-700 dark:bg-white/[0.02]">
+            <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                {{ __('Request Destination') }}
+            </label>
+            <select
+                wire:change="switchDetailIntegration($event.target.value)"
+                class="focus:border-primary-500 focus:ring-primary-500 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            >
+                @foreach ($detailCandidates as $candidate)
+                    <option
+                        value="{{ $candidate['integrationId'] }}"
+                        @selected((int) $candidate['integrationId'] === $detailIntegration?->id)
+                    >
+                        {{ $candidate['integrationName'] }}
+                    </option>
+                @endforeach
+            </select>
+        </div>
+    @endif
     @if ($detailResult)
         @php
             $detailIsSonarr = ($detailResult['integrationType'] ?? '') === 'sonarr';
