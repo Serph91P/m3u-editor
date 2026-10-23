@@ -368,7 +368,7 @@ class EditPlugin extends EditRecord
                             ->title(__(':plugin updated', ['plugin' => $record->name]))
                             ->body($record->enabled
                                 ? __('Version :version is now active. A queue worker that already ran this plugin may keep executing the previous version until it recycles - use Reset Queue on the Queue Monitor page if you need the update to take effect immediately.', ['version' => $record->latest_version])
-                                : __('Version :version is now active.', ['version' => $record->latest_version]));
+                                : __('Version :version is installed. The plugin remains disabled.', ['version' => $record->latest_version]));
 
                         if ($record->enabled) {
                             $updateNotification
