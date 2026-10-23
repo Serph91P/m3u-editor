@@ -609,11 +609,14 @@ class XtreamApiController extends Controller
                 }
             }
 
-            // A single category is numbered as it is in the full listing, rather than
-            // restarting the sequence from the start number.
+            // Numbered as in the full listing (which may interleave VOD when
+            // include_vod_in_m3u is on, see getChannelQuery()) rather than
+            // restarting the sequence from the start number, or over just this
+            // live-only query, either of which would drift from the M3U/XMLTV
+            // numbers for the same channels (issue #1683).
             $numberSequence = new ChannelNumberSequence($playlist);
-            $categoryNumbers = ($categoryId && $categoryId !== 'all' && $numberSequence->isPositional())
-                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist, isVod: false), $channelsQuery, $isCustomPlaylist)
+            $categoryNumbers = $numberSequence->isPositional()
+                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist), $channelsQuery, $isCustomPlaylist)
                 : null;
 
             $cursor = $channelsQuery->cursor();
@@ -777,11 +780,14 @@ class XtreamApiController extends Controller
                 }
             }
 
-            // A single category is numbered as it is in the full listing, rather than
-            // restarting the sequence from the start number.
+            // Numbered as in the full listing (which may interleave live channels
+            // around these VOD entries, see getChannelQuery()) rather than
+            // restarting the sequence from the start number, or over just this
+            // VOD-only query, either of which would drift from the M3U/XMLTV
+            // numbers for the same channels (issue #1683).
             $numberSequence = new ChannelNumberSequence($playlist);
-            $categoryNumbers = ($categoryId && $categoryId !== 'all' && $numberSequence->isPositional())
-                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist, isVod: true), $channelsQuery, $isCustomPlaylist)
+            $categoryNumbers = $numberSequence->isPositional()
+                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist), $channelsQuery, $isCustomPlaylist)
                 : null;
 
             $cursor = $channelsQuery->cursor();
