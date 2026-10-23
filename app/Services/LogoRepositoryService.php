@@ -96,13 +96,19 @@ class LogoRepositoryService
                 }
             }
 
+            // A channel named (or with a stream/epg id of) the literal string "0" is a
+            // valid slug candidate - the default filter() callback treats "0" as falsy
+            // and would drop it both before and after normalization.
             $slugCandidates = collect([
                 $channel->name_custom,
                 $channel->name,
                 $channel->title,
                 (string) ($channel->stream_id ?? ''),
                 (string) ($channel->epg_id ?? ''),
-            ])->filter()->map(fn (string $value): string => $this->normalizeSlug($value))->filter()->unique()->values()->all();
+            ])->filter(fn ($value): bool => $value !== null && $value !== '')
+                ->map(fn (string $value): string => $this->normalizeSlug($value))
+                ->filter(fn (string $value): bool => $value !== '')
+                ->unique()->values()->all();
 
             if (empty($slugCandidates)) {
                 continue;
