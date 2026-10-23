@@ -18,6 +18,7 @@ use App\Models\Group;
 use App\Models\Playlist;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Spatie\Tags\Tag;
 
 uses(RefreshDatabase::class);
@@ -28,8 +29,24 @@ beforeEach(function () {
     $this->customPlaylist = CustomPlaylist::factory()->for($this->user)->create();
 
     // The fallback provider group and the custom tag are rows in independent
-    // tables, so on a fresh database they both naturally land on primary key 1 -
-    // exactly the overlap the issue describes, with no ids forced by hand.
+    // auto-increment sequences. On a fresh database they'd naturally land on the
+    // same primary key, but RefreshDatabase doesn't reset sequences between tests
+    // in the same worker process, so pad whichever sequence is behind with
+    // disposable filler rows until both are level - forcing the exact overlap the
+    // issue describes regardless of how many prior tests already advanced either
+    // table's counter.
+    $nextGroupId = (int) (DB::table('groups')->max('id') ?? 0) + 1;
+    $nextTagId = (int) (DB::table('tags')->max('id') ?? 0) + 1;
+
+    while ($nextGroupId < $nextTagId) {
+        Group::factory()->for($this->user)->for($this->playlist)->create(['name' => "Filler {$nextGroupId}"]);
+        $nextGroupId++;
+    }
+    while ($nextTagId < $nextGroupId) {
+        Tag::findOrCreate("Filler Tag {$nextTagId}", "filler-{$nextTagId}");
+        $nextTagId++;
+    }
+
     $this->fallbackGroup = Group::factory()->for($this->user)->for($this->playlist)->create([
         'type' => 'live',
         'name' => 'Provider fallback',

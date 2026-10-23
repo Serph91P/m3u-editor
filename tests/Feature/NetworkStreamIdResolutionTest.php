@@ -13,6 +13,7 @@ use App\Models\Channel;
 use App\Models\Network;
 use App\Models\Playlist;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
 
 beforeEach(function () {
     $this->user = User::factory()->create(['name' => 'testuser']);
@@ -22,26 +23,41 @@ beforeEach(function () {
 });
 
 it('resolves a network playlist stream via the projected channel network_id, even when their primary keys collide', function () {
-    // Pre-existing ordinary channel so it claims Channel id=1.
-    Channel::factory()->for($this->user)->for($this->playlist)->create([
-        'enabled' => true,
-    ]);
+    // channels and networks are independent auto-increment sequences, and
+    // RefreshDatabase doesn't reset either between tests in the same worker
+    // process. Pad whichever is behind with disposable filler rows so the
+    // Network we create and the Channel its own creation projects land on
+    // genuinely equal primary keys - the exact collision #1684 describes -
+    // regardless of how many prior tests already advanced either counter.
+    $nextChannelId = (int) (DB::table('channels')->max('id') ?? 0) + 1;
+    $nextNetworkId = (int) (DB::table('networks')->max('id') ?? 0) + 1;
 
-    // Network gets id=1 (independent sequence) while its projected Channel gets id=2.
+    // The network's own creation projects exactly one Channel row, consuming
+    // the next id in each sequence at the same moment - so levelling the two
+    // sequences beforehand makes that projected channel's id land exactly on
+    // the network's own new id.
+    $targetChannelId = $nextNetworkId;
+
+    while ($nextChannelId < $targetChannelId) {
+        Channel::factory()->for($this->user)->for($this->playlist)->create(['enabled' => true]);
+        $nextChannelId++;
+    }
+
     $network = Network::factory()->for($this->user)->create([
         'network_playlist_id' => $this->playlist->id,
         'enabled' => true,
         'broadcast_enabled' => true,
     ]);
 
-    $projectedChannel = Channel::where('network_id', $network->id)->first();
+    $projectedChannel = Channel::where('network_id', $network->id)->latest('id')->first();
 
-    expect($network->id)->toBe(1)
-        ->and($projectedChannel->id)->toBe(2)
-        ->and($projectedChannel->id)->not->toBe($network->id);
+    // The collision #1684 describes: these independently allocated primary
+    // keys land on the exact same numeric value.
+    expect($projectedChannel->id)->toBe($network->id);
 
     // The HDHR lineup/Xtream URL for this network playlist uses the projected
-    // Channel's own id (2), not the Network's id (1).
+    // Channel's own id, not the Network's id - the fix must resolve through
+    // channel->network_id rather than treating the route id as a Network id.
     $response = $this->get("/live/{$this->user->name}/{$this->playlist->uuid}/{$projectedChannel->id}.m3u8");
 
     $response->assertRedirect($network->stream_url);
