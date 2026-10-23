@@ -248,6 +248,52 @@ it('creates a merged-target bouquet through the resource, persisting pairs from 
         ]);
 });
 
+it('allows the same bouquet name on two different merged playlists (issue #1760)', function () {
+    $otherMerged = MergedPlaylist::factory()->for($this->user)->create();
+
+    Livewire::test(ListBouquets::class)
+        ->callAction('create', data: [
+            'name' => 'Shared lineup',
+            'target_type' => 'merged_playlist',
+            'target_id' => $this->merged->id,
+            'merged_playlist_id' => $this->merged->id,
+            'playlist_id' => null,
+            'custom_playlist_id' => null,
+        ])
+        ->assertHasNoActionErrors();
+
+    Livewire::test(ListBouquets::class)
+        ->callAction('create', data: [
+            'name' => 'Shared lineup',
+            'target_type' => 'merged_playlist',
+            'target_id' => $otherMerged->id,
+            'merged_playlist_id' => $otherMerged->id,
+            'playlist_id' => null,
+            'custom_playlist_id' => null,
+        ])
+        ->assertHasNoActionErrors();
+
+    expect(Bouquet::where('name', 'Shared lineup')->count())->toBe(2);
+});
+
+it('still rejects reusing a bouquet name on the same merged playlist', function () {
+    Bouquet::factory()->forMergedPlaylist($this->merged)->create([
+        'user_id' => $this->user->id,
+        'name' => 'Shared lineup',
+    ]);
+
+    Livewire::test(ListBouquets::class)
+        ->callAction('create', data: [
+            'name' => 'Shared lineup',
+            'target_type' => 'merged_playlist',
+            'target_id' => $this->merged->id,
+            'merged_playlist_id' => $this->merged->id,
+            'playlist_id' => null,
+            'custom_playlist_id' => null,
+        ])
+        ->assertHasActionErrors(['name']);
+});
+
 it('keeps a bouquet pair whose source currently has Include Live Channels off after a metadata-only save (issue #1688)', function () {
     $alias = bmMergedAlias($this->user, $this->merged);
     $bouquet = Bouquet::factory()->forMergedPlaylist($this->merged)->create([
