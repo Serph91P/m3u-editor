@@ -43,14 +43,20 @@ class LogoRepositoryService
     public function findByFilename(string $filename): ?array
     {
         $normalized = $this->normalizeSlug(pathinfo($filename, PATHINFO_FILENAME));
+        $index = $this->getIndex();
 
-        foreach ($this->getIndex() as $entry) {
+        // An entry's own canonical filename must always resolve to itself: check every
+        // entry's exact filename before considering any entry's aliases, so an earlier
+        // entry's alias can never shadow a later entry's canonical file.
+        foreach ($index as $entry) {
             $entryBase = $this->normalizeSlug(pathinfo((string) $entry['filename'], PATHINFO_FILENAME));
 
             if ($entryBase === $normalized) {
                 return $entry;
             }
+        }
 
+        foreach ($index as $entry) {
             $aliases = $entry['aliases'] ?? [];
             if (in_array($normalized, $aliases, true)) {
                 return $entry;
