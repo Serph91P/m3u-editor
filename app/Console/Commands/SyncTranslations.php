@@ -6,8 +6,11 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 
 /**
- * Scans all Filament PHP files and Blade views for __('literal string') calls
- * and adds any missing entries to lang/en.json as identity mappings.
+ * Scans every PHP file under app/ and every Blade view under resources/views/
+ * for __('literal string') calls, and adds any missing entries to lang/en.json
+ * as identity mappings. Previously this only scanned app/Filament, app/Enums and
+ * resources/views/filament, which silently left Livewire components, jobs,
+ * services and their views out of the synced set.
  *
  * Also detects and fixes escaped-quote bugs inside __() single-quoted strings:
  *   __('has \"quotes\"')  →  __('has "quotes"')
@@ -37,11 +40,10 @@ class SyncTranslations extends Command
         $fixEscapes = (bool) $this->option('fix-escapes');
 
         $phpDirs = [
-            app_path('Filament'),
-            app_path('Enums'),
+            app_path(),
         ];
         $bladeDirs = [
-            resource_path('views/filament'),
+            resource_path('views'),
         ];
 
         foreach ($phpDirs as $dir) {

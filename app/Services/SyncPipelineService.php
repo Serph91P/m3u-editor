@@ -658,7 +658,7 @@ class SyncPipelineService
         $autoProbeVod = (bool) $playlist->auto_probe_vod_streams;
         $probeIncludesDisabled = (bool) ($playlist->auto_probe_vod_streams_include_disabled ?? false);
 
-        $probeVod = $autoProbeVod && ($hasVod || ($hasSeries && $probeIncludesDisabled
+        $probeVod = $autoProbeVod && ($hasVod || ($probeIncludesDisabled
             && $playlist->channels()->where('is_vod', true)->exists()));
 
         $probeSeries = $autoProbeVod && ($hasSeries || ($hasVod && $playlist->episodes()

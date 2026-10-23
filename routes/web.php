@@ -102,15 +102,6 @@ Route::post('/webhook/test', WebhookTestController::class)
 Route::get('/webhook/test', WebhookTestController::class)
     ->name('webhook.test.get');
 
-// If local env, show PHP info screen
-Route::get('/phpinfo', function () {
-    if (app()->environment('local')) {
-        phpinfo();
-    } else {
-        abort(404);
-    }
-});
-
 /*
  * Logo proxy route - cache and serve remote logos
  */
@@ -473,6 +464,16 @@ Route::middleware(['throttle:5,1'])->prefix('epg')->group(function () {
     Route::get('{uuid}/sync', [EpgController::class, 'refreshEpg'])
         ->name('api.epg.sync');
 });
+
+/*
+ * Flutter TV web app entry point (aligned with the /m3u-proxy prefix).
+ * Everything after /m3u-tv/ is a static file already served directly by
+ * Herd/nginx (public/m3u-tv/*); only the bare entry path falls through to
+ * the router, since Herd's static-file check requires an exact file match
+ * and won't resolve a directory to its index.html.
+ */
+Route::get('/m3u-tv', fn () => redirect('/m3u-tv/'));
+Route::get('/m3u-tv/', fn () => response()->file(public_path('m3u-tv/index.html')));
 
 /*
  * Xtream API endpoints at root

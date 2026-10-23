@@ -567,13 +567,14 @@ class Channel extends Model
      *
      * Returns a flat list of entries, each with one of two shapes:
      *   - Stream entry:  ['stream' => ['codec_type' => string, 'codec_name' => string, ...]]
-     *   - Format entry:  ['format' => ['bit_rate' => string]]  (appended once when available)
+     *   - Format entry:  ['format' => ['format_name' => ?string, 'bit_rate' => ?string]]  (appended once when available)
      *
-     * The format entry carries the container-level bit_rate from `-show_format`. It is used
-     * as a fallback video bitrate for live MPEG-TS streams where ffprobe cannot determine
-     * a per-stream bit_rate. See getEmbyStreamStats() for the derivation logic.
+     * The format entry carries the container-level format_name and bit_rate from `-show_format`.
+     * The bit_rate is used as a fallback video bitrate for live MPEG-TS streams where ffprobe
+     * cannot determine a per-stream bit_rate (see getEmbyStreamStats()); format_name is used by
+     * adaptive stream profile rules (see StreamProfileRuleEvaluator).
      *
-     * @return list<array{stream: array{codec_type: string, codec_name: string, codec_long_name: ?string, profile: ?string, width: ?int, height: ?int, bit_rate: ?string, avg_frame_rate: ?string, display_aspect_ratio: ?string, sample_rate: ?string, channels: ?int, channel_layout: ?string, level: ?int, bits_per_raw_sample: ?string, refs: ?int, tags: array<string, string>}}|array{format: array{bit_rate: string}}>
+     * @return list<array{stream: array{codec_type: string, codec_name: string, codec_long_name: ?string, profile: ?string, width: ?int, height: ?int, bit_rate: ?string, avg_frame_rate: ?string, display_aspect_ratio: ?string, sample_rate: ?string, channels: ?int, channel_layout: ?string, level: ?int, bits_per_raw_sample: ?string, refs: ?int, tags: array<string, string>}}|array{format: array{format_name: ?string, bit_rate: ?string}}>
      */
     public function probeStreamStats(int $timeout = 15): array
     {
@@ -631,9 +632,13 @@ class Channel extends Model
                 // bit_rate (no CBR container, unknown duration). Capture the
                 // container-level bit_rate from -show_format so we can derive a
                 // sensible video bitrate fallback in getEmbyStreamStats().
+                $formatName = $json['format']['format_name'] ?? null;
                 $formatBitRate = $json['format']['bit_rate'] ?? null;
-                if ($formatBitRate !== null) {
-                    $streamStats[] = ['format' => ['bit_rate' => $formatBitRate]];
+                if ($formatName !== null || $formatBitRate !== null) {
+                    $streamStats[] = ['format' => [
+                        'format_name' => $formatName,
+                        'bit_rate' => $formatBitRate,
+                    ]];
                 }
 
                 return $streamStats;
@@ -878,6 +883,19 @@ class Channel extends Model
                 }
 
                 $movieData = $xtream->getVodInfo($this->source_id, timeout: 60);
+
+                // XtreamService::call() swallows HTTP/transport failures and returns
+                // null (surfaced here as an empty array) rather than throwing, so an
+                // entirely failed provider request looks identical to "the provider
+                // has nothing to say about this VOD" unless we check for it explicitly.
+                // Without this, a failed fetch would still persist last_metadata_fetch
+                // and report success, hiding the failure from the caller.
+                if (empty($movieData['info'] ?? null)) {
+                    Log::warning("VOD metadata fetch returned no data for channel {$this->id} (source_id: {$this->source_id})");
+
+                    return false;
+                }
+
                 $releaseDate = $movieData['info']['release_date'] ?? null;
                 $releaseDateAlt = $movieData['info']['releasedate'] ?? null;
                 $year = $this->year;

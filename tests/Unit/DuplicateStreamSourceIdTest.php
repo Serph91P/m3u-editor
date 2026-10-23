@@ -65,6 +65,52 @@ it('removes source_key from the channel array after hashing', function () {
     expect($result[0])->not->toHaveKey('source_key');
 });
 
+it('assigns the same source_id to a duplicate-named entry regardless of file order when it carries a stable tvg-id (issue #1664)', function () {
+    $sourceKey = 'NewsNewsNews';
+
+    $forward = ProcessM3uImport::assignCollisionSourceIds(collect([
+        ['source_key' => $sourceKey, 'stream_id' => 'synthetic-a', 'playlist_id' => 1, 'url' => 'http://example.test/a.ts'],
+        ['source_key' => $sourceKey, 'stream_id' => 'synthetic-b', 'playlist_id' => 1, 'url' => 'http://example.test/b.ts'],
+    ]))->all();
+
+    $reversed = ProcessM3uImport::assignCollisionSourceIds(collect([
+        ['source_key' => $sourceKey, 'stream_id' => 'synthetic-b', 'playlist_id' => 1, 'url' => 'http://example.test/b.ts'],
+        ['source_key' => $sourceKey, 'stream_id' => 'synthetic-a', 'playlist_id' => 1, 'url' => 'http://example.test/a.ts'],
+    ]))->all();
+
+    $forwardIdsByUrl = collect($forward)->pluck('source_id', 'url');
+    $reversedIdsByUrl = collect($reversed)->pluck('source_id', 'url');
+
+    // Each entry gets the same source_id under its own URL no matter which position
+    // it appears at in the file, so a reorder-only reimport can't swap which existing
+    // channel row the a.ts/b.ts data lands on.
+    expect($forwardIdsByUrl['http://example.test/a.ts'])->toBe($reversedIdsByUrl['http://example.test/a.ts'])
+        ->and($forwardIdsByUrl['http://example.test/b.ts'])->toBe($reversedIdsByUrl['http://example.test/b.ts'])
+        ->and($forwardIdsByUrl['http://example.test/a.ts'])->not->toBe($forwardIdsByUrl['http://example.test/b.ts']);
+});
+
+it('still disambiguates colliding entries by encounter order when none of them carry a tvg-id', function () {
+    $sourceKey = 'NewsNewsNews';
+
+    $result = ProcessM3uImport::assignCollisionSourceIds(collect([
+        ['source_key' => $sourceKey, 'playlist_id' => 1, 'url' => 'http://example.test/a.ts'],
+        ['source_key' => $sourceKey, 'playlist_id' => 1, 'url' => 'http://example.test/b.ts'],
+    ]))->all();
+
+    expect($result[0]['source_id'])->toBe(md5($sourceKey))
+        ->and($result[1]['source_id'])->toBe(md5($sourceKey.':dup:1'));
+});
+
+it('does not change the hash for a non-colliding entry that happens to carry a tvg-id', function () {
+    $sourceKey = 'BBC OneBBC OneNews';
+
+    $result = ProcessM3uImport::assignCollisionSourceIds(collect([
+        ['source_key' => $sourceKey, 'stream_id' => 'bbc-one', 'playlist_id' => 1],
+    ]))->all();
+
+    expect($result[0]['source_id'])->toBe(md5($sourceKey));
+});
+
 it('passes through Xtream channels that have no source_key unchanged', function () {
     $result = ProcessM3uImport::assignCollisionSourceIds(collect([
         ['source_id' => 'stream-12345', 'playlist_id' => 1, 'url' => 'https://provider.com/12345'],
