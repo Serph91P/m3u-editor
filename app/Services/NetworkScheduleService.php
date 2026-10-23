@@ -93,8 +93,11 @@ class NetworkScheduleService
                     ->delete();
             }
 
-            // Pre-place pinned content at their anchored day+time slots across the window
-            $this->prePlacePinnedOccurrences($network, $pinnedNetworkContent, $startFrom, $endAt);
+            // Pre-place pinned content at their anchored day+time slots across the window.
+            // Seed the collision set with the protected currently-airing interval so a pin
+            // landing inside it is skipped the same way a pin-vs-pin collision already is,
+            // instead of being placed on top of the programme that must not be preempted.
+            $this->prePlacePinnedOccurrences($network, $pinnedNetworkContent, $startFrom, $endAt, $currentlyAiring);
 
             // Pre-load pinned programmes once — the rotation loop below reads them
             // on every iteration to avoid overrunning a pin slot, so a per-iteration
@@ -357,7 +360,8 @@ class NetworkScheduleService
         Network $network,
         Collection $pinnedItems,
         Carbon $startFrom,
-        Carbon $endAt
+        Carbon $endAt,
+        ?NetworkProgramme $protectedCurrent = null
     ): void {
         if ($pinnedItems->isEmpty()) {
             return;
@@ -371,8 +375,12 @@ class NetworkScheduleService
         // Sort pinned items by sort_order so earlier ones win on collision
         $sorted = $pinnedItems->sortBy('sort_order');
 
-        // Collect occupied intervals to detect collisions: [start => end]
-        $occupied = [];
+        // Collect occupied intervals to detect collisions: [start => end]. Seeded with the
+        // protected currently-airing programme's interval so a pin landing inside it is
+        // skipped by the same collision check below, instead of being placed on top of it.
+        $occupied = $protectedCurrent
+            ? [[$protectedCurrent->start_time, $protectedCurrent->end_time]]
+            : [];
 
         $day = $startFrom->copy()->startOfDay();
 
