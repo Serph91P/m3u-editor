@@ -85,6 +85,10 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             // Use insertOrIgnore instead of syncWithoutDetaching so we never load the
             // entire pivot table into PHP memory on each iteration, and existing pivot
             // values (channel_number, sort) are preserved by the conflict-ignore path.
+            // insertOrIgnore is also why auto_synced_playlist_id only marks a NEW row as
+            // rule-managed: it never touches a row that already exists, so a channel a
+            // user separately added manually (or that an earlier run already tracked)
+            // keeps its existing provenance instead of being silently reclaimed here.
             $group->{$meta['relation']}()->chunkById(1000, function ($items) use ($meta, $playlistTagIds, $tag): void {
                 $ids = $items->pluck('id')->all();
 
@@ -92,6 +96,7 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
                     array_map(fn (int $id): array => [
                         $meta['pivotForeignKey'] => $this->customPlaylistId,
                         $meta['pivotRelatedKey'] => $id,
+                        'auto_synced_playlist_id' => $this->playlistId,
                     ], $ids)
                 );
 
@@ -101,13 +106,13 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             });
         }
 
-        // Full sync: delete pivot rows for items that were previously in the source
-        // groups (or have since lost their group assignment) but are no longer there.
-        // A manually created (is_custom) groupless item is excluded from the
-        // "lost their group assignment" branch below - it was never attached by a
-        // provider sync losing its group, so it can only have reached this custom
-        // playlist by a deliberate manual "Add to Custom Playlist", never by this
-        // rule, and must never be swept up by this cleanup.
+        // Full sync: delete pivot rows this rule previously added (tracked via
+        // auto_synced_playlist_id, set above) whose item is no longer in one of this
+        // rule's active source groups. Using provenance instead of the item's current
+        // group means a manually attached item is never swept up here regardless of
+        // its group, and an item this rule added is still removed after it moves to a
+        // different, active, non-selected group - group membership alone can't tell
+        // those two cases apart (issue #1695).
         // Done entirely in the database — no PHP-level ID collection or diff needed.
         if ($this->syncMode === 'full_sync') {
             $itemTable = $isSeries ? 'series' : 'channels';
@@ -115,28 +120,15 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
 
             // Restrict "currently active" to groups that still exist (not soft-deleted).
             // Channels belonging to soft-deleted groups still carry the old group_id value,
-            // so without this filter they would appear in both the whereIn and whereNotIn
-            // subqueries and be wrongly retained, showing as "Uncategorized" in the playlist.
+            // so without this filter they would be wrongly treated as "still present",
+            // showing as "Uncategorized" in the playlist instead of being removed.
             $activeGroupIds = $isSeries
                 ? Category::whereIn('id', $this->groupIds)->pluck('id')->all()
                 : Group::whereIn('id', $this->groupIds)->pluck('id')->all();
 
             DB::table($pivotTable)
                 ->where($pivotForeignKey, $this->customPlaylistId)
-                ->whereIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn): void {
-                    // Items attached to this custom playlist that came from a source group
-                    // (or have since lost their group assignment) - except a manually
-                    // created, groupless item, which this rule could never have added.
-                    $query->select('id')
-                        ->from($itemTable)
-                        ->where('playlist_id', $this->playlistId)
-                        ->where(function ($q) use ($groupColumn): void {
-                            $q->whereIn($groupColumn, $this->groupIds)
-                                ->orWhere(function ($q2) use ($groupColumn): void {
-                                    $q2->whereNull($groupColumn)->where('is_custom', false);
-                                });
-                        });
-                })
+                ->where('auto_synced_playlist_id', $this->playlistId)
                 ->whereNotIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn, $activeGroupIds): void {
                     // Items currently present in active (non-deleted) source groups only.
                     // Using $activeGroupIds (not $this->groupIds) ensures channels whose
