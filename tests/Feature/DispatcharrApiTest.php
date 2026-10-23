@@ -5,6 +5,7 @@ use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
 use App\Models\Playlist;
+use App\Models\PlaylistAlias;
 use App\Models\PlaylistAuth;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -203,6 +204,60 @@ it('returns profiles for a Custom Playlist with a custom group tag', function ()
     $accessToken = test()->postJson('/api/accounts/token/', [
         'username' => $customUsername,
         'password' => $customPassword,
+    ])->json('access');
+
+    $response = $this->getJson('/api/channels/profiles/', [
+        'Authorization' => "Bearer {$accessToken}",
+    ]);
+
+    $response->assertOk()->assertJsonCount(1);
+
+    $profiles = $response->json();
+    expect($profiles[0]['name'])->toBe('My News')
+        ->and($profiles[0]['channels'])->toBe([$channel->id]);
+});
+
+it('returns profiles for an alias of a Custom Playlist with a custom group tag', function () {
+    // #1740: a PlaylistAlias wrapping a CustomPlaylist fell through to the Group-model
+    // branch (its own channels()/groupTags() already delegate to the effective
+    // CustomPlaylist, same as the direct-access case above), calling whereHas('channels')
+    // on a Spatie Tag, which has no such relation.
+    $customPlaylist = CustomPlaylist::factory()->for($this->user)->create();
+    $alias = PlaylistAlias::create([
+        'name' => 'Custom Alias',
+        'uuid' => fake()->uuid(),
+        'user_id' => $this->user->id,
+        'custom_playlist_id' => $customPlaylist->id,
+    ]);
+
+    $aliasUsername = 'dispatcharr_alias_'.fake()->word();
+    $aliasPassword = fake()->password();
+    $playlistAuth = PlaylistAuth::create([
+        'name' => 'Custom Playlist Alias Dispatcharr Auth',
+        'username' => $aliasUsername,
+        'password' => $aliasPassword,
+        'enabled' => true,
+        'user_id' => $this->user->id,
+    ]);
+    $playlistAuth->assignTo($alias);
+
+    $channel = Channel::factory()->for($this->playlist)->for($this->user)->create([
+        'enabled' => true,
+        'is_vod' => false,
+    ]);
+    $customPlaylist->channels()->attach($channel->id);
+
+    $tag = Tag::findOrCreate('My News', $customPlaylist->uuid);
+    $customPlaylist->attachTag($tag);
+    DB::table('taggables')->insert([
+        'tag_id' => $tag->id,
+        'taggable_id' => $channel->id,
+        'taggable_type' => Channel::class,
+    ]);
+
+    $accessToken = test()->postJson('/api/accounts/token/', [
+        'username' => $aliasUsername,
+        'password' => $aliasPassword,
     ])->json('access');
 
     $response = $this->getJson('/api/channels/profiles/', [

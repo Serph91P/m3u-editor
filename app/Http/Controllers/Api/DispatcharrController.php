@@ -118,7 +118,12 @@ class DispatcharrController extends Controller
 
         $profiles = [];
 
-        if ($playlist instanceof CustomPlaylist) {
+        // A PlaylistAlias wrapping a CustomPlaylist exposes its own channels()/groupTags()
+        // that already delegate to the effective CustomPlaylist (see PlaylistAlias::groups()/
+        // groupTags()), so it needs the same tag-based branch below - the Group-model branch
+        // it fell through to otherwise calls whereHas('channels') on a Spatie Tag, which has
+        // no such relation.
+        if ($playlist instanceof CustomPlaylist || ($playlist instanceof PlaylistAlias && $playlist->custom_playlist_id)) {
             // CustomPlaylist groups are Spatie tags, not Group models - they have
             // no channels()/enabled_live_channels() relations, so membership is
             // resolved through the taggables table instead.
