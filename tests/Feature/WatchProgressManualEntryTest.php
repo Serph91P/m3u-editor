@@ -390,6 +390,33 @@ it('searches TMDB and adds the clicked poster result from the Add Progress slide
         ->duration_seconds->toBe(8340);
 });
 
+it('still clamps position to the restored duration when the duration field is cleared after being auto-filled', function () {
+    $this->actingAs($this->user);
+
+    $component = Livewire::test(WatchProgressRelationManager::class, [
+        'ownerRecord' => $this->viewer,
+        'pageClass' => ViewPlaylistViewer::class,
+    ])
+        ->set('activeTab', 'vod')
+        ->mountAction(TestAction::make('addProgress')->table())
+        ->fillForm(['media_type' => 'movie', 'search_query' => 'Fight Club'])
+        ->callAction(TestAction::make('searchTmdb')->schemaComponent('tmdbSearch'));
+
+    // TMDB=550 has an 8340s (2:19:00) runtime, auto-filling duration. Clear it
+    // and submit a position well past that known runtime.
+    $component->set('mountedActions.0.data.tmdb_id', 550)
+        ->assertSchemaStateSet(['duration' => '2:19:00'])
+        ->fillForm(['position' => '3:00:00', 'duration' => null])
+        ->callMountedAction()
+        ->assertHasNoFormErrors()
+        ->assertNotified('Watch progress added');
+
+    expect(ViewerWatchProgress::sole())
+        ->tmdb_id->toBe(550)
+        ->duration_seconds->toBe(8340)
+        ->position_seconds->toBe(8340);
+});
+
 it('leaves the VOD manual TMDB search results applying the selection directly', function () {
     $this->actingAs($this->user);
 
