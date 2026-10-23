@@ -359,6 +359,22 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by(optional($request->user())->id ?: $request->ip());
         });
 
+        // Named separately as well as keyed by route class: even callbacks from
+        // the same proxy IP/token cannot consume another callback's allowance.
+        foreach (['resolver', 'webhook', 'broadcast', 'dvr'] as $callback) {
+            RateLimiter::for('m3u-proxy-callback-'.$callback, function (Request $request) use ($callback) {
+                $configured = config('proxy.callback_rate_limits.'.$callback, 120);
+                $limit = is_int($configured) || is_string($configured)
+                    ? filter_var($configured, FILTER_VALIDATE_INT, [
+                        'options' => ['min_range' => 1, 'max_range' => 60000],
+                    ])
+                    : false;
+
+                return Limit::perMinute($limit === false ? 120 : $limit)
+                    ->by($callback.'|'.$request->route()->getDomain().'|'.$request->ip());
+            });
+        }
+
         // Note: Proxy rate limiting is handled by ProxyRateLimitMiddleware for better performance
 
         // Gate the copilot stream endpoint behind the use_ai_copilot permission.

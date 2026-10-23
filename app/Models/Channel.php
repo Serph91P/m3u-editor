@@ -61,6 +61,7 @@ class Channel extends Model
         'is_custom' => 'boolean',
         'is_vod' => 'boolean',
         'enable_proxy' => 'boolean',
+        'proxy_options' => 'array',
         'tmdb_id' => 'integer',
         'tvdb_id' => 'integer',
         'imdb_id' => 'string',
