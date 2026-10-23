@@ -298,25 +298,40 @@ class PlaylistGenerateController extends Controller
 
                 // If the playlist includes series in M3U, include the series episodes
                 if ($playlist->include_series_in_m3u) {
+                    // A Custom Playlist (or an alias of one) categorizes a series by its
+                    // own category tag when one is saved, rather than the series' original
+                    // provider category - the same distinction get_series_categories/
+                    // get_series already make for the Xtream output.
+                    $seriesCategoryTagType = ($playlist instanceof CustomPlaylist)
+                        ? $playlist->uuid.'-category'
+                        : (($playlist instanceof PlaylistAlias && $playlist->custom_playlist_id)
+                            ? $playlist->customPlaylist->uuid.'-category'
+                            : null);
+
                     // Get the seasons
                     $seriesQuery = $playlist->series()
                         ->where('series.enabled', true)
-                        ->with([
+                        ->with(array_filter([
                             'category.parent',
+                            $seriesCategoryTagType !== null ? 'tags' : null,
                             'episodes' => function ($q) {
                                 $q->where('episodes.enabled', true);
                             },
-                        ]);
+                        ]));
                     foreach (self::seriesKeysetLazy($seriesQuery, 50) as $s) {
                         // Get series movie DB ID's as fallbacks for episode
                         $movieDbIds = $s->getMovieDbIds() ?? [];
                         $seriesTmdbId = $movieDbIds['tmdb'] ?? $movieDbIds['tvdb'] ?? $movieDbIds['imdb'] ?? null;
 
+                        $customCategory = $seriesCategoryTagType !== null
+                            ? $s->tags->where('type', $seriesCategoryTagType)->first()
+                            : null;
+
                         // Append the episodes
                         foreach ($s->episodes as $episode) {
                             // Set channel variables
                             $channelNo = $numberSequence->advance();
-                            $group = $s->category->effective_name ?? 'Seasons';
+                            $group = $customCategory?->name ?? $s->category->effective_name ?? 'Seasons';
                             $name = $s->name;
                             $url = PlaylistUrlService::getEpisodeUrl($episode, $playlist);
                             $title = $episode->title;

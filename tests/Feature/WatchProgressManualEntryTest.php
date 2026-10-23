@@ -83,13 +83,14 @@ beforeEach(function () {
     $this->service = app(ManualWatchProgressService::class);
 });
 
-function recentlyWatchedFor(PlaylistViewer $viewer)
+function recentlyWatchedFor(PlaylistViewer $viewer, array $extraParams = [])
 {
     $query = http_build_query([
         'username' => 'testuser',
         'password' => 'testpass',
         'action' => 'get_recently_watched',
         'viewer_id' => $viewer->ulid,
+        ...$extraParams,
     ]);
 
     return test()->getJson(route('xtream.api.player').'?'.$query);
@@ -402,4 +403,77 @@ it('leaves the VOD manual TMDB search results applying the selection directly', 
         ])
         ->assertMountedActionModalSeeHtml("applyTmdbSelection(550, 'movie', {$vod->id}, 'vod')")
         ->assertMountedActionModalDontSeeHtml('border-primary-500');
+});
+
+it('does not let newer unplayable unlinked entries push a playable one out of a limited get_recently_watched page', function () {
+    $channel = Channel::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'is_vod' => true,
+        'tmdb_id' => 550,
+    ]);
+
+    // The one playable, resolvable entry - watched first, so it's the oldest row.
+    ViewerWatchProgress::create([
+        'playlist_viewer_id' => $this->viewer->id,
+        'content_type' => 'vod',
+        'stream_id' => $channel->id,
+        'tmdb_id' => 550,
+        'position_seconds' => 600,
+        'duration_seconds' => 3600,
+        'last_watched_at' => now()->subMinutes(30),
+    ]);
+
+    // A newer unlinked manual entry not in the library - correctly hidden from
+    // results, but it must not consume the one playable slot ahead of it.
+    ViewerWatchProgress::create([
+        'playlist_viewer_id' => $this->viewer->id,
+        'content_type' => 'vod',
+        'stream_id' => null,
+        'tmdb_id' => 9999,
+        'title' => 'Not In Library',
+        'position_seconds' => 100,
+        'last_watched_at' => now(),
+    ]);
+
+    // Even with only one slot available, the one playable entry must fill it
+    // rather than being pushed out by the newer unplayable unlinked entry.
+    $response = recentlyWatchedFor($this->viewer, ['limit' => 1])->assertOk()->assertJsonCount(1);
+    expect($response->json('0.stream_id'))->toBe($channel->id);
+});
+
+it('fills the default-limit get_recently_watched page past a run of newer unplayable unlinked entries', function () {
+    $channel = Channel::factory()->create([
+        'user_id' => $this->user->id,
+        'playlist_id' => $this->playlist->id,
+        'is_vod' => true,
+        'tmdb_id' => 550,
+    ]);
+
+    ViewerWatchProgress::create([
+        'playlist_viewer_id' => $this->viewer->id,
+        'content_type' => 'vod',
+        'stream_id' => $channel->id,
+        'tmdb_id' => 550,
+        'position_seconds' => 600,
+        'duration_seconds' => 3600,
+        'last_watched_at' => now()->subMinutes(30),
+    ]);
+
+    for ($i = 0; $i < 20; $i++) {
+        ViewerWatchProgress::create([
+            'playlist_viewer_id' => $this->viewer->id,
+            'content_type' => 'vod',
+            'stream_id' => null,
+            'tmdb_id' => 9000 + $i,
+            'title' => "Not In Library {$i}",
+            'position_seconds' => 100,
+            'last_watched_at' => now()->addSeconds($i),
+        ]);
+    }
+
+    // The default limit (20) is smaller than the 21 total rows, but only one
+    // row is actually playable, so it must still be returned.
+    $response = recentlyWatchedFor($this->viewer)->assertOk()->assertJsonCount(1);
+    expect($response->json('0.stream_id'))->toBe($channel->id);
 });

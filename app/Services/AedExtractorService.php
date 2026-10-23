@@ -169,6 +169,7 @@ class AedExtractorService
             // Try each pipe-separated date format with each pipe-separated time format
             // until one pair parses successfully
             $startTime = null;
+            $matchedDateFormat = null;
             $combined = $dateString ? "{$dateString} {$timeString}" : $timeString;
             $dateFormats = $dateString ? array_map('trim', explode('|', $profile->date_format)) : [null];
             $timeFormats = array_map('trim', explode('|', $profile->time_format));
@@ -180,6 +181,7 @@ class AedExtractorService
                         $parsed = Carbon::createFromFormat($combinedFormat, $combined, $sourceTimezone);
                         if ($parsed !== false) {
                             $startTime = $parsed;
+                            $matchedDateFormat = $dateFormat;
                             break 2;
                         }
                     } catch (InvalidFormatException) {
@@ -200,7 +202,7 @@ class AedExtractorService
             // across New Year (e.g. "01.02" seen on Dec 30) still lands in the next year.
             // Compare calendar dates in the output timezone (not instants) so two events on
             // the same source date are always treated the same regardless of time of day.
-            if (! $dateString || ! str_contains($profile->date_format ?? '', 'Y')) {
+            if (! $dateString || ! str_contains($matchedDateFormat ?? '', 'Y')) {
                 $today = Carbon::now($outputTimezone)->startOfDay();
                 $startTime = collect([
                     $startTime->copy()->subYear(),

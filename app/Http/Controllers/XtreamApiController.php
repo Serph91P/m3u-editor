@@ -585,15 +585,23 @@ class XtreamApiController extends Controller
             // Apply category filtering when requested.
             if ($categoryId && $categoryId !== 'all') {
                 if ($isCustomPlaylist) {
+                    // A custom tag id and a fallback group id live in disjoint ranges
+                    // (see XtreamCategoryService::CUSTOM_PLAYLIST_FALLBACK_ID_OFFSET),
+                    // so only one of these branches can ever actually match.
                     $channelsQuery->where(function ($query) use ($categoryId, $tagUuid) {
                         $query->whereHas('tags', function ($tagQuery) use ($categoryId, $tagUuid) {
                             $tagQuery->where('type', $tagUuid)
                                 ->where('id', $categoryId);
-                        })->orWhere(function ($subQuery) use ($categoryId, $tagUuid) {
-                            $subQuery->whereDoesntHave('tags', function ($tagQuery) use ($tagUuid) {
-                                $tagQuery->where('type', $tagUuid);
-                            })->where('group_id', $categoryId);
                         });
+
+                        if (XtreamCategoryService::isCustomPlaylistFallbackCategoryId($categoryId)) {
+                            $groupId = XtreamCategoryService::decodeCustomPlaylistFallbackCategoryId($categoryId);
+                            $query->orWhere(function ($subQuery) use ($groupId, $tagUuid) {
+                                $subQuery->whereDoesntHave('tags', function ($tagQuery) use ($tagUuid) {
+                                    $tagQuery->where('type', $tagUuid);
+                                })->where('group_id', $groupId);
+                            });
+                        }
                     });
                 } else {
                     // A merged group's category_id also matches every child folded into it.
@@ -638,7 +646,7 @@ class XtreamApiController extends Controller
                         if (! empty($channel->custom_group_id)) {
                             $channelCategoryId = (string) $channel->custom_group_id;
                         } elseif ($channel->group_id) {
-                            $channelCategoryId = (string) $channel->group_id;
+                            $channelCategoryId = XtreamCategoryService::customPlaylistFallbackCategoryId($channel->group_id);
                         }
                     } else {
                         // Non-custom playlist: a group folded into a merged group reports the merged group's id.
@@ -735,15 +743,23 @@ class XtreamApiController extends Controller
 
             if ($categoryId && $categoryId !== 'all') {
                 if ($isCustomPlaylist) {
+                    // A custom tag id and a fallback group id live in disjoint ranges
+                    // (see XtreamCategoryService::CUSTOM_PLAYLIST_FALLBACK_ID_OFFSET),
+                    // so only one of these branches can ever actually match.
                     $channelsQuery->where(function ($query) use ($categoryId, $tagUuid) {
                         $query->whereHas('tags', function ($tagQuery) use ($categoryId, $tagUuid) {
                             $tagQuery->where('type', $tagUuid)
                                 ->where('id', $categoryId);
-                        })->orWhere(function ($subQuery) use ($categoryId, $tagUuid) {
-                            $subQuery->whereDoesntHave('tags', function ($tagQuery) use ($tagUuid) {
-                                $tagQuery->where('type', $tagUuid);
-                            })->where('group_id', $categoryId);
                         });
+
+                        if (XtreamCategoryService::isCustomPlaylistFallbackCategoryId($categoryId)) {
+                            $groupId = XtreamCategoryService::decodeCustomPlaylistFallbackCategoryId($categoryId);
+                            $query->orWhere(function ($subQuery) use ($groupId, $tagUuid) {
+                                $subQuery->whereDoesntHave('tags', function ($tagQuery) use ($tagUuid) {
+                                    $tagQuery->where('type', $tagUuid);
+                                })->where('group_id', $groupId);
+                            });
+                        }
                     });
                 } else {
                     // Dynamic groups use a reserved id range
@@ -810,7 +826,7 @@ class XtreamApiController extends Controller
                         if (! empty($channel->custom_group_id)) {
                             $channelCategoryId = (string) $channel->custom_group_id;
                         } elseif ($channel->group_id) {
-                            $channelCategoryId = (string) $channel->group_id;
+                            $channelCategoryId = XtreamCategoryService::customPlaylistFallbackCategoryId($channel->group_id);
                         }
                     } elseif ($dynamicGroupId !== null) {
                         // When serving a dynamic category, clients group by
@@ -891,19 +907,26 @@ class XtreamApiController extends Controller
             // Apply category filtering if category_id is provided
             if ($categoryId && $categoryId !== 'all') {
                 if ($isCustomPlaylist) {
-                    // For CustomPlaylist, filter by tag ID or group_id
+                    // For CustomPlaylist, filter by tag ID or category_id. These live
+                    // in disjoint ranges (see
+                    // XtreamCategoryService::CUSTOM_PLAYLIST_FALLBACK_ID_OFFSET), so
+                    // only one of these branches can ever actually match.
                     $seriesQuery->where(function ($query) use ($categoryId, $tagUuid) {
-                        // Channels with custom tags matching the category ID
+                        // Series with custom tags matching the category ID
                         $query->whereHas('tags', function ($tagQuery) use ($categoryId, $tagUuid) {
                             $tagQuery->where('type', $tagUuid.'-category')
                                 ->where('id', $categoryId);
-                        })
-                            // OR channels without custom tags but with matching group_id
-                            ->orWhere(function ($subQuery) use ($categoryId, $tagUuid) {
+                        });
+
+                        if (XtreamCategoryService::isCustomPlaylistFallbackCategoryId($categoryId)) {
+                            $categoryTableId = XtreamCategoryService::decodeCustomPlaylistFallbackCategoryId($categoryId);
+                            // OR series without custom tags but with matching category_id
+                            $query->orWhere(function ($subQuery) use ($categoryTableId, $tagUuid) {
                                 $subQuery->whereDoesntHave('tags', function ($tagQuery) use ($tagUuid) {
                                     $tagQuery->where('type', $tagUuid.'-category');
-                                })->where('category_id', $categoryId);
+                                })->where('category_id', $categoryTableId);
                             });
+                        }
                     });
                 } else {
                     // Dynamic groups expose a reserved id range — see
@@ -977,7 +1000,7 @@ class XtreamApiController extends Controller
                         if ($customCat) {
                             $seriesCategoryId = (string) $customCat->id;
                         } elseif ($seriesItem->category_id) {
-                            $seriesCategoryId = (string) $seriesItem->category_id;
+                            $seriesCategoryId = XtreamCategoryService::customPlaylistFallbackCategoryId($seriesItem->category_id);
                         }
                     } elseif ($dynamicGroupId !== null) {
                         // Dynamic category — echo the requested id rather
@@ -1373,10 +1396,11 @@ class XtreamApiController extends Controller
 
                     foreach ($fallbackGroups as $group) {
                         // Avoid duplicate category_ids
+                        $fallbackId = XtreamCategoryService::customPlaylistFallbackCategoryId($group->id);
                         $existingIds = array_column($liveCategories, 'category_id');
-                        if (! in_array((string) $group->id, $existingIds)) {
+                        if (! in_array($fallbackId, $existingIds)) {
                             $liveCategories[] = [
-                                'category_id' => (string) $group->id,
+                                'category_id' => $fallbackId,
                                 'category_name' => $group->name,
                                 'parent_id' => 0,
                                 'sort_order' => $group->sort_order ?? 999999,
@@ -1470,10 +1494,11 @@ class XtreamApiController extends Controller
 
                     foreach ($fallbackGroups as $group) {
                         // Avoid duplicate category_ids
+                        $fallbackId = XtreamCategoryService::customPlaylistFallbackCategoryId($group->id);
                         $existingIds = array_column($vodCategories, 'category_id');
-                        if (! in_array((string) $group->id, $existingIds)) {
+                        if (! in_array($fallbackId, $existingIds)) {
                             $vodCategories[] = [
-                                'category_id' => (string) $group->id,
+                                'category_id' => $fallbackId,
                                 'category_name' => $group->name,
                                 'parent_id' => 0,
                                 'sort_order' => $group->sort_order ?? 999999,
@@ -1571,10 +1596,11 @@ class XtreamApiController extends Controller
 
                     foreach ($fallbackCategories as $category) {
                         // Avoid duplicate category_ids
+                        $fallbackId = XtreamCategoryService::customPlaylistFallbackCategoryId($category->id);
                         $existingIds = array_column($seriesCategories, 'category_id');
-                        if (! in_array((string) $category->id, $existingIds)) {
+                        if (! in_array($fallbackId, $existingIds)) {
                             $seriesCategories[] = [
-                                'category_id' => (string) $category->id,
+                                'category_id' => $fallbackId,
                                 'category_name' => $category->name,
                                 'parent_id' => 0,
                                 'sort_order' => $category->sort_order ?? 999999,
@@ -2953,6 +2979,12 @@ class XtreamApiController extends Controller
                     'completed' => $completed,
                 ])
             );
+
+            // Capture the stable catalog identity (same as the /api/watch-progress
+            // write path) so WatchProgressLinker can relink this row if stream_id
+            // later goes stale (e.g. a media-server library flush), instead of
+            // leaving a fresh row permanently unrecoverable.
+            app(WatchProgressLinker::class)->backfillTmdbId($progress);
         }
 
         return response()->json($progress);
@@ -3012,7 +3044,14 @@ class XtreamApiController extends Controller
             $query->where('content_type', $type);
         }
 
-        $results = $query->limit($limit)->get();
+        // Fetch a bounded candidate window larger than $limit, not just $limit rows:
+        // a manual/unlinked entry that doesn't resolve to a catalog item is dropped
+        // below, and dropping it must not shrink the final page - an older but still
+        // resolvable entry should fill the slot instead. The cap keeps this a bounded
+        // query rather than the viewer's entire history.
+        $candidateLimit = min(max($limit * 5, 100), 500);
+
+        $results = $query->limit($candidateLimit)->get();
 
         $linker = app(WatchProgressLinker::class);
         $results->each(fn (ViewerWatchProgress $progress) => $linker->ensureLinked($progress, $playlist));
@@ -3021,10 +3060,7 @@ class XtreamApiController extends Controller
             // vod/episode rows whose stream_id no longer resolves (and couldn't be
             // relinked via tmdb_id above) point at deleted content - drop them
             // instead of surfacing a dead card the client can't do anything with.
-            if ($progress->content_type === 'vod' && ! $progress->channel) {
-                return null;
-            }
-            if ($progress->content_type === 'episode' && ! $progress->episode) {
+            if (! $this->isResolvableWatchProgressRow($progress)) {
                 return null;
             }
 
@@ -3115,13 +3151,40 @@ class XtreamApiController extends Controller
             unset($data['channel'], $data['episode']);
 
             return $data;
-        })->filter()->values();
+        })->filter()->values()->take($limit);
 
         if ($includeUpNext) {
-            $enriched = $this->appendUpNextEntries($enriched, $results, $viewer, $playlist, $limit);
+            // Scope the up-next source rows to the same recency window that actually
+            // made the final page (the first $limit resolvable rows), not the whole
+            // wider $candidateLimit fetch above - otherwise widening that fetch to
+            // work around unresolved entries would also widen which series are
+            // eligible for an up-next suggestion.
+            $resultsForUpNext = $results
+                ->filter(fn (ViewerWatchProgress $progress): bool => $this->isResolvableWatchProgressRow($progress))
+                ->values()
+                ->take($limit);
+
+            $enriched = $this->appendUpNextEntries($enriched, $resultsForUpNext, $viewer, $playlist, $limit);
         }
 
         return response()->json($enriched->values());
+    }
+
+    /**
+     * Whether a watch-progress row still resolves to a real catalog item. A vod/episode
+     * row whose stream_id no longer resolves (and couldn't be relinked via tmdb_id)
+     * points at deleted content and should be treated as absent from the viewer's history.
+     */
+    private function isResolvableWatchProgressRow(ViewerWatchProgress $progress): bool
+    {
+        if ($progress->content_type === 'vod' && ! $progress->channel) {
+            return false;
+        }
+        if ($progress->content_type === 'episode' && ! $progress->episode) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
