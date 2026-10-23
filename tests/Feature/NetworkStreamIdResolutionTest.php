@@ -32,6 +32,14 @@ it('resolves a network playlist stream via the projected channel network_id, eve
     $nextChannelId = (int) (DB::table('channels')->max('id') ?? 0) + 1;
     $nextNetworkId = (int) (DB::table('networks')->max('id') ?? 0) + 1;
 
+    // A plain Network with no network_playlist_id projects no Channel (see
+    // NetworkChannelSyncService::syncNetwork), so filler networks can close
+    // the gap from this side alone when channels is the one running ahead.
+    while ($nextNetworkId < $nextChannelId) {
+        Network::factory()->for($this->user)->create();
+        $nextNetworkId++;
+    }
+
     // The network's own creation projects exactly one Channel row, consuming
     // the next id in each sequence at the same moment - so levelling the two
     // sequences beforehand makes that projected channel's id land exactly on

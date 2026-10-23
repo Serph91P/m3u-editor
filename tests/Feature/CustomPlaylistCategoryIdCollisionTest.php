@@ -19,6 +19,7 @@ use App\Models\Playlist;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Spatie\Tags\Tag;
 
 uses(RefreshDatabase::class);
@@ -43,7 +44,12 @@ beforeEach(function () {
         $nextGroupId++;
     }
     while ($nextTagId < $nextGroupId) {
-        Tag::findOrCreate("Filler Tag {$nextTagId}", "filler-{$nextTagId}");
+        // A deterministic slug would collide with (and get silently reused
+        // instead of re-inserted by findOrCreate as) leftover filler tags
+        // from earlier full-suite runs in this same worker, so the random
+        // suffix guarantees every call actually inserts a fresh row.
+        $suffix = Str::random(8);
+        Tag::findOrCreate("Filler Tag {$nextTagId} {$suffix}", "filler-{$nextTagId}-{$suffix}");
         $nextTagId++;
     }
 
