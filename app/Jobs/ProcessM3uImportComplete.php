@@ -504,6 +504,16 @@ class ProcessM3uImportComplete implements ShouldQueue
             $this->createSyncLogEntries($sync, $logQueries);
         }
 
+        // Terminate the correlated SyncRun so its status/timeline agree with the playlist and
+        // log, which are already marked failed/canceled above. Without this the run is left
+        // "running" with no finished_at and its elapsed duration keeps climbing indefinitely.
+        if ($this->syncRunId !== null) {
+            $run = SyncRun::find($this->syncRunId);
+            if ($run) {
+                app(SyncPipelineService::class)->fail($run, $message);
+            }
+        }
+
         // Invalidated syncs skip the auto resync loop: an immediate retry would most likely be
         // invalidated too, so use up the attempts and wait for the next scheduled sync instead.
         $playlist->update([

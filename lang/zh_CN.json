@@ -1,7 +1,7 @@
 {
     "\":name\" already merges this playlist with your media server libraries.": "“:name”已将此播放列表与您的媒体服务器库合并。",
     "\":name\" was created. Assign auths to it to start using it.": "已创建“:name”。请为其分配授权以开始使用。",
-    "\":title\" request has been rejected.": "\"：title\" 的请求已被拒绝。",
+    "\":title\" request has been rejected.": "\":title\" 的请求已被拒绝。",
     "\"Automatic\" deletes a cached file once its movie or episode is removed from the playlist. \"Never expire\" and \"Manual\" keep files until you delete them from the Cached Downloads page. Playlists can override this.": "“自动”会在影片或剧集从播放列表中移除后删除其缓存文件。“永不过期”和“手动”会保留文件，直到你在“缓存下载”页面中删除。播放列表可以覆盖此设置。",
     "\"New Groups Only\" automatically syncs any group flagged as new (first import or re-added) into the Custom Playlist, without needing to select them manually.": "“仅同步新分组”会自动将标记为新建（首次导入或重新添加）的任何分组同步到自定义播放列表，无需手动选择。",
     "\"Sync\" adds new channels and removes channels no longer in the source group. \"Add only\" never removes channels from the Custom Playlist.": "“同步”会添加新频道并移除源分组中已不存在的频道。“仅添加”绝不会从自定义播放列表中移除频道。",
