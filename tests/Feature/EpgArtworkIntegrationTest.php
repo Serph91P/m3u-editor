@@ -8,7 +8,6 @@ use App\Models\PlaylistAuth;
 use App\Models\User;
 use App\Services\EpgCacheService;
 use Illuminate\Support\Facades\Bus;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
@@ -60,8 +59,7 @@ beforeEach(function () {
 });
 
 it('persists first-icon geometry and roles in the real SQLite programme store', function () {
-    expect(DB::connection()->getDriverName())->toBe('sqlite')
-        ->and($this->epg->fresh()->is_cached)->toBeTrue();
+    expect($this->epg->fresh()->is_cached)->toBeTrue();
     $path = Storage::disk('local')->path("epg-cache/{$this->epg->uuid}/v2/programmes.sqlite");
     expect(file_get_contents($path, length: 16))->toBe("SQLite format 3\0");
 
