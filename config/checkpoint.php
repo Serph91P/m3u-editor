@@ -87,6 +87,9 @@ return [
             'guzzlehttp/promises',
             // ── Core Laravel ecosystem — trusted first-party packages ────────
             'laravel/framework',
+            // v4.4.8 was the security patch for GHSA-mhf7-xp6r-6qrc (Authorize
+            // bypass via reordered parameter keys and #[Json] execution order)
+            'livewire/livewire',
             // transitive deps of laravel/framework, bumped alongside it
             'nesbot/carbon',
             'symfony/http-foundation',
