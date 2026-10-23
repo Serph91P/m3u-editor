@@ -15,6 +15,39 @@ class EpgProgrammeArtwork
     /** Image roles allowed by the XMLTV DTD's <image type> attribute. */
     public const ROLES = ['poster', 'backdrop', 'still', 'person', 'character'];
 
+    /** The preservation decision applies only to the unchanged canonical scalar. */
+    public static function preservedPrimary(array $programme): ?string
+    {
+        $url = $programme['preserved_primary_url'] ?? null;
+
+        return is_string($url) && $url !== '' && $url === ($programme['icon'] ?? null)
+            && in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['http', 'https'], true)
+            && filter_var($url, FILTER_VALIDATE_URL) !== false ? $url : null;
+    }
+
+    /** @return array{0: int, 1: int} */
+    public static function preservedPrimaryDimensions(array $programme): array
+    {
+        $url = self::preservedPrimary($programme);
+        $dimensions = [0, 0];
+        foreach (self::validImages($programme['images'] ?? null) as $image) {
+            if ($url === null || $image['url'] !== $url) {
+                continue;
+            }
+            $width = (int) ($image['width'] ?? 0);
+            $height = (int) ($image['height'] ?? 0);
+            if ($width <= 0 || $height <= 0) {
+                continue;
+            }
+            if ($dimensions !== [0, 0] && $dimensions !== [$width, $height]) {
+                return [0, 0];
+            }
+            $dimensions = [$width, $height];
+        }
+
+        return $dimensions;
+    }
+
     /**
      * The portrait poster: an image typed `poster` (or untyped) whose
      * orientation is portrait, else a typed `poster` with no orientation

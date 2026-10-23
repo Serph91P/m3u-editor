@@ -2680,6 +2680,9 @@ class XtreamApiController extends Controller
     private function epgProgrammeArtwork(array $programme, $playlist): array
     {
         $artwork = [];
+        if ($preserved = EpgProgrammeArtwork::preservedPrimary($programme)) {
+            $artwork['preserved_primary_url'] = $this->epgProgrammeImageUrl($preserved, $playlist);
+        }
         $images = $programme['images'] ?? null;
         if ($poster = EpgProgrammeArtwork::poster($images, $programme['icon'] ?? null)) {
             $artwork['poster_url'] = $this->epgProgrammeImageUrl(trim($poster['url']), $playlist);
@@ -2693,6 +2696,14 @@ class XtreamApiController extends Controller
             $artwork['still_url'] = $this->epgProgrammeImageUrl(trim($still['url']), $playlist);
             $artwork['still_width'] = (int) ($still['width'] ?? 0);
             $artwork['still_height'] = (int) ($still['height'] ?? 0);
+        }
+
+        if (isset($artwork['preserved_primary_url'])) {
+            foreach (['poster', 'still'] as $role) {
+                if (($artwork[$role.'_url'] ?? null) === $artwork['preserved_primary_url']) {
+                    [$artwork[$role.'_width'], $artwork[$role.'_height']] = EpgProgrammeArtwork::preservedPrimaryDimensions($programme);
+                }
+            }
         }
 
         return $artwork;

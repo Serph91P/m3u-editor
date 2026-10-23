@@ -13,6 +13,41 @@ use ReflectionMethod;
 /** Serialization tests deliberately do not boot Laravel or refresh a database. */
 class EpgArtworkTransportTest extends TestCase
 {
+    public function test_preserved_primary_is_exported_only_when_bound_to_the_scalar(): void
+    {
+        $url = 'https://example.com/still.jpg';
+        $programme = ['icon' => $url, 'preserved_primary_url' => $url, 'images' => [
+            ['url' => $url, 'type' => 'still', 'width' => 1920, 'height' => 1080],
+        ]];
+        $controller = new XtreamApiController;
+        $export = new ReflectionMethod($controller, 'epgProgrammeArtwork');
+        $payload = $export->invoke($controller, $programme, (object) ['enable_logo_proxy' => false]);
+        self::assertSame($url, $payload['preserved_primary_url'] ?? null);
+        self::assertArrayNotHasKey('poster_url', $payload);
+        self::assertSame($url, $payload['still_url']);
+        self::assertStringContainsString('<?m3ue-preserved-primary?>'.PHP_EOL.'    <icon src="'.$url.'"/>', $this->exportArtwork($programme));
+        self::assertSame(1, substr_count($this->exportArtwork($programme), '<?m3ue-preserved-primary?>'));
+        foreach (['', 'https://example.com/other.jpg', 'file:///private/image.jpg'] as $binding) {
+            $programme['preserved_primary_url'] = $binding;
+            self::assertArrayNotHasKey('preserved_primary_url', $export->invoke($controller, $programme, (object) ['enable_logo_proxy' => false]));
+            self::assertStringNotContainsString('<?m3ue-preserved-primary?>', $this->exportArtwork($programme));
+        }
+    }
+
+    public function test_preserved_primary_does_not_export_conflicting_same_url_geometry(): void
+    {
+        $url = 'https://example.com/still.jpg';
+        $programme = ['icon' => $url, 'preserved_primary_url' => $url, 'images' => [
+            ['url' => $url, 'type' => 'still', 'width' => 1920, 'height' => 1080],
+            ['url' => $url, 'type' => 'still', 'width' => 640, 'height' => 360],
+        ]];
+        $controller = new XtreamApiController;
+        $payload = (new ReflectionMethod($controller, 'epgProgrammeArtwork'))->invoke($controller, $programme, (object) ['enable_logo_proxy' => false]);
+        self::assertSame($url, $payload['preserved_primary_url']);
+        self::assertSame(0, $payload['still_width']);
+        self::assertSame(0, $payload['still_height']);
+    }
+
     public function test_first_icon_metadata_survives_import_and_xmltv_roundtrip(): void
     {
         $programme = $this->importArtwork('<programme><icon src="https://example.com/poster.jpg" type="poster" orient="P" width="500" height="750" size="3"/></programme>');

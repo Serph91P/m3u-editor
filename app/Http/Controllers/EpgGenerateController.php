@@ -863,6 +863,9 @@ class EpgGenerateController extends Controller
         $roleImages = '';
         $images = is_array($programme['images'] ?? null) ? $programme['images'] : [];
         if ($programme['icon']) {
+            if (EpgProgrammeArtwork::preservedPrimary($programme) !== null) {
+                $icons .= '    <?m3ue-preserved-primary?>'.PHP_EOL;
+            }
             $icons .= '    <icon src="'.$this->escapeXml($this->programmeImageUrl($programme['icon'], $epg, $logoProxyEnabled)).'"/>'.PHP_EOL;
         }
         foreach ($images as $image) {
