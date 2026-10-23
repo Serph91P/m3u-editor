@@ -12,7 +12,6 @@
 use App\Filament\Actions\AssetPickerAction;
 use App\Filament\Resources\Assets\Pages\ListAssets;
 use App\Models\User;
-use Closure;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
 use Illuminate\Http\UploadedFile;
