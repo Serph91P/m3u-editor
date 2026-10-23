@@ -562,11 +562,15 @@ class SyncSeriesStrmFiles implements ShouldQueue
                 return trim($name);
             };
 
+            // Resolved unconditionally: the filename-metadata branch below needs it
+            // independently of whether "category" is also selected as a folder
+            // component - the form offers them as separate settings.
+            $category = $series->category;
+
             // See if the category is enabled, if not, skip, else create the folder
             if (in_array('category', $pathStructure)) {
                 // Create the category folder
                 // Remove any special characters from the category name
-                $category = $series->category;
                 $catName = $category?->name ?? $category?->name_internal ?? 'Uncategorized';
                 // Apply name filtering
                 $catName = $applyNameFilter($catName);
