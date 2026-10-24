@@ -421,9 +421,7 @@ class PlaylistAuthResource extends Resource implements CopilotResource
                                 }
                             }
 
-                            $takenPlaylists = $assignedIds[(new Playlist)->getMorphClass()] ?? [];
                             Playlist::where('user_id', $userId)
-                                ->when($takenPlaylists, fn ($q) => $q->whereNotIn('id', $takenPlaylists))
                                 ->get()
                                 ->each(function (Playlist $playlist) use (&$options) {
                                     $key = Playlist::class.'|'.$playlist->id;
