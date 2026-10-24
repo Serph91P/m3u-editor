@@ -6891,7 +6891,7 @@
     "Verify": "Verify",
     "Version": "Version",
     "Version :version is available (current: :current).": "Version :version is available (current: :current).",
-    "Version :version is now active.": "Version :version is now active.",
+    "Version :version is installed. The plugin remains disabled.": "Version :version is installed. The plugin remains disabled.",
     "Version :version is now active. A queue worker that already ran this plugin may keep executing the previous version until it recycles - use Reset Queue on the Queue Monitor page if you need the update to take effect immediately.": "Version :version is now active. A queue worker that already ran this plugin may keep executing the previous version until it recycles - use Reset Queue on the Queue Monitor page if you need the update to take effect immediately.",
     "Version, source, and type of this plugin.": "Version, source, and type of this plugin.",
     "Versions let Emby present multiple streams for the same title.": "Versions let Emby present multiple streams for the same title.",

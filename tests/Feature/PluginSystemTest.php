@@ -994,6 +994,72 @@ it('updates an installed fixture plugin from a reviewed archive and keeps it ena
     }
 });
 
+it('reports installed plugin updates according to their enabled state', function (bool $enabled) {
+    Http::preventStrayRequests();
+    config()->set('plugins.auto_trust_official', true);
+    $pluginId = 'update-notification-'.Str::lower(Str::random(6));
+    $repository = 'm3ue/'.$pluginId.'-plugin';
+
+    try {
+        $installed = installFixturePluginForTests($pluginId, enabled: $enabled, manifestOverrides: ['repository' => $repository]);
+        $plugin = $installed['plugin'];
+        $paths = createReviewFixturePlugin($pluginId, manifestOverrides: [
+            'repository' => $repository,
+            'version' => '1.0.1',
+        ]);
+        createZipArchiveForTests($paths['source'], $paths['archive']);
+        $releaseUrl = "https://github.com/{$repository}/releases/download/v1.0.1/{$pluginId}.zip";
+        $checksum = hash_file('sha256', $paths['archive']);
+        $plugin->update([
+            'latest_version' => '1.0.1',
+            'latest_release_url' => $releaseUrl,
+            'latest_release_sha256' => $checksum,
+        ]);
+        Http::fake([
+            $releaseUrl => Http::response(File::get($paths['archive']), 200, ['Content-Type' => 'application/zip']),
+        ]);
+        $this->actingAs(User::factory()->admin()->create());
+
+        $page = Livewire::test(EditPlugin::class, ['record' => $plugin->getKey()])
+            ->assertActionVisible('stage_update')
+            ->callAction('stage_update')
+            ->assertHasNoActionErrors();
+
+        $updatedPlugin = $plugin->fresh();
+        expect($updatedPlugin->version)->toBe('1.0.1')
+            ->and($updatedPlugin->enabled)->toBe($enabled)
+            ->and($updatedPlugin->trust_state)->toBe('trusted')
+            ->and($updatedPlugin->integrity_status)->toBe('verified');
+        $review = PluginInstallReview::query()->where('source_path', $releaseUrl)->sole();
+        expect($review->status)->toBe('installed')
+            ->and($review->archive_sha256)->toBe($checksum)
+            ->and($review->expected_archive_sha256)->toBe($checksum);
+
+        $notification = Notification::make()
+            ->success()
+            ->title(__(':plugin updated', ['plugin' => $plugin->name]))
+            ->body($enabled
+                ? 'Version 1.0.1 is now active. A queue worker that already ran this plugin may keep executing the previous version until it recycles - use Reset Queue on the Queue Monitor page if you need the update to take effect immediately.'
+                : 'Version 1.0.1 is installed. The plugin remains disabled.');
+
+        if ($enabled) {
+            $notification->persistent()->actions([
+                Action::make('view_queue_monitor')
+                    ->label(__('Reset Queue'))
+                    ->url(QueueMonitorResource::getUrl('index')),
+            ]);
+        }
+
+        $page->assertNotified($notification);
+        Http::assertSentCount(1);
+    } finally {
+        cleanupReviewFixturePlugin($pluginId);
+    }
+})->with([
+    'disabled' => false,
+    'enabled' => true,
+]);
+
 it('supports the reviewed install command flow for GitHub release archives', function () {
     $pluginId = 'github-cli-'.Str::lower(Str::random(6));
     $paths = createReviewFixturePlugin($pluginId);
