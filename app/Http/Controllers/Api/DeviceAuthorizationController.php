@@ -104,7 +104,7 @@ class DeviceAuthorizationController extends Controller
             // since the row is deleted right after being consumed above).
             $now = now();
             $pacedTooFast = $deviceAuth->last_polled_at !== null
-                && $now->diffInSeconds($deviceAuth->last_polled_at) < $deviceAuth->interval_seconds;
+                && $deviceAuth->last_polled_at->diffInSeconds($now) < $deviceAuth->interval_seconds;
 
             $deviceAuth->increment('poll_attempts');
             $deviceAuth->last_polled_at = $now;
