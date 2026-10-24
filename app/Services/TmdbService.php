@@ -267,6 +267,43 @@ class TmdbService
         return ['status' => 'incomplete', 'candidates' => array_values($candidates)];
     }
 
+    /** @return array{status: string, titles: list<array{title: string, iso_3166_1: string}>} */
+    public function getIdentityAlternativeTitles(string $mediaType, int $tmdbId): array
+    {
+        $error = ['status' => 'error', 'titles' => []];
+        if (! $this->isConfigured() || ! in_array($mediaType, ['tv', 'movie'], true) || $tmdbId <= 0) {
+            return $error;
+        }
+        $key = 'tmdb_identity_aliases_v1_'.hash('sha256', json_encode([$this->apiKey, $mediaType, $tmdbId]));
+        if (is_array($cached = Cache::get($key))) {
+            return $cached;
+        }
+        try {
+            $this->waitForRateLimit();
+            $response = Http::timeout(15)->get(self::BASE_URL."/{$mediaType}/{$tmdbId}/alternative_titles", ['api_key' => $this->apiKey]);
+            $payload = $response->json();
+            $field = $mediaType === 'tv' ? 'results' : 'titles';
+            if (! $response->successful() || ! is_array($payload) || ($payload['id'] ?? null) !== $tmdbId
+                || ! is_array($payload[$field] ?? null) || ! array_is_list($payload[$field]) || count($payload[$field]) > 200) {
+                return $error;
+            }
+            $titles = [];
+            foreach ($payload[$field] as $entry) {
+                if (! is_array($entry) || ! is_string($entry['title'] ?? null) || trim($entry['title']) === ''
+                    || ! is_string($entry['iso_3166_1'] ?? null) || preg_match('/^[A-Z]{2}$/D', $entry['iso_3166_1']) !== 1) {
+                    return $error;
+                }
+                $titles[] = ['title' => $entry['title'], 'iso_3166_1' => $entry['iso_3166_1']];
+            }
+            $result = ['status' => 'complete', 'titles' => $titles];
+            Cache::put($key, $result, 3600);
+
+            return $result;
+        } catch (\Throwable) {
+            return $error;
+        }
+    }
+
     /** @return array{status: string, titles: list<string>} */
     public function getIdentityTranslations(string $mediaType, int $tmdbId): array
     {
@@ -300,10 +337,10 @@ class TmdbService
                 }
                 $title = trim($translation['data'][$field]);
                 if ($title !== '') {
-                    $titles[$title] = true;
+                    $titles[] = $title;
                 }
             }
-            $result = ['status' => 'complete', 'titles' => array_keys($titles)];
+            $result = ['status' => 'complete', 'titles' => array_values(array_unique($titles))];
             Cache::put($key, $result, 3600);
 
             return $result;
