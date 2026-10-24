@@ -5,12 +5,21 @@ namespace App\Listeners;
 use App\Notifications\TelegramAlert;
 use App\Services\AlertService;
 use App\Settings\GeneralSettings;
+use Illuminate\Contracts\Events\ShouldBeDiscovered;
 use Illuminate\Queue\Events\JobFailed;
 use Spatie\DiscordAlerts\Jobs\SendToDiscordChannelJob;
 use Spatie\SlackAlerts\Jobs\SendToSlackChannelJob;
 
-class AlertOnJobFailed
+class AlertOnJobFailed implements ShouldBeDiscovered
 {
+    /**
+     * AppServiceProvider explicitly registers this listener.
+     */
+    public static function shouldBeDiscovered(): bool
+    {
+        return false;
+    }
+
     public function __construct(
         private readonly GeneralSettings $settings,
         private readonly AlertService $alertService,
