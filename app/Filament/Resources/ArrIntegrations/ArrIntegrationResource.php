@@ -250,6 +250,16 @@ class ArrIntegrationResource extends Resource
                                     )
                                     ->visible(fn (Get $get): bool => (bool) $get('cache_enabled') && app(CachedContentDispatchService::class)->isEnabled())
                                     ->default(false),
+
+                                Toggle::make('is_default_cache_target')
+                                    ->label(__('Default for automatic caching'))
+                                    ->helperText(__('When more than one Sonarr/Radarr integration is enabled for caching, Cache Now and dynamic group caching send new titles here. Only one default is kept per type; turning this on turns it off for the others.'))
+                                    ->hintIcon(
+                                        'heroicon-m-question-mark-circle',
+                                        tooltip: __('Ignored while this is the only caching-enabled integration of its type, or while caching is off.')
+                                    )
+                                    ->visible(fn (Get $get): bool => (bool) $get('cache_enabled') && app(CachedContentDispatchService::class)->isEnabled())
+                                    ->default(false),
                             ]),
                     ]),
 

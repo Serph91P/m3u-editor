@@ -214,12 +214,15 @@ class Series extends Model
                 ->orWhereNotNull('imdb_id');
 
             if ($isPgsql) {
-                $q->orWhereRaw("metadata::jsonb ?? 'tmdb_id'")
-                    ->orWhereRaw("metadata::jsonb ?? 'tmdb'")
-                    ->orWhereRaw("metadata::jsonb ?? 'tvdb_id'")
-                    ->orWhereRaw("metadata::jsonb ?? 'tvdb'")
-                    ->orWhereRaw("metadata::jsonb ?? 'imdb_id'")
-                    ->orWhereRaw("metadata::jsonb ?? 'imdb'");
+                // ->>'key' (value), not ?? 'key' (key existence): a key can be present with a
+                // null/empty value (e.g. a prior failed enrichment), which should still count
+                // as "no ID" - the ?? operator would wrongly call that "has an ID" (issue #1645).
+                $q->orWhereRaw("metadata::jsonb->>'tmdb_id' IS NOT NULL AND metadata::jsonb->>'tmdb_id' != ''")
+                    ->orWhereRaw("metadata::jsonb->>'tmdb' IS NOT NULL AND metadata::jsonb->>'tmdb' != ''")
+                    ->orWhereRaw("metadata::jsonb->>'tvdb_id' IS NOT NULL AND metadata::jsonb->>'tvdb_id' != ''")
+                    ->orWhereRaw("metadata::jsonb->>'tvdb' IS NOT NULL AND metadata::jsonb->>'tvdb' != ''")
+                    ->orWhereRaw("metadata::jsonb->>'imdb_id' IS NOT NULL AND metadata::jsonb->>'imdb_id' != ''")
+                    ->orWhereRaw("metadata::jsonb->>'imdb' IS NOT NULL AND metadata::jsonb->>'imdb' != ''");
             }
         });
     }
@@ -234,15 +237,17 @@ class Series extends Model
             return $query;
         }
 
+        // ->>'key' (value), not ?? 'key' (key existence): stays the exact negation of
+        // scopeHasSeriesId() above instead of excluding rows that ought to match (issue #1645).
         return $query->where(function (Builder $q) {
             $q->whereNull('metadata')
                 ->orWhere(function (Builder $inner) {
-                    $inner->whereRaw("NOT (metadata::jsonb ?? 'tmdb_id')")
-                        ->whereRaw("NOT (metadata::jsonb ?? 'tmdb')")
-                        ->whereRaw("NOT (metadata::jsonb ?? 'tvdb_id')")
-                        ->whereRaw("NOT (metadata::jsonb ?? 'tvdb')")
-                        ->whereRaw("NOT (metadata::jsonb ?? 'imdb_id')")
-                        ->whereRaw("NOT (metadata::jsonb ?? 'imdb')");
+                    $inner->whereRaw("(metadata::jsonb->>'tmdb_id' IS NULL OR metadata::jsonb->>'tmdb_id' = '')")
+                        ->whereRaw("(metadata::jsonb->>'tmdb' IS NULL OR metadata::jsonb->>'tmdb' = '')")
+                        ->whereRaw("(metadata::jsonb->>'tvdb_id' IS NULL OR metadata::jsonb->>'tvdb_id' = '')")
+                        ->whereRaw("(metadata::jsonb->>'tvdb' IS NULL OR metadata::jsonb->>'tvdb' = '')")
+                        ->whereRaw("(metadata::jsonb->>'imdb_id' IS NULL OR metadata::jsonb->>'imdb_id' = '')")
+                        ->whereRaw("(metadata::jsonb->>'imdb' IS NULL OR metadata::jsonb->>'imdb' = '')");
                 });
         });
     }

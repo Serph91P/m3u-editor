@@ -8,6 +8,7 @@ use App\Exceptions\SchedulesDirectRateLimitException;
 use App\Models\Epg;
 use App\Services\LogoCacheService;
 use App\Services\SchedulesDirectService;
+use Illuminate\Http\Client\Response;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -18,6 +19,19 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class SchedulesDirectImageProxyController extends Controller
 {
+    /**
+     * Set when Schedules Direct blocks this address (5004) after too many
+     * not-found image requests. The block is per address, so it covers every EPG.
+     */
+    private const ADDRESS_BLOCKED_KEY = 'sd_image_address_blocked';
+
+    /**
+     * How long a not-found (5000) image is remembered. Schedules Direct asks for
+     * the URI never to be requested again, and blocks the address after 1,000
+     * not-found requests in a day.
+     */
+    private const NOT_FOUND_TTL_DAYS = 30;
+
     public function __construct(
         private SchedulesDirectService $schedulesDirectService
     ) {}
@@ -51,6 +65,10 @@ class SchedulesDirectImageProxyController extends Controller
                 return $this->imageResponse($cacheFile);
             }
 
+            if (Cache::has(self::ADDRESS_BLOCKED_KEY)) {
+                return $this->cachedCopyOrAddressBlocked($sourceKey);
+            }
+
             // Short-circuit if this EPG already hit its daily download limit
             if (Cache::has("sd_download_limit_{$epgId}")) {
                 return $this->cachedCopyOrDownloadLimit($sourceKey);
@@ -73,16 +91,21 @@ class SchedulesDirectImageProxyController extends Controller
                 $epg->refresh();
             }
 
-            // Build the SchedulesDirect image URL
-            $imageUrl = "https://json.schedulesdirect.org/20141201/image/{$imageHash}";
+            $response = $this->fetchImage($epg, $imageHash);
+            $errorData = $this->errorBody($response);
 
-            // Fetch the image with authentication
-            $response = Http::withHeaders([
-                'User-Agent' => 'm3u-editor/'.config('dev.version'),
-                'token' => $epg->sd_token,
-            ])->timeout(30)->get($imageUrl);
+            // Expired (4006) or missing (1004) token: discard it, log in once and retry.
+            if (\in_array($errorData['code'] ?? null, [SchedulesDirectService::TOKEN_EXPIRED_CODE, SchedulesDirectService::NO_TOKEN_CODE], true)) {
+                $this->schedulesDirectService->forgetToken($epg->sd_token);
+                $epg->refresh();
+                $this->schedulesDirectService->authenticateFromEpg($epg);
+                $epg->refresh();
 
-            if ($response->successful()) {
+                $response = $this->fetchImage($epg, $imageHash);
+                $errorData = $this->errorBody($response);
+            }
+
+            if ($errorData === null) {
                 $body = $response->body();
                 $contentType = $response->header('Content-Type') ?: 'image/jpeg';
 
@@ -104,38 +127,51 @@ class SchedulesDirectImageProxyController extends Controller
                 ]);
 
                 return $this->imageResponse($cacheFile, $contentType);
-            } else {
-                $errorData = $response->json() ?: [];
-                $sdCode = $errorData['code'] ?? null;
-
-                Log::warning('Failed to fetch SchedulesDirect image', [
-                    'epg_id' => $epgId,
-                    'image_hash' => $imageHash,
-                    'status' => $response->status(),
-                    'sd_code' => $sdCode,
-                    'response' => $response->body(),
-                ]);
-
-                // Image does not exist — cache the not-found state so we never re-request it
-                if ($response->status() === 404 || $sdCode === SchedulesDirectService::IMAGE_NOT_FOUND_CODE) {
-                    Cache::put($cacheKey, ['not_found' => true], now()->addHours(24));
-
-                    return response()->json(['error' => 'Image not found'], 404);
-                }
-
-                // Download limit exceeded — cache at both the EPG and image level
-                if (\in_array($sdCode, [SchedulesDirectService::EXCEED_DOWNLOAD_LIMIT_TRIAL_CODE, SchedulesDirectService::EXCEED_DOWNLOAD_LIMIT_CODE], true)) {
-                    Cache::put("sd_download_limit_{$epgId}", true, now()->endOfDay());
-                    Cache::put($cacheKey, ['download_limit' => true], now()->endOfDay());
-
-                    return $this->cachedCopyOrDownloadLimit($sourceKey);
-                }
-
-                return response()->json([
-                    'error' => 'Failed to fetch image from SchedulesDirect',
-                    'status' => $response->status(),
-                ], $response->status());
             }
+
+            $sdCode = $errorData['code'] ?? null;
+
+            Log::warning('Failed to fetch SchedulesDirect image', [
+                'epg_id' => $epgId,
+                'image_hash' => $imageHash,
+                'status' => $response->status(),
+                'sd_code' => $sdCode,
+                'response' => $response->body(),
+            ]);
+
+            // Image does not exist (5000, HTTP 404): remember it so it is not requested again
+            if ($response->status() === 404 || $sdCode === SchedulesDirectService::IMAGE_NOT_FOUND_CODE) {
+                Cache::put($cacheKey, ['not_found' => true], now()->addDays(self::NOT_FOUND_TTL_DAYS));
+
+                return response()->json(['error' => 'Image not found'], 404);
+            }
+
+            // Daily download limit (5002/5003, sent as HTTP 200): cache at both the
+            // EPG and image level until the counter resets at 00:00 UTC
+            if (\in_array($sdCode, [SchedulesDirectService::EXCEED_DOWNLOAD_LIMIT_CODE, SchedulesDirectService::EXCEED_DOWNLOAD_LIMIT_TRIAL_CODE], true)) {
+                $resetAt = now('UTC')->addDay()->startOfDay();
+                Cache::put("sd_download_limit_{$epgId}", true, $resetAt);
+                Cache::put($cacheKey, ['download_limit' => true], $resetAt);
+
+                return $this->cachedCopyOrDownloadLimit($sourceKey);
+            }
+
+            // Account expired (4001): block the account as a /token rejection would
+            if ($sdCode === SchedulesDirectService::ACCOUNT_EXPIRED_CODE) {
+                $this->schedulesDirectService->rejectLogin($epg, $sdCode, $errorData);
+            }
+
+            // Address blocked by the load balancer (5004, HTTP 403) for a day
+            if ($sdCode === SchedulesDirectService::IMAGE_ADDRESS_BLOCKED_CODE || ($response->status() === 403 && $sdCode === null)) {
+                Cache::put(self::ADDRESS_BLOCKED_KEY, true, now()->addDay());
+
+                return $this->cachedCopyOrAddressBlocked($sourceKey);
+            }
+
+            return response()->json([
+                'error' => 'Failed to fetch image from SchedulesDirect',
+                'status' => $response->status(),
+            ], $response->successful() ? 502 : $response->status());
         } catch (SchedulesDirectRateLimitException $e) {
             $cachedCopy = LogoCacheService::findAnyCopy($sourceKey);
             if ($cachedCopy) {
@@ -172,6 +208,48 @@ class SchedulesDirectImageProxyController extends Controller
                 'error' => 'Internal server error while proxying image',
             ], 500);
         }
+    }
+
+    private function fetchImage(Epg $epg, string $imageHash): Response
+    {
+        return Http::withHeaders([
+            'User-Agent' => 'm3u-editor/'.config('dev.version'),
+            'token' => $epg->sd_token,
+        ])->timeout(30)->get("https://json.schedulesdirect.org/20141201/image/{$imageHash}");
+    }
+
+    /**
+     * The JSON error body of an /image response, or null when it carried an
+     * image. Schedules Direct reports the daily download limit (5002/5003) as
+     * HTTP 200 with a JSON body, so a 200 is only an image when it is not JSON.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function errorBody(Response $response): ?array
+    {
+        $isJson = str_contains((string) $response->header('Content-Type'), 'json')
+            || str_starts_with(ltrim(substr($response->body(), 0, 16)), '{');
+
+        if ($response->successful() && ! $isJson) {
+            return null;
+        }
+
+        $data = $response->json();
+
+        return is_array($data) ? $data : [];
+    }
+
+    /**
+     * While Schedules Direct blocks this address (5004), serve any cached copy
+     * and otherwise report the block without contacting the provider.
+     */
+    private function cachedCopyOrAddressBlocked(string $sourceKey): StreamedResponse|JsonResponse
+    {
+        $cachedCopy = LogoCacheService::findAnyCopy($sourceKey);
+
+        return $cachedCopy
+            ? $this->imageResponse($cachedCopy)
+            : response()->json(['error' => 'SchedulesDirect image downloads are blocked for this address; try again later'], 429);
     }
 
     /**

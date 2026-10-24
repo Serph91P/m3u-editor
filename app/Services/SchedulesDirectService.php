@@ -14,12 +14,14 @@ use Exception;
 use Generator;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use JsonMachine\Items;
+use Throwable;
 
 /**
  * Service to interact with the SchedulesDirect API for EPG data.
@@ -48,13 +50,24 @@ class SchedulesDirectService
 
     private const TOO_MANY_LINEUP_CHANGES_CODE = 2107;
 
-    public const IMAGE_NOT_FOUND_CODE = 4001;
+    /** No token was sent with the request. */
+    public const NO_TOKEN_CODE = 1004;
 
-    /** Trial account download limit exceeded. */
-    public const EXCEED_DOWNLOAD_LIMIT_TRIAL_CODE = 4003;
+    // /image codes. Schedules Direct reuses the account and token codes on
+    // /image (4001 account expired, 4006 token expired, 1004 no token), but these
+    // are its own.
 
-    /** Full subscriber download limit exceeded. */
-    public const EXCEED_DOWNLOAD_LIMIT_CODE = 4004;
+    /** Image not found (HTTP 404); the URI must not be requested again. */
+    public const IMAGE_NOT_FOUND_CODE = 5000;
+
+    /** Subscriber daily image download limit reached (HTTP 200 with a JSON body). */
+    public const EXCEED_DOWNLOAD_LIMIT_CODE = 5002;
+
+    /** Trial account daily image download limit reached (HTTP 200 with a JSON body). */
+    public const EXCEED_DOWNLOAD_LIMIT_TRIAL_CODE = 5003;
+
+    /** Over 1,000 not-found image requests in a day; the address is blocked for 1 day (HTTP 403). */
+    public const IMAGE_ADDRESS_BLOCKED_CODE = 5004;
 
     /** Token has expired; the stored token must be discarded and re-requested once. */
     public const TOKEN_EXPIRED_CODE = 4006;
@@ -65,9 +78,8 @@ class SchedulesDirectService
     /** Too many distinct IP addresses used the account in 24 hours. */
     public const TOO_MANY_UNIQUE_IPS_CODE = 4010;
 
-    // /token rejections that retrying can never fix. These numbers overlap with
-    // codes other endpoints use for different errors (e.g. the image codes
-    // above), so they are only interpreted on a /token response.
+    // /token rejections that retrying can never fix. Only ACCOUNT_EXPIRED is
+    // also returned by /image; the rest are only interpreted on a /token response.
     public const ACCOUNT_EXPIRED_CODE = 4001;
 
     public const INVALID_HASH_CODE = 4002;
@@ -99,6 +111,12 @@ class SchedulesDirectService
     public const ACCOUNT_LOCKOUT_CODE = 4004;
 
     private const ACCOUNT_LOCKOUT_MINUTES = 15;
+
+    /**
+     * Length of the cooldown after a 4009/4010 rejection. Schedules Direct counts
+     * its login limits over a rolling 24 hours from the first request.
+     */
+    private const LOGIN_LIMIT_COOLDOWN_HOURS = 24;
 
     /** Upper bound, in minutes, of the exponential backoff after a server error. */
     private const BACKOFF_MAX_MINUTES = 60;
@@ -257,6 +275,13 @@ class SchedulesDirectService
                     } else {
                         throw new Exception('Empty or invalid response received');
                     }
+                } catch (SchedulesDirectTokenExpiredException $e) {
+                    // Every later request would fail too; let syncEpgData() log in again.
+                    throw $e;
+                } catch (SchedulesDirectServerException $e) {
+                    if ($retry === self::MAX_RETRIES - 1) {
+                        throw $e;
+                    }
                 } catch (Exception $e) {
                     if ($retry === self::MAX_RETRIES - 1) {
                         Log::error("Max retries exceeded for chunk {$chunkNumber}, skipping");
@@ -274,22 +299,27 @@ class SchedulesDirectService
      *
      * Schedules Direct returns `tokenExpires` as the UNIX epoch at which the
      * token stops working. `datetime` / `serverTime` are the server's current
-     * clock and must never be treated as an expiry. When `tokenExpires` is
-     * absent we fall back to the documented 24-hour lifetime. A small skew
-     * margin is subtracted so a request never leaves with a token that lapses
-     * in flight.
+     * clock and must never be treated as an expiry. When `serverTime` is
+     * present the remaining lifetime is measured on SD's clock, so a local
+     * clock that runs behind cannot keep using a token SD has already expired.
+     * When `tokenExpires` is absent we fall back to the documented 24-hour
+     * lifetime. A small skew margin is subtracted so a request never leaves
+     * with a token that lapses in flight.
      *
      * @param  array<string, mixed>  $data
      */
     private function resolveTokenExpiry(array $data): Carbon
     {
         $tokenExpires = $data['tokenExpires'] ?? null;
+        $serverTime = $data['serverTime'] ?? null;
 
-        // Carbon 3 returns a UTC instance from a bare timestamp; pin it to the
-        // app timezone so it round-trips through the tz-naive datetime column.
-        $expiresAt = is_numeric($tokenExpires)
-            ? Carbon::createFromTimestamp((int) $tokenExpires, config('app.timezone'))
-            : now()->addDay();
+        $expiresAt = match (true) {
+            is_numeric($tokenExpires) && is_numeric($serverTime) => now()->addSeconds(max(0, (int) $tokenExpires - (int) $serverTime)),
+            // Carbon 3 returns a UTC instance from a bare timestamp; pin it to the
+            // app timezone so it round-trips through the tz-naive datetime column.
+            is_numeric($tokenExpires) => Carbon::createFromTimestamp((int) $tokenExpires, config('app.timezone')),
+            default => now()->addDay(),
+        };
 
         return $expiresAt->subSeconds(self::TOKEN_EXPIRY_SKEW_SECONDS);
     }
@@ -477,9 +507,7 @@ class SchedulesDirectService
             }
 
             if ($code = $this->permanentLoginErrorCode($data)) {
-                $message = $this->permanentLoginErrorMessage($code, $data);
-                $this->blockAccount($epg, $code, $message);
-                throw new SchedulesDirectAuthBlockedException($message, $code);
+                $this->rejectLogin($epg, $code, $data);
             }
 
             if ((isset($data['code']) && $data['code'] !== 0) || empty($data['token'])) {
@@ -496,6 +524,7 @@ class SchedulesDirectService
                 'sd_token_expires_at' => $expiresAt,
                 // A successful login clears any prior rate-limit or backoff state.
                 'sd_login_cooldown_until' => null,
+                'sd_cooldown_reason' => null,
                 'sd_backoff_attempts' => 0,
             ]);
 
@@ -541,6 +570,7 @@ class SchedulesDirectService
             'sd_token' => $sibling->sd_token,
             'sd_token_expires_at' => $sibling->sd_token_expires_at,
             'sd_login_cooldown_until' => null,
+            'sd_cooldown_reason' => null,
         ]);
 
         Log::debug('SchedulesDirect token reused from a sibling EPG on the same account', [
@@ -568,7 +598,7 @@ class SchedulesDirectService
             ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
             ->whereKeyNot($epg->getKey())
             ->where(fn ($query) => $query->whereNotNull('sd_login_cooldown_until')->orWhere('sd_backoff_attempts', '>', 0))
-            ->update(['sd_login_cooldown_until' => null, 'sd_backoff_attempts' => 0]);
+            ->update(['sd_login_cooldown_until' => null, 'sd_cooldown_reason' => null, 'sd_backoff_attempts' => 0]);
     }
 
     /**
@@ -588,22 +618,25 @@ class SchedulesDirectService
         }
 
         if ($retryAt = $epg->activeSchedulesDirectAccountCooldownUntil()) {
-            throw new SchedulesDirectRateLimitException($retryAt, reason: $this->activeCooldownReason($epg, $retryAt));
+            throw new SchedulesDirectRateLimitException($retryAt, reason: $this->activeCooldownReason($epg));
         }
     }
 
     /**
-     * Which kind of cooldown is active, from its shape: the 4009/4010 daily
-     * limits end exactly at a UTC midnight, a server-error backoff has recorded
-     * attempts, and anything else is the 15 minute 4004 lockout.
+     * Why the account's latest-ending cooldown was entered. Cooldowns recorded
+     * before the reason was stored were all login-limit (4009) cooldowns.
      */
-    private function activeCooldownReason(Epg $epg, Carbon $retryAt): string
+    private function activeCooldownReason(Epg $epg): string
     {
-        return match (true) {
-            $retryAt->copy()->utc()->isStartOfDay(checkMicroseconds: false) => SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS,
-            $epg->sd_backoff_attempts > 0 => SchedulesDirectRateLimitException::REASON_BACKOFF,
-            default => SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT,
-        };
+        $reason = $epg->sd_username
+            ? Epg::query()
+                ->schedulesDirectAccount((string) $epg->sd_username, $epg->user_id)
+                ->where('sd_login_cooldown_until', '>', now())
+                ->orderByDesc('sd_login_cooldown_until')
+                ->value('sd_cooldown_reason')
+            : $epg->sd_cooldown_reason;
+
+        return $reason ?? SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS;
     }
 
     /**
@@ -684,6 +717,65 @@ class SchedulesDirectService
     }
 
     /**
+     * Record a permanent rejection and throw it. Also used by the image proxy,
+     * since /image returns ACCOUNT_EXPIRED (4001) once the account lapses.
+     *
+     * @param  array<string, mixed>  $data  the response body carrying the rejection
+     *
+     * @throws SchedulesDirectAuthBlockedException always
+     */
+    public function rejectLogin(Epg $epg, int $code, array $data): never
+    {
+        $message = $this->permanentLoginErrorMessage($code, $data);
+        $this->blockAccount($epg, $code, $message);
+
+        throw new SchedulesDirectAuthBlockedException($message, $code);
+    }
+
+    /**
+     * Discard a token Schedules Direct reported as expired (4006) or missing,
+     * from every EPG that stored it (siblings share one token per account), so
+     * the next authentication requests a fresh one instead of reusing it.
+     */
+    public function forgetToken(?string $token): void
+    {
+        if (! $token) {
+            return;
+        }
+
+        Epg::query()->where('sd_token', $token)->update(['sd_token' => null, 'sd_token_expires_at' => null]);
+    }
+
+    /**
+     * Handle TOKEN_EXPIRED (4006) from any endpoint: discard the token everywhere
+     * it is stored and throw, so syncEpgData() logs in once and retries the sync.
+     *
+     * @param  array<string, mixed>  $body  the 4006 response body
+     *
+     * @throws SchedulesDirectTokenExpiredException always
+     */
+    private function throwTokenExpired(?string $token, array $body, string $endpoint): never
+    {
+        $storedExpiry = $this->currentEpg?->sd_token_expires_at;
+
+        $this->forgetToken($token);
+        if ($this->currentEpg && $this->currentEpg->sd_token === $token) {
+            $this->currentEpg->forceFill(['sd_token' => null, 'sd_token_expires_at' => null])->syncOriginalAttributes(['sd_token', 'sd_token_expires_at']);
+        }
+
+        Log::warning('SchedulesDirect token expired (4006); cleared stored token', [
+            'endpoint' => $endpoint,
+            'epg_id' => $this->currentEpg?->id,
+            'stored_expires_at' => $storedExpiry?->toIso8601String(),
+            // A large gap between these means the local clock disagrees with SD's.
+            'server_time' => $body['serverTime'] ?? null,
+            'local_time' => now()->getTimestamp(),
+        ]);
+
+        throw new SchedulesDirectTokenExpiredException('SchedulesDirect token expired (Code: 4006)');
+    }
+
+    /**
      * Record a permanent /token rejection so no further login is attempted until
      * the user acts. Account-level rejections block every EPG on the provider
      * account; a bad username or password only blocks the rows sending those
@@ -735,7 +827,11 @@ class SchedulesDirectService
         $minutes = min(2 ** min($attempts - 1, 6), self::BACKOFF_MAX_MINUTES);
         $retryAt = now()->addMinutes($minutes);
 
-        $this->updateAccount($epg, ['sd_login_cooldown_until' => $retryAt, 'sd_backoff_attempts' => $attempts]);
+        $this->updateAccount($epg, [
+            'sd_login_cooldown_until' => $retryAt,
+            'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_BACKOFF,
+            'sd_backoff_attempts' => $attempts,
+        ]);
 
         Log::warning('SchedulesDirect request failed; backing off', [
             'epg_id' => $epg->id,
@@ -754,7 +850,7 @@ class SchedulesDirectService
     {
         $this->updateAccount(
             $epg,
-            ['sd_login_cooldown_until' => null, 'sd_backoff_attempts' => 0],
+            ['sd_login_cooldown_until' => null, 'sd_cooldown_reason' => null, 'sd_backoff_attempts' => 0],
             fn ($query) => $query->where('sd_backoff_attempts', '>', 0),
         );
     }
@@ -780,24 +876,15 @@ class SchedulesDirectService
     }
 
     /**
-     * Start of the next UTC day, in the app timezone so it round-trips through
-     * the tz-naive datetime column. Schedules Direct counts its login limits per
-     * UTC day.
-     */
-    private function nextUtcDay(): Carbon
-    {
-        return now('UTC')->addDay()->startOfDay()->setTimezone(config('app.timezone'));
-    }
-
-    /**
      * When a login cooldown for $reason ends: 15 minutes for an account lockout
-     * (4004), otherwise the next UTC day, when the daily limits reset (4009/4010).
+     * (4004), otherwise 24 hours, since the 4009/4010 limits count over a rolling
+     * 24 hour window.
      */
     private function loginCooldownEndsAt(string $reason): Carbon
     {
         return $reason === SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT
             ? now()->addMinutes(self::ACCOUNT_LOCKOUT_MINUTES)
-            : $this->nextUtcDay();
+            : now()->addHours(self::LOGIN_LIMIT_COOLDOWN_HOURS);
     }
 
     /**
@@ -815,7 +902,7 @@ class SchedulesDirectService
 
         $retryAt = $this->loginCooldownEndsAt($reason);
 
-        $fenced = $this->updateAccount($epg, ['sd_login_cooldown_until' => $retryAt, 'sd_backoff_attempts' => 0]);
+        $fenced = $this->updateAccount($epg, ['sd_login_cooldown_until' => $retryAt, 'sd_cooldown_reason' => $reason, 'sd_backoff_attempts' => 0]);
 
         Log::warning('SchedulesDirect login limit reached; entering cooldown', [
             'epg_id' => $epg->id,
@@ -1119,6 +1206,8 @@ class SchedulesDirectService
             ]);
 
             return $allArtwork;
+        } catch (SchedulesDirectTokenExpiredException $e) {
+            throw $e;
         } catch (Exception $e) {
             Log::error('Exception while fetching program artwork', [
                 'error' => $e->getMessage(),
@@ -1155,13 +1244,17 @@ class SchedulesDirectService
             $artworkData = $response->json();
 
             // Handle code 2055: debug not enabled - disable sd_debug and retry without debug header
-            if (isset($artworkData['code']) && $artworkData['code'] === self::DEBUG_NOT_ENABLED_CODE) {
+            if (($artworkData['code'] ?? null) === self::DEBUG_NOT_ENABLED_CODE) {
                 $this->handleDebugNotEnabledError();
 
                 // Retry the request without the debug header
                 Log::debug('Retrying artwork request without debug header');
                 $response = Http::withHeaders($this->buildHeaders($token))->timeout(30)->post(self::BASE_URL.'/'.self::API_VERSION.'/metadata/programs/', $batch);
                 $artworkData = $response->json();
+            }
+
+            if (($artworkData['code'] ?? null) === self::TOKEN_EXPIRED_CODE) {
+                $this->throwTokenExpired($token, $artworkData, '/metadata/programs/');
             }
 
             if ($response->successful() && is_array($artworkData)) {
@@ -1678,24 +1771,26 @@ class SchedulesDirectService
         array $stationIds,
         array $dates
     ): string {
-        // Prepare file path
-        $filePath = Storage::disk('local')->path($epg->file_path);
-
-        // Remove old file if exists
-        if (Storage::disk('local')->exists($epg->file_path)) {
-            Storage::disk('local')->delete($epg->file_path);
-        }
+        // Write next to the current guide file and only replace it once complete,
+        // like the URL import's download, so a failed sync keeps serving the last
+        // good guide. The name is fixed, so an interrupted sync leaves at most one
+        // leftover, which the next sync (or deleting the EPG) removes.
+        $disk = Storage::disk('local');
+        $filePath = $disk->path($epg->file_path);
+        $downloadPath = "{$epg->file_path}.download";
 
         // Ensure directory exists
-        if (! Storage::disk('local')->exists($epg->folder_path)) {
-            Storage::disk('local')->makeDirectory($epg->folder_path);
+        if (! $disk->exists($epg->folder_path)) {
+            $disk->makeDirectory($epg->folder_path);
         }
 
-        // Open file for writing
-        $file = fopen($filePath, 'w');
+        // Drop a leftover from an interrupted sync, then open the file for writing
+        $disk->delete($downloadPath);
+        $file = fopen($disk->path($downloadPath), 'w');
         if (! $file) {
-            throw new Exception("Cannot open file for writing: {$filePath}");
+            throw new Exception("Cannot open file for writing: {$disk->path($downloadPath)}");
         }
+        $completed = false;
         try {
             // Extract station artwork from lineup data (logos are included in lineup response)
             Log::debug('Extracting station artwork from lineup data');
@@ -1709,6 +1804,7 @@ class SchedulesDirectService
 
             // Write XML footer
             fwrite($file, "</tv>\n");
+            $completed = true;
         } catch (Exception $e) {
             Log::error('Failed to stream process to XMLTV', [
                 'epg_id' => $epg->id,
@@ -1719,7 +1815,15 @@ class SchedulesDirectService
             throw $e;
         } finally {
             fclose($file);
+            // Drop a sync that never became the guide file
+            if (! $completed) {
+                $disk->delete($downloadPath);
+            }
             $epg->update(['sd_progress' => 100]);
+        }
+
+        if (! $disk->move($downloadPath, $epg->file_path)) {
+            throw new Exception("Cannot replace the EPG file: {$filePath}");
         }
 
         return $filePath;
@@ -1803,6 +1907,7 @@ class SchedulesDirectService
         // and sd_progress updates stay bounded regardless of sd_days_to_import.
         $progressStep = 0;
         $totalProgramsWritten = 0;
+        $totalProgramIds = 0;
         foreach ($this->processScheduleChunks($epg->sd_token, $stationIds, $dates) as $scheduleChunk) {
             $subChunkSize = max(1, (int) ceil(count($scheduleChunk) / self::PROGRESS_STEPS_PER_BATCH));
             foreach (array_chunk($scheduleChunk, $subChunkSize) as $scheduleSubChunk) {
@@ -1839,6 +1944,8 @@ class SchedulesDirectService
                     'unique_program_ids' => $programCount,
                 ]);
 
+                $totalProgramIds += $programCount;
+
                 // Fetch programs for this sub-chunk only using streaming batches
                 if ($programCount > 0) {
                     Log::debug('Fetching programs for sub-chunk', [
@@ -1855,6 +1962,8 @@ class SchedulesDirectService
                             'programs_written' => $chunkProgramsWritten,
                             'total_programs_written' => $totalProgramsWritten,
                         ]);
+                    } catch (SchedulesDirectTokenExpiredException|SchedulesDirectServerException $e) {
+                        throw $e;
                     } catch (Exception $e) {
                         Log::error('Error processing sub-chunk programs', [
                             'step' => $progressStep,
@@ -1889,6 +1998,12 @@ class SchedulesDirectService
             'total_programs_written' => $totalProgramsWritten,
             'steps_processed' => $progressStep,
         ]);
+
+        // Schedules listed programmes but none could be fetched: replacing the
+        // guide would leave every channel empty while the sync reports success.
+        if ($totalProgramIds > 0 && $totalProgramsWritten === 0) {
+            throw new Exception('SchedulesDirect returned no programmes; keeping the existing EPG data');
+        }
     }
 
     /**
@@ -1964,18 +2079,24 @@ class SchedulesDirectService
 
             // Stream the API response directly to a file
             $response = Http::withHeaders($this->buildHeaders($token))->timeout(300)->sink($tempResponseFile)->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
+            $errorData = $this->sinkedErrorBody($response, $tempResponseFile);
 
             // Check for error code 2055 in the response file (API returns error as JSON even on failure)
-            if (! $response->successful() && file_exists($tempResponseFile)) {
-                $errorContent = file_get_contents($tempResponseFile);
-                $errorData = json_decode($errorContent, true);
-                if (isset($errorData['code']) && $errorData['code'] === self::DEBUG_NOT_ENABLED_CODE) {
-                    $this->handleDebugNotEnabledError();
+            if (($errorData['code'] ?? null) === self::DEBUG_NOT_ENABLED_CODE) {
+                $this->handleDebugNotEnabledError();
 
-                    // Retry the request without the debug header
-                    Log::debug('Retrying program batch request without debug header');
-                    $response = Http::withHeaders($this->buildHeaders($token))->timeout(300)->sink($tempResponseFile)->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
-                }
+                // Retry the request without the debug header
+                Log::debug('Retrying program batch request without debug header');
+                $response = Http::withHeaders($this->buildHeaders($token))->timeout(300)->sink($tempResponseFile)->post(self::BASE_URL.'/'.self::API_VERSION.'/programs', $programBatch);
+                $errorData = $this->sinkedErrorBody($response, $tempResponseFile);
+            }
+
+            if (($errorData['code'] ?? null) === self::TOKEN_EXPIRED_CODE) {
+                $this->throwTokenExpired($token, $errorData, '/programs');
+            }
+
+            if ($response->serverError()) {
+                throw new SchedulesDirectServerException("SchedulesDirect /programs request failed with HTTP {$response->status()}", $response->status());
             }
 
             if ($response->successful()) {
@@ -2024,6 +2145,10 @@ class SchedulesDirectService
                     'status' => $response->status(),
                 ]);
             }
+        } catch (SchedulesDirectTokenExpiredException|SchedulesDirectServerException $e) {
+            throw $e;
+        } catch (ConnectionException $e) {
+            throw new SchedulesDirectServerException("SchedulesDirect /programs request failed: {$e->getMessage()}", 0, $e);
         } catch (Exception $e) {
             Log::error('Error processing program batch directly', [
                 'chunk' => $chunkIndex,
@@ -2036,6 +2161,33 @@ class SchedulesDirectService
                 unlink($tempResponseFile);
             }
         }
+    }
+
+    /**
+     * Whether a failed request is worth repeating: a timeout or connection error,
+     * or a 5xx response. A 4xx response carries an SD error code that a repeat
+     * cannot change.
+     */
+    private static function isTransientFailure(Throwable $exception): bool
+    {
+        return ! $exception instanceof RequestException || $exception->response->serverError();
+    }
+
+    /**
+     * The decoded JSON error body of a failed request whose body was streamed to
+     * $sinkFile, or an empty array for a successful or non-JSON response.
+     *
+     * @return array<string, mixed>
+     */
+    private function sinkedErrorBody(Response $response, string $sinkFile): array
+    {
+        if ($response->successful() || ! file_exists($sinkFile)) {
+            return [];
+        }
+
+        $data = json_decode((string) file_get_contents($sinkFile), true);
+
+        return is_array($data) ? $data : [];
     }
 
     /**
@@ -2158,9 +2310,10 @@ class SchedulesDirectService
 
         $request = Http::withHeaders($headers)
             ->timeout($timeout)
-            // Basic retry with 1 second delay. A failed response is returned (not thrown) so the
-            // SD error code in its body reaches the error handling below instead of being lost.
-            ->retry(2, 1000, throw: false)
+            // Basic retry with 1 second delay for timeouts and 5xx only: a 4xx carries an SD
+            // error code that repeating the request cannot change. A failed response is returned
+            // (not thrown) so that code reaches the error handling below instead of being lost.
+            ->retry(2, 1000, self::isTransientFailure(...), throw: false)
             ->withOptions([
                 'verify' => true,
                 'stream' => false, // Disable streaming to prevent memory issues
@@ -2222,7 +2375,7 @@ class SchedulesDirectService
             $headers = $this->buildHeaders($token);
             $request = Http::withHeaders($headers)
                 ->timeout($timeout)
-                ->retry(2, 1000, throw: false)
+                ->retry(2, 1000, self::isTransientFailure(...), throw: false)
                 ->withOptions([
                     'verify' => true,
                     'stream' => false,
@@ -2249,19 +2402,7 @@ class SchedulesDirectService
         // controlled retry. Checked before the generic failure branch because
         // Schedules Direct may return this on either an HTTP 4xx or a 200.
         if ($responseCode === self::TOKEN_EXPIRED_CODE) {
-            if ($this->currentEpg) {
-                $this->currentEpg->update([
-                    'sd_token' => null,
-                    'sd_token_expires_at' => null,
-                ]);
-            }
-
-            Log::warning('SchedulesDirect token expired (4006); cleared stored token', [
-                'endpoint' => $endpoint,
-                'epg_id' => $this->currentEpg?->id,
-            ]);
-
-            throw new SchedulesDirectTokenExpiredException('SchedulesDirect token expired (Code: 4006)');
+            $this->throwTokenExpired($token, is_array($body) ? $body : [], $endpoint);
         }
 
         // SD can report errors in an HTTP 200 body, so a non-zero code or a non-JSON body is a failure too

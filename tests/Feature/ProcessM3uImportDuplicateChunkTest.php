@@ -11,6 +11,7 @@
 
 use App\Jobs\ProcessM3uImport;
 use App\Jobs\ProcessM3uImportChunk;
+use App\Models\Channel;
 use App\Models\Job;
 use App\Models\Playlist;
 use App\Models\User;
@@ -131,4 +132,65 @@ it('keeps every channel row and source id stable when a multi-chunk playlist is 
         ->and($playlist->channels()->whereKey(array_keys($added))->value('title'))->toBe('Channel 121')
         ->and($playlist->channels()->find($movedChannelId)->url)->toBe('http://example.test/stream/80-moved')
         ->and($playlist->groups()->count())->toBe(2);
+});
+
+it('does not swap which existing row a duplicate-named entry\'s URL/config lands on when the feed reorders them (issue #1664)', function () {
+    $user = User::factory()->create();
+
+    $writePlaylist = function (bool $reversed) {
+        $entries = [
+            ['id' => 'synthetic-a', 'url' => 'http://provider.example.test/live/a.ts'],
+            ['id' => 'synthetic-b', 'url' => 'http://provider.example.test/live/b.ts'],
+        ];
+        if ($reversed) {
+            $entries = array_reverse($entries);
+        }
+
+        $lines = ['#EXTM3U'];
+        foreach ($entries as $entry) {
+            $lines[] = "#EXTINF:-1 tvg-id=\"{$entry['id']}\" tvg-name=\"News\" group-title=\"News\",News";
+            $lines[] = $entry['url'];
+        }
+        file_put_contents($this->tempM3uPath, implode("\n", $lines));
+    };
+
+    $this->tempM3uPath = sys_get_temp_dir().'/playlist_reorder_dupes_'.uniqid().'.m3u';
+    $writePlaylist(reversed: false);
+
+    $playlist = Playlist::withoutEvents(fn () => Playlist::factory()->for($user)->create([
+        'url' => $this->tempM3uPath,
+        'xtream' => false,
+        'import_prefs' => [],
+        'auto_sort' => false,
+    ]));
+
+    $runImport = function (bool $isNew) use ($playlist) {
+        Bus::fake();
+        Job::query()->delete();
+        (new ProcessM3uImport($playlist->fresh(), force: true, isNew: $isNew))->handle();
+        (new ProcessM3uImportChunk(Job::pluck('id')->all(), batchCount: 1))->handle();
+    };
+
+    $runImport(isNew: true);
+
+    $channelA = $playlist->channels()->where('url', 'http://provider.example.test/live/a.ts')->firstOrFail();
+    $channelB = $playlist->channels()->where('url', 'http://provider.example.test/live/b.ts')->firstOrFail();
+    $channelA->update(['enabled' => true]);
+    $channelB->update(['enabled' => false]);
+    $aId = $channelA->id;
+    $bId = $channelB->id;
+    $aSourceId = $channelA->source_id;
+    $bSourceId = $channelB->source_id;
+
+    // Reverse only the two entries' order in the feed and reimport.
+    $writePlaylist(reversed: true);
+    $runImport(isNew: false);
+
+    expect($playlist->channels()->count())->toBe(2)
+        ->and(Channel::find($aId)->url)->toBe('http://provider.example.test/live/a.ts')
+        ->and(Channel::find($aId)->source_id)->toBe($aSourceId)
+        ->and(Channel::find($aId)->enabled)->toBeTrue()
+        ->and(Channel::find($bId)->url)->toBe('http://provider.example.test/live/b.ts')
+        ->and(Channel::find($bId)->source_id)->toBe($bSourceId)
+        ->and(Channel::find($bId)->enabled)->toBeFalse();
 });

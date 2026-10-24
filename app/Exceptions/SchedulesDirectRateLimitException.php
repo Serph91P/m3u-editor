@@ -54,7 +54,7 @@ class SchedulesDirectRateLimitException extends Exception
 
         return match ($this->reason) {
             self::REASON_ACCOUNT_LOCKOUT => "SchedulesDirect temporarily locked this account after too many failed logins. The next automatic retry is after {$until}.",
-            self::REASON_TOO_MANY_UNIQUE_IPS => "SchedulesDirect rejected the login because too many different IP addresses used this account today. Automatic retries are paused until {$until}.",
+            self::REASON_TOO_MANY_UNIQUE_IPS => "SchedulesDirect rejected the login because too many different IP addresses used this account in the last 24 hours. Automatic retries are paused until {$until}.",
             self::REASON_SERVER_ERROR => "SchedulesDirect is not responding (server error or timeout). The next automatic retry is after {$until}.",
             self::REASON_LOGIN_FAILED => "{$this->getMessage()} The next automatic retry is after {$until}.",
             self::REASON_BACKOFF => "SchedulesDirect requests are paused after a failed attempt. The next automatic retry is after {$until}.",

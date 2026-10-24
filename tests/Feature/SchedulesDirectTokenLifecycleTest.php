@@ -9,9 +9,12 @@ use App\Models\Epg;
 use App\Models\User;
 use App\Services\SchedulesDirectService;
 use Filament\Notifications\DatabaseNotification;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Notification as NotificationFacade;
 use Illuminate\Support\Facades\Queue;
@@ -122,7 +125,9 @@ it('is single-flight per account: a second authentication reuses the token anoth
     Http::assertSentCount(1);
 });
 
-it('enters a cooldown until the next UTC day on TOO_MANY_LOGINS (4009)', function () {
+it('enters a rolling 24 hour cooldown on TOO_MANY_LOGINS (4009)', function () {
+    $this->freezeTime();
+
     Http::fake([
         'json.schedulesdirect.org/20141201/token' => Http::response([
             'response' => 'TOO_MANY_LOGINS',
@@ -136,9 +141,9 @@ it('enters a cooldown until the next UTC day on TOO_MANY_LOGINS (4009)', functio
     expect(fn () => (new SchedulesDirectService)->authenticateFromEpg($epg))
         ->toThrow(SchedulesDirectRateLimitException::class);
 
-    $cooldown = $epg->fresh()->sd_login_cooldown_until;
-    expect($cooldown)->not->toBeNull();
-    expect($cooldown->timestamp)->toBe(now('UTC')->addDay()->startOfDay()->timestamp);
+    $fresh = $epg->fresh();
+    expect($fresh->sd_login_cooldown_until->timestamp)->toBe(now()->addHours(24)->timestamp);
+    expect($fresh->sd_cooldown_reason)->toBe(SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS);
 });
 
 it('suppresses /token requests while a 4009 cooldown is active without moving the window', function () {
@@ -562,7 +567,9 @@ it('clears the block on every EPG of the account when the user retries', functio
     expect($second->fresh()->isSchedulesDirectAuthBlocked())->toBeFalse();
 });
 
-it('enters a cooldown until the next UTC day on TOO_MANY_UNIQUE_IPS (4010)', function () {
+it('enters a rolling 24 hour cooldown on TOO_MANY_UNIQUE_IPS (4010)', function () {
+    $this->freezeTime();
+
     Http::fake([
         'json.schedulesdirect.org/20141201/token' => Http::response(['code' => 4010, 'response' => 'TOO_MANY_UNIQUE_IPS', 'message' => 'Too many unique IPs.'], 400),
     ]);
@@ -576,7 +583,8 @@ it('enters a cooldown until the next UTC day on TOO_MANY_UNIQUE_IPS (4010)', fun
         expect($e->reason)->toBe(SchedulesDirectRateLimitException::REASON_TOO_MANY_UNIQUE_IPS);
     }
 
-    expect($epg->fresh()->sd_login_cooldown_until->timestamp)->toBe(now('UTC')->addDay()->startOfDay()->timestamp);
+    expect($epg->fresh()->sd_login_cooldown_until->timestamp)->toBe(now()->addHours(24)->timestamp);
+    expect($epg->fresh()->sd_cooldown_reason)->toBe(SchedulesDirectRateLimitException::REASON_TOO_MANY_UNIQUE_IPS);
 });
 
 it('backs off exponentially up to 60 minutes on /token server errors', function () {
@@ -622,7 +630,7 @@ it('suppresses /token while a server-error backoff is active', function () {
         'json.schedulesdirect.org/20141201/token' => Http::response(['code' => 0, 'token' => 'x', 'tokenExpires' => now()->addDay()->timestamp]),
     ]);
 
-    $epg = sdEpg(['sd_login_cooldown_until' => now()->addMinutes(4), 'sd_backoff_attempts' => 3]);
+    $epg = sdEpg(['sd_login_cooldown_until' => now()->addMinutes(4), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_BACKOFF, 'sd_backoff_attempts' => 3]);
 
     try {
         (new SchedulesDirectService)->authenticateFromEpg($epg);
@@ -743,7 +751,247 @@ it('names the active cooldown correctly on suppressed attempts', function (array
 
     Http::assertNothingSent();
 })->with([
-    'daily login limit' => [fn () => ['sd_login_cooldown_until' => now('UTC')->addDay()->startOfDay()->setTimezone(config('app.timezone'))], SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS],
-    'account lockout' => [fn () => ['sd_login_cooldown_until' => now()->addMinutes(10)], SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT],
-    'server backoff' => [fn () => ['sd_login_cooldown_until' => now()->addMinutes(4), 'sd_backoff_attempts' => 3], SchedulesDirectRateLimitException::REASON_BACKOFF],
+    'login limit' => [fn () => ['sd_login_cooldown_until' => now()->addHours(20), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS], SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS],
+    'login limit in its last hour' => [fn () => ['sd_login_cooldown_until' => now()->addMinutes(30), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS], SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS],
+    'ip limit' => [fn () => ['sd_login_cooldown_until' => now()->addHours(20), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_TOO_MANY_UNIQUE_IPS], SchedulesDirectRateLimitException::REASON_TOO_MANY_UNIQUE_IPS],
+    'account lockout' => [fn () => ['sd_login_cooldown_until' => now()->addMinutes(10), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT], SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT],
+    'server backoff' => [fn () => ['sd_login_cooldown_until' => now()->addMinutes(4), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_BACKOFF, 'sd_backoff_attempts' => 3], SchedulesDirectRateLimitException::REASON_BACKOFF],
+    'cooldown recorded before reasons were stored' => [fn () => ['sd_login_cooldown_until' => now()->addHours(20)], SchedulesDirectRateLimitException::REASON_TOO_MANY_LOGINS],
 ]);
+
+it('reports the reason of the cooldown a sibling EPG on the account entered', function () {
+    Http::fake();
+
+    $userId = User::factory()->create()->id;
+    sdEpg(['user_id' => $userId, 'sd_login_cooldown_until' => now()->addMinutes(10), 'sd_cooldown_reason' => SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT]);
+    $stale = sdEpg(['user_id' => $userId]);
+
+    try {
+        (new SchedulesDirectService)->authenticateFromEpg($stale);
+        $this->fail('Expected a rate limit exception');
+    } catch (SchedulesDirectRateLimitException $e) {
+        expect($e->reason)->toBe(SchedulesDirectRateLimitException::REASON_ACCOUNT_LOCKOUT);
+    }
+
+    Http::assertNothingSent();
+});
+
+it('clears an expired token from every EPG that shares it on 4006', function () {
+    Http::fake([
+        'json.schedulesdirect.org/20141201/lineups/*' => Http::response(['code' => 4006, 'response' => 'TOKEN_EXPIRED', 'message' => 'Token has expired.'], 403),
+    ]);
+
+    $userId = User::factory()->create()->id;
+    $epg = sdEpg(['user_id' => $userId, 'sd_token' => 'shared-token', 'sd_token_expires_at' => now()->addHours(6)]);
+    $sibling = sdEpg(['user_id' => $userId, 'sd_token' => 'shared-token', 'sd_token_expires_at' => now()->addHours(6)]);
+
+    $service = (new SchedulesDirectService)->setCurrentEpg($epg);
+
+    expect(fn () => $service->getLineup('shared-token', 'USA-NY12345-X'))
+        ->toThrow(SchedulesDirectTokenExpiredException::class);
+
+    expect($epg->fresh()->sd_token)->toBeNull()
+        ->and($sibling->fresh()->sd_token)->toBeNull();
+});
+
+/**
+ * One station airing one programme, so a sync has a programme to fetch and write.
+ */
+function sdScheduleWithProgramme(): array
+{
+    return [['stationID' => '12345', 'programs' => [['programID' => 'EP0000000001', 'airDateTime' => now()->toIso8601ZuluString(), 'duration' => 1800]]]];
+}
+
+function sdProgrammesFor(Request $request): PromiseInterface
+{
+    return Http::response(array_map(
+        fn (string $programId) => ['programID' => $programId, 'titles' => [['title120' => "Synthetic {$programId}"]]],
+        $request->data(),
+    ));
+}
+
+function sdFreshTokenResponse(): PromiseInterface
+{
+    return Http::response(['code' => 0, 'token' => 'fresh-token', 'tokenExpires' => now()->addDay()->timestamp]);
+}
+
+function sdTokenExpiredResponse(): PromiseInterface
+{
+    return Http::response(['response' => 'TOKEN_EXPIRED', 'code' => 4006, 'message' => 'Token has expired. Request new token.', 'serverTime' => now()->timestamp], 403);
+}
+
+function sdTokenRequestCount(): int
+{
+    return collect(Http::recorded())->filter(fn (array $pair) => str_ends_with($pair[0]->url(), '/20141201/token'))->count();
+}
+
+it('logs in again and restarts the sync when /programs reports the token expired mid-sync', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'expired-early', 'sd_token_expires_at' => now()->addHours(6)]);
+
+    $programsCalls = 0;
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/token' => sdFreshTokenResponse(),
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(sdScheduleWithProgramme()),
+        'json.schedulesdirect.org/20141201/programs' => function (Request $request) use (&$programsCalls) {
+            return ++$programsCalls === 1 ? sdTokenExpiredResponse() : sdProgrammesFor($request);
+        },
+    ]);
+
+    (new SchedulesDirectService)->syncEpgData($epg);
+
+    expect(sdTokenRequestCount())->toBe(1);
+    expect($epg->fresh()->sd_token)->toBe('fresh-token');
+    expect(Storage::disk('local')->get($epg->file_path))->toContain('Synthetic EP0000000001');
+});
+
+it('logs in again when /schedules reports the token expired instead of skipping the chunk', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'expired-early', 'sd_token_expires_at' => now()->addHours(6)]);
+
+    // SD rejects the old token on every request until a new one is issued.
+    $schedulesCalls = 0;
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/token' => sdFreshTokenResponse(),
+        'json.schedulesdirect.org/20141201/schedules' => function (Request $request) use (&$schedulesCalls) {
+            $schedulesCalls++;
+
+            return $request->header('token') === ['fresh-token'] ? Http::response(sdScheduleWithProgramme()) : sdTokenExpiredResponse();
+        },
+        'json.schedulesdirect.org/20141201/programs' => fn (Request $request) => sdProgrammesFor($request),
+    ]);
+
+    (new SchedulesDirectService)->syncEpgData($epg);
+
+    // One rejected request (no HTTP-level repeats of the 4xx), one login, one good request.
+    expect($schedulesCalls)->toBe(2);
+    expect(sdTokenRequestCount())->toBe(1);
+    expect(Storage::disk('local')->get($epg->file_path))->toContain('Synthetic EP0000000001');
+});
+
+it('logs in again when /metadata/programs/ reports the token expired', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'expired-early', 'sd_token_expires_at' => now()->addHours(6), 'sd_metadata' => ['enabled' => true]]);
+
+    $artworkCalls = 0;
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/token' => sdFreshTokenResponse(),
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(sdScheduleWithProgramme()),
+        'json.schedulesdirect.org/20141201/metadata/programs/' => function () use (&$artworkCalls) {
+            return ++$artworkCalls === 1 ? sdTokenExpiredResponse() : Http::response([]);
+        },
+        'json.schedulesdirect.org/20141201/programs' => fn (Request $request) => sdProgrammesFor($request),
+    ]);
+
+    (new SchedulesDirectService)->syncEpgData($epg);
+
+    expect(sdTokenRequestCount())->toBe(1);
+    expect(Storage::disk('local')->get($epg->file_path))->toContain('Synthetic EP0000000001');
+});
+
+it('keeps the existing guide when the token keeps being rejected after logging in again', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'expired-early', 'sd_token_expires_at' => now()->addHours(6)]);
+    Storage::disk('local')->put($epg->file_path, '<tv>previous guide</tv>');
+
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/token' => sdFreshTokenResponse(),
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(sdScheduleWithProgramme()),
+        'json.schedulesdirect.org/20141201/programs' => fn () => sdTokenExpiredResponse(),
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->syncEpgData($epg))
+        ->toThrow(SchedulesDirectTokenExpiredException::class);
+
+    expect(sdTokenRequestCount())->toBe(1);
+    expect(Storage::disk('local')->get($epg->file_path))->toBe('<tv>previous guide</tv>');
+    expect(Storage::disk('local')->exists("{$epg->file_path}.download"))->toBeFalse();
+});
+
+it('fails the sync and keeps the existing guide when no listed programme can be fetched', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'still-good', 'sd_token_expires_at' => now()->addHours(6)]);
+    Storage::disk('local')->put($epg->file_path, '<tv>previous guide</tv>');
+
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(sdScheduleWithProgramme()),
+        'json.schedulesdirect.org/20141201/programs' => Http::response(['response' => 'FORBIDDEN', 'message' => 'Forbidden'], 403),
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->syncEpgData($epg))
+        ->toThrow(Exception::class, 'returned no programmes');
+
+    expect(Storage::disk('local')->get($epg->file_path))->toBe('<tv>previous guide</tv>');
+});
+
+it('backs off and keeps the existing guide when /programs fails with a server error', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'still-good', 'sd_token_expires_at' => now()->addHours(6)]);
+    Storage::disk('local')->put($epg->file_path, '<tv>previous guide</tv>');
+
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(sdScheduleWithProgramme()),
+        'json.schedulesdirect.org/20141201/programs' => Http::response('Bad Gateway', 502),
+    ]);
+
+    expect(fn () => (new SchedulesDirectService)->syncEpgData($epg))
+        ->toThrow(SchedulesDirectRateLimitException::class);
+
+    expect($epg->fresh()->sd_backoff_attempts)->toBe(1);
+    expect(Storage::disk('local')->get($epg->file_path))->toBe('<tv>previous guide</tv>');
+});
+
+it('measures the token lifetime on the Schedules Direct clock', function () {
+    $this->freezeTime();
+
+    // SD's clock runs 5 minutes ahead of ours; the token lasts 24 hours on its clock.
+    $serverNow = now()->addMinutes(5)->timestamp;
+    Http::fake([
+        'json.schedulesdirect.org/20141201/token' => Http::response([
+            'code' => 0,
+            'token' => 'fresh-token',
+            'serverTime' => $serverNow,
+            'tokenExpires' => $serverNow + 86400,
+        ]),
+    ]);
+
+    $epg = sdEpg();
+
+    (new SchedulesDirectService)->authenticateFromEpg($epg);
+
+    // Absolute tokenExpires would give now + 24h05m; the real lifetime is 24h.
+    expect($epg->fresh()->sd_token_expires_at->timestamp)->toBe(now()->addDay()->subSeconds(60)->timestamp);
+});
+
+it('replaces a leftover from an interrupted sync and leaves only the guide file', function () {
+    Storage::fake('local');
+    Bus::fake();
+
+    $epg = sdEpg(['sd_token' => 'still-good', 'sd_token_expires_at' => now()->addHours(6)]);
+    Storage::disk('local')->put($epg->file_path, '<tv>previous guide</tv>');
+    Storage::disk('local')->put("{$epg->file_path}.download", '<tv><channel id="half-written"');
+
+    fakeLineupSyncEndpoints([
+        'json.schedulesdirect.org/20141201/schedules' => Http::response(sdScheduleWithProgramme()),
+        'json.schedulesdirect.org/20141201/programs' => fn (Request $request) => sdProgrammesFor($request),
+    ]);
+
+    (new SchedulesDirectService)->syncEpgData($epg);
+
+    expect(Storage::disk('local')->files($epg->folder_path))->toBe([$epg->file_path]);
+    expect(Storage::disk('local')->get($epg->file_path))
+        ->toContain('Synthetic EP0000000001')
+        ->not->toContain('half-written');
+});

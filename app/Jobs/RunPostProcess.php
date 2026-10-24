@@ -218,15 +218,17 @@ class RunPostProcess implements ShouldQueue
                         ->withBody($jsonContent, 'application/json')
                         ->post($url);
                 } elseif ($post && ! empty($queryVars)) {
-                    // Send variables as form data or JSON based on jsonBody setting
-                    if ($jsonBody) {
-                        $headers['Content-Type'] = 'application/json';
-                    }
+                    // $jsonBody is always false here (the $jsonBody branch above
+                    // already handles that case), so this always sends form data.
+                    // Laravel's HTTP client sends ->post() bodies as JSON by
+                    // default; asForm() is required to get form-data encoding.
                     $response = Http::withOptions($redirectOptions)->withHeaders($headers)
+                        ->asForm()
                         ->post($url, $queryVars);
                 } elseif ($post) {
                     // POST request with empty variables (sends as form data)
                     $response = Http::withOptions($redirectOptions)->withHeaders($headers)
+                        ->asForm()
                         ->post($url, $queryVars);
                 } else {
                     // GET request with query parameters
@@ -480,7 +482,7 @@ class RunPostProcess implements ShouldQueue
             'name' => $this->model->name,
             'url' => $this->model->url ?? null,
             'status' => $this->model->status?->value ?? $this->model->status,
-            'synctime' => $this->model->sync_time,
+            'time' => $this->model->sync_time,
             'added_groups' => $this->model->added_groups ?? null,
             'removed_groups' => $this->model->removed_groups ?? null,
             'added_channels' => $this->model->added_channels ?? null,
