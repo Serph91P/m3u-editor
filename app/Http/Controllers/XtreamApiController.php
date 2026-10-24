@@ -1727,7 +1727,10 @@ class XtreamApiController extends Controller
             $defaultInfo = [
                 'kinopoisk_url' => $info['kinopoisk_url'] ?? '',
                 'tmdb_id' => $channel->getTmdbId() ?? 0,
-                'name' => $info['name'] ?? $channel->name,
+                // Same title_custom/title precedence get_vod_streams uses, so a renamed
+                // title is reflected here too - o_name intentionally stays untouched,
+                // it's the original provider name.
+                'name' => $channel->title_custom ?? $channel->title,
                 'o_name' => $info['o_name'] ?? $channel->name,
                 'cover_big' => $cover,
                 'movie_image' => $movieImage,
@@ -1826,8 +1829,10 @@ class XtreamApiController extends Controller
             $extension = $movieData['container_extension'] ?? $channel->container_extension ?? 'mp4';
             $defaultMovieData = [
                 'stream_id' => $channel->id,
-                'name' => $movieData['name'] ?? $channel->name,
-                'title' => $movieData['title'] ?? $channel->name,
+                // Same title_custom/title precedence get_vod_streams uses, so a renamed
+                // title is reflected here too.
+                'name' => $channel->title_custom ?? $channel->title,
+                'title' => $channel->title_custom ?? $channel->title,
                 'year' => app(VodFileNameService::class)->resolveMovieYearAsInt($channel),
                 'added' => $movieData['added'] ?? (string) (($channel->source_added_at ?? $channel->created_at)?->timestamp ?? time()),
                 'category_id' => (string) ($channel->group_id ?? ''),
