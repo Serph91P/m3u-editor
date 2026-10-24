@@ -1202,6 +1202,7 @@ class ProcessM3uImport implements ShouldQueue
 
             // Fire the playlist synced event
             event(new SyncCompleted($this->playlist));
+            self::failSyncRunIfPresent($this->syncRunId, $e->getMessage());
         }
 
     }
