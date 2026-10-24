@@ -48,26 +48,7 @@ class EmbyPublicationCatalogService
             }
 
             $catalog = $this->buildMapping($mapping, $username, $password);
-            $connection = $mapping->getConnection();
-            $revision = $connection->getPdo()->quote($catalog['revision']);
-            $plannedSummary = $connection->getPdo()->quote(count($catalog['items']).' top-level items planned.');
-            $syncedSummary = $connection->getPdo()->quote(__('Published revision is up to date.'));
-            $preserve = "status IN ('failed', 'drifted', 'cleanup_pending')";
-            $applied = "last_applied_revision = {$revision} AND last_success_at IS NOT NULL";
-
-            // Evaluate against the current database row in one atomic update.
-            // This preserves concurrent callbacks without a per-mapping reload.
-            $mapping->newQuery()->whereKey($mapping->getKey())->update([
-                'last_planned_revision' => $catalog['revision'],
-                'status_summary' => $connection->raw("CASE WHEN {$preserve} THEN status_summary
-                    WHEN {$applied} THEN CASE WHEN status = 'synced' AND status_summary <> ''
-                        THEN status_summary ELSE {$syncedSummary} END
-                    ELSE {$plannedSummary} END"),
-                'error_summary' => $connection->raw("CASE WHEN {$preserve} THEN error_summary ELSE NULL END"),
-                // Keep status last: MySQL evaluates assignments left-to-right.
-                'status' => $connection->raw("CASE WHEN {$preserve} THEN status
-                    WHEN {$applied} THEN 'synced' ELSE 'planned' END"),
-            ]);
+            $this->applyPlannedRevision($mapping, $catalog);
             $mappings[] = $catalog;
         }
 
@@ -78,6 +59,50 @@ class EmbyPublicationCatalogService
             'full_snapshot' => true,
             'mappings' => $mappings,
         ]);
+    }
+
+    /**
+     * Evaluate the mapping's status transition against the current database
+     * row, scoped update by scoped update, so a concurrent callback (e.g. a
+     * publish success landing mid-build) is never clobbered by a reload of
+     * this method's own, possibly stale, in-memory $mapping.
+     *
+     * @param  array<string, mixed>  $catalog
+     */
+    private function applyPlannedRevision(EmbyLibraryMapping $mapping, array $catalog): void
+    {
+        $revision = $catalog['revision'];
+        $plannedSummary = count($catalog['items']).' top-level items planned.';
+        $syncedSummary = __('Published revision is up to date.');
+        $preserveStatuses = ['failed', 'drifted', 'cleanup_pending'];
+
+        $mapping->newQuery()->whereKey($mapping->getKey())
+            ->update(['last_planned_revision' => $revision]);
+
+        $mapping->newQuery()->whereKey($mapping->getKey())
+            ->whereNotIn('status', $preserveStatuses)
+            ->where('last_applied_revision', $revision)
+            ->whereNotNull('last_success_at')
+            ->where('status', 'synced')
+            ->whereNotNull('status_summary')
+            ->where('status_summary', '<>', '')
+            ->update(['status' => 'synced', 'error_summary' => null]);
+
+        $mapping->newQuery()->whereKey($mapping->getKey())
+            ->whereNotIn('status', $preserveStatuses)
+            ->where('last_applied_revision', $revision)
+            ->whereNotNull('last_success_at')
+            ->where(fn ($query) => $query->where('status', '!=', 'synced')
+                ->orWhereNull('status_summary')
+                ->orWhere('status_summary', ''))
+            ->update(['status' => 'synced', 'status_summary' => $syncedSummary, 'error_summary' => null]);
+
+        $mapping->newQuery()->whereKey($mapping->getKey())
+            ->whereNotIn('status', $preserveStatuses)
+            ->where(fn ($query) => $query->where('last_applied_revision', '!=', $revision)
+                ->orWhereNull('last_applied_revision')
+                ->orWhereNull('last_success_at'))
+            ->update(['status' => 'planned', 'status_summary' => $plannedSummary, 'error_summary' => null]);
     }
 
     /**
