@@ -48,14 +48,14 @@ function identityPage(int $page, int $pages = 2): array
         'results' => array_map(fn ($id) => ['id' => $id, 'name' => 'Synthetic '.$id, 'original_name' => 'Synthetic '.$id, 'overview' => '', 'first_air_date' => '2020-01-01'], range(($page - 1) * 20 + 1, $page * 20))];
 }
 
-it('binds the native full film subtitle and counts HTTP requests and replay', function () {
+it('binds the native full film subtitle and counts HTTP requests and replay', function (int $emptyPages) {
     $plugin = identityPlugin();
     $full = 'Synthetic Ridge - Broken Compass';
-    Http::fake(function ($request) use ($full) {
+    Http::fake(function ($request) use ($full, $emptyPages) {
         $path = parse_url($request->url(), PHP_URL_PATH);
 
         return Http::response(match (true) {
-            str_ends_with($path, '/search/tv') => ['page' => 1, 'total_pages' => 0, 'total_results' => 0, 'results' => []],
+            str_ends_with($path, '/search/tv') => ['page' => 1, 'total_pages' => $emptyPages, 'total_results' => 0, 'results' => []],
             str_ends_with($path, '/search/movie') => ['page' => 1, 'total_pages' => 1, 'total_results' => 1, 'results' => [['id' => 997001, 'title' => $full, 'original_title' => $full, 'release_date' => '2022-01-01', 'overview' => '']]],
             str_ends_with($path, '/translations') => ['id' => 997001, 'translations' => []],
             str_ends_with($path, '/alternative_titles') => ['id' => 997001, 'titles' => []],
@@ -71,7 +71,7 @@ it('binds the native full film subtitle and counts HTTP requests and replay', fu
     Http::assertSent(fn ($r) => str_contains($r->url(), '/search/movie') && $r['query'] === mb_strtolower($full) && $r['year'] === 2022);
     expect(identityEnrich($plugin, $this->tmdb, $programme, $cache)['cache_hit'])->toBeTrue();
     Http::assertSentCount(5);
-});
+})->with([0, 1]);
 
 it('keeps native film fallback closed on faulty TV evidence with measured HTTP budget', function ($fault) {
     $plugin = identityPlugin();
@@ -169,6 +169,191 @@ it('uses only real names bound to the same EPG channel in the native settings pa
     expect($result['provider_match'])->toBeTrue()->and(array_values($cache)[0]['tmdb_id'])->toBe(995001);
     Http::assertSentCount(8);
 });
+
+it('budgets TV network evidence independently from movie rivals without hiding TV ties', function (int $movies, int $tvs, bool $sharedNetwork, bool $expected, int $requests) {
+    $plugin = identityPlugin();
+    $title = 'Synthetic Observatory';
+    $detailIds = [];
+    Http::fake(function ($request) use ($title, $movies, $tvs, $sharedNetwork, &$detailIds) {
+        $path = parse_url($request->url(), PHP_URL_PATH);
+        foreach (['tv' => $tvs, 'movie' => $movies] as $media => $count) {
+            if (str_ends_with($path, '/search/'.$media)) {
+                return Http::response(['page' => 1, 'total_pages' => $count > 0 ? 1 : 0, 'total_results' => $count, 'results' => $count === 0 ? [] : array_map(fn ($id) => ['id' => $id, $media === 'tv' ? 'name' : 'title' => $title, $media === 'tv' ? 'original_name' : 'original_title' => $title, $media === 'tv' ? 'first_air_date' : 'release_date' => '2020-01-01', 'overview' => ''], range($media === 'tv' ? 986001 : 986101, ($media === 'tv' ? 986000 : 986100) + $count))]);
+            }
+        }
+        preg_match('~/(tv|movie)/(\d+)~', $path, $match);
+        $media = $match[1];
+        $id = (int) $match[2];
+        if (str_ends_with($path, '/translations')) {
+            return Http::response(['id' => $id, 'translations' => []]);
+        }
+        if (str_ends_with($path, '/alternative_titles')) {
+            return Http::response(['id' => $id, $media === 'tv' ? 'results' : 'titles' => []]);
+        }
+        $detailIds[] = $media.':'.$id;
+
+        return Http::response($media === 'tv'
+            ? ['id' => $id, 'name' => $title, 'original_name' => $title, 'first_air_date' => '2020-01-01', 'genres' => [], 'networks' => [['id' => $id, 'name' => $sharedNetwork || $id === 986001 ? 'Synthetic North' : 'Synthetic South', 'logo_path' => null]]]
+            : ['id' => $id, 'title' => $title, 'original_title' => $title, 'release_date' => '2020-01-01', 'genres' => []]);
+    });
+    $programme = ['title' => $title, 'channel' => 'synthetic-north'];
+    $settings = ['overwrite_existing' => true, 'enrich_categories' => false, 'enrich_descriptions' => false, 'enrich_posters' => false, 'enrich_backdrops' => false, 'enrich_episode_details' => false, '_identity_channel_names' => ['synthetic-north' => ['Synthetic North']]];
+    $cache = [];
+    $season = [];
+    $images = [];
+    $result = (new ReflectionMethod($plugin, 'enrichProgrammeWithSettings'))->invokeArgs($plugin, [&$programme, $this->tmdb, &$cache, &$season, &$images, $settings, 1, 'de-DE']);
+    expect($result['provider_match'])->toBe($expected);
+    Http::assertSentCount($requests);
+    if ($expected) {
+        expect(array_values($cache)[0]['tmdb_id'])->toBe(986001);
+    }
+    if ($tvs <= 2) {
+        expect($detailIds)->toContain('tv:986001', 'tv:986002');
+    } else {
+        expect($detailIds)->toBe([]);
+    }
+})->with([
+    'two TV control' => [0, 2, false, true, 8],
+    'one movie rival' => [1, 2, false, true, 11],
+    'two movie rivals' => [2, 2, false, true, 14],
+    'equal network rivals' => [1, 2, true, false, 11],
+    'third TV rival exceeds evidence budget' => [1, 3, false, false, 10],
+]);
+
+it('requires unique full work evidence for markerless film rows after complete TV absence', function (string $case, bool $expected) {
+    $plugin = identityPlugin();
+    $full = 'Synthetic Ridge - Broken Compass';
+    $synopsis = 'Cartographers uncover vanished treasure beneath ancient lighthouse';
+    $attempts = 0;
+    Http::fake(function ($request) use ($case, $full, $synopsis, &$attempts) {
+        $attempts++;
+        $path = parse_url($request->url(), PHP_URL_PATH);
+        if (str_ends_with($path, '/search/tv')) {
+            return match ($case) {
+                'timeout' => throw new RuntimeException('Synthetic timeout'),
+                '429' => Http::response([], 429),
+                'malformed' => Http::response(['results' => []]),
+                'partial' => Http::response(identityPage($request['page'], 5)),
+                'tv-identity', 'tv-ambiguity' => Http::response(['page' => 1, 'total_pages' => 1, 'total_results' => $case === 'tv-identity' ? 1 : 2, 'results' => array_map(fn ($id) => ['id' => $id, 'name' => 'Synthetic Ridge', 'original_name' => 'Synthetic Ridge', 'first_air_date' => '2020-01-01', 'overview' => ''], $case === 'tv-identity' ? [987011] : [987011, 987012])]),
+                default => Http::response(['page' => 1, 'total_pages' => 1, 'total_results' => 0, 'results' => []]),
+            };
+        }
+        if (str_ends_with($path, '/search/movie')) {
+            $ids = $case === 'ambiguous' ? [987001, 987002] : [987001];
+
+            return Http::response(['page' => 1, 'total_pages' => 1, 'total_results' => count($ids), 'results' => array_map(fn ($id) => ['id' => $id, 'title' => $full, 'original_title' => $full, 'release_date' => '2022-01-01', 'overview' => $synopsis], $ids)]);
+        }
+        preg_match('~/(tv|movie)/(\d+)~', $path, $match);
+        $media = $match[1];
+        $id = (int) $match[2];
+
+        return Http::response(match (true) {
+            str_ends_with($path, '/translations') => ['id' => $id, 'translations' => []],
+            str_ends_with($path, '/alternative_titles') => ['id' => $id, $media === 'tv' ? 'results' : 'titles' => []],
+            $media === 'tv' => ['id' => $id, 'name' => 'Synthetic Ridge', 'original_name' => 'Synthetic Ridge', 'first_air_date' => '2020-01-01', 'genres' => []],
+            default => ['id' => $id, 'title' => $full, 'original_title' => $full, 'release_date' => '2022-01-01', 'overview' => $synopsis, 'genres' => []],
+        });
+    });
+    $programme = ['title' => 'Synthetic Ridge', 'subtitle' => 'Broken Compass', 'episode_num' => $case === 'ep' ? 'EP123' : '0.0.', 'episode_nums' => [['system' => 'xmltv_ns', 'value' => '0.0.']], 'desc' => $case === 'no-description' ? '' : $synopsis];
+    if ($case === 'no-subtitle') {
+        unset($programme['subtitle']);
+    }
+    if ($case === 'untyped-subtitle') {
+        $programme['subtitle'] = ['Broken Compass'];
+    }
+    $cache = [];
+    expect(identityEnrich($plugin, $this->tmdb, $programme, $cache)['provider_match'])->toBe($expected || $case === 'tv-identity');
+    if ($expected) {
+        expect(array_values($cache)[0]['tmdb_id'])->toBe(987001)->and(array_values($cache)[0]['_media_type'])->toBe('movie');
+        Http::assertSentCount(5);
+        expect(identityEnrich($plugin, $this->tmdb, $programme, $cache)['cache_hit'])->toBeTrue();
+        Http::assertSentCount(5);
+        // An explicit EP signal must not reuse this markerless movie identity.
+        $programme['episode_num'] = 'EP123';
+        expect(identityEnrich($plugin, $this->tmdb, $programme, $cache)['provider_match'])->toBeFalse();
+        Http::assertSentCount(5);
+    } elseif (in_array($case, ['ep', 'no-subtitle', 'untyped-subtitle', 'tv-identity', 'tv-ambiguity', 'timeout', '429', 'malformed', 'partial'], true)) {
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/search/movie'));
+        if (in_array($case, ['timeout', '429', 'malformed', 'partial'], true)) {
+            expect($attempts)->toBe($case === 'partial' ? 4 : 1);
+        }
+    }
+})->with([
+    ['markerless', true], ['ep', false], ['no-subtitle', false], ['untyped-subtitle', false],
+    ['no-description', false], ['ambiguous', false], ['tv-identity', false], ['tv-ambiguity', false],
+    ['timeout', false], ['429', false], ['malformed', false], ['partial', false],
+]);
+
+it('measures both media types across full base and year fallback searches', function () {
+    $plugin = identityPlugin();
+    $queries = [];
+    Http::fake(function ($request) use (&$queries) {
+        $queries[] = [basename(parse_url($request->url(), PHP_URL_PATH)), $request['query'], $request['year'] ?? $request['first_air_date_year'] ?? null];
+
+        return Http::response(['page' => 1, 'total_pages' => 1, 'total_results' => 0, 'results' => []]);
+    });
+    $programme = ['title' => 'Synthetic Atlas - Missing Harbor (2022)'];
+    $cache = [];
+    expect(identityEnrich($plugin, $this->tmdb, $programme, $cache)['provider_match'])->toBeFalse();
+    expect($queries)->toBe([
+        ['tv', 'synthetic atlas - missing harbor', 2022], ['movie', 'synthetic atlas - missing harbor', 2022],
+        ['tv', 'synthetic atlas - missing harbor', null], ['movie', 'synthetic atlas - missing harbor', null],
+        ['tv', 'synthetic atlas', 2022], ['movie', 'synthetic atlas', 2022],
+        ['tv', 'synthetic atlas', null], ['movie', 'synthetic atlas', null],
+    ]);
+    Http::assertSentCount(8);
+});
+
+it('keeps late cross-media rivals in the complete comparison with measured HTTP costs', function () {
+    $plugin = identityPlugin();
+    $title = 'Synthetic Distant Harbor';
+    Http::fake(function ($request) use ($title) {
+        $path = parse_url($request->url(), PHP_URL_PATH);
+        if (preg_match('~/search/(tv|movie)$~', $path, $match)) {
+            $media = $match[1];
+            $page = $request['page'];
+            $rows = array_map(fn ($id) => ['id' => $id, $media === 'tv' ? 'name' : 'title' => $id === 40 ? $title : 'Unrelated Fiction '.$id, $media === 'tv' ? 'original_name' : 'original_title' => $id === 40 ? $title : 'Unrelated Fiction '.$id, $media === 'tv' ? 'first_air_date' : 'release_date' => '2020-01-01', 'overview' => ''], range(($page - 1) * 20 + 1, $page * 20));
+
+            return Http::response(['page' => $page, 'total_pages' => 2, 'total_results' => 40, 'results' => $rows]);
+        }
+        preg_match('~/(tv|movie)/(\d+)~', $path, $match);
+        $media = $match[1];
+        $id = (int) $match[2];
+
+        return Http::response(match (true) {
+            str_ends_with($path, '/translations') => ['id' => $id, 'translations' => []],
+            str_ends_with($path, '/alternative_titles') => ['id' => $id, $media === 'tv' ? 'results' : 'titles' => []],
+            default => throw new RuntimeException('No identity winner may request details'),
+        });
+    });
+    $cache = [];
+    expect(identityEnrich($plugin, $this->tmdb, ['title' => $title], $cache)['provider_match'])->toBeFalse();
+    expect($cache)->toBe([]);
+    Http::assertSentCount(164); // Four pages plus aliases/translations for all 80 candidates.
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/movie/40/translations'));
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/tv/40/translations'));
+});
+
+it('accepts both valid empty native first page conventions', function (int $pages) {
+    Http::fake(['*' => Http::response(['page' => 1, 'total_pages' => $pages, 'total_results' => 0, 'results' => []])]);
+    expect($this->tmdb->searchIdentityCandidates('tv', 'Synthetic Absent Observatory'))
+        ->toBe(['status' => 'complete', 'candidates' => []]);
+    Http::assertSentCount(1);
+})->with([0, 1]);
+
+it('rejects inconsistent empty native envelopes', function (array $payload) {
+    Http::fake(['*' => Http::response($payload)]);
+    expect($this->tmdb->searchIdentityCandidates('tv', 'Synthetic Absent Observatory'))
+        ->toBe(['status' => 'error', 'candidates' => []]);
+    Http::assertSentCount(1);
+})->with([
+    [['page' => 1, 'total_pages' => 2, 'total_results' => 0, 'results' => []]],
+    [['page' => 1, 'total_pages' => 1, 'total_results' => 1, 'results' => []]],
+    [['page' => 1, 'total_pages' => 0, 'total_results' => 1, 'results' => []]],
+    [['page' => 2, 'total_pages' => 1, 'total_results' => 0, 'results' => []]],
+    [['page' => 1, 'total_results' => 0, 'results' => []]],
+    [['page' => 1, 'total_pages' => 1, 'results' => []]],
+]);
 
 it('collects complete native pages with a hard budget and cached replay', function () {
     Http::fake(fn ($request) => Http::response(identityPage($request['page'])));

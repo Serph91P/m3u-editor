@@ -231,7 +231,8 @@ class TmdbService
                     || ! is_int($payload['total_pages'] ?? null) || $payload['total_pages'] < 0
                     || ! is_int($payload['total_results'] ?? null) || $payload['total_results'] < 0
                     || ! is_array($payload['results'] ?? null) || ! array_is_list($payload['results'])
-                    || $payload['total_pages'] !== (int) ceil($payload['total_results'] / 20)
+                    || ($payload['total_pages'] !== (int) ceil($payload['total_results'] / 20)
+                        && ! ($page === 1 && $payload['total_results'] === 0 && $payload['total_pages'] === 1))
                     || count($payload['results']) !== min(20, max(0, $payload['total_results'] - ($page - 1) * 20))
                     || ($totalPages !== null && $totalPages !== $payload['total_pages'])
                     || ($totalResults !== null && $totalResults !== $payload['total_results'])) {
