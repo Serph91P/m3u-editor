@@ -95,6 +95,15 @@ it('accepts only the custom password in Custom Password mode', function () {
         ->and(PlaylistFacade::authenticate('owner', $this->playlist->uuid)[0])->toBeNull();
 });
 
+it('accepts a custom password of literal "0" (issue #1761)', function () {
+    // empty("0") is true in PHP, so a naive empty() guard in front of the resolver
+    // would reject this value even though it's a perfectly valid saved password.
+    defaultAuthSetMode($this->playlist, DefaultAuthMode::Custom, '0');
+
+    expect($this->resolver->resolveDefaultLogin('owner', '0')?->is($this->playlist))->toBeTrue()
+        ->and(PlaylistFacade::authenticate('owner', '0')[1])->toBe('owner_auth');
+});
+
 it('rejects the owner login when the default login is disabled but keeps Playlist Auths working', function () {
     defaultAuthSetMode($this->playlist, DefaultAuthMode::Disabled);
     defaultAuthAttachGuest($this->playlist);

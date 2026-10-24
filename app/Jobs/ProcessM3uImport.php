@@ -8,6 +8,7 @@ use App\Enums\SyncRunPhase;
 use App\Events\SyncCompleted;
 use App\Models\Bouquet;
 use App\Models\Category;
+use App\Models\Channel;
 use App\Models\Group;
 use App\Models\Job;
 use App\Models\MediaServerIntegration;
@@ -1201,6 +1202,7 @@ class ProcessM3uImport implements ShouldQueue
 
             // Fire the playlist synced event
             event(new SyncCompleted($this->playlist));
+            self::failSyncRunIfPresent($this->syncRunId, $e->getMessage());
         }
 
     }
@@ -1506,9 +1508,7 @@ class ProcessM3uImport implements ShouldQueue
         }
 
         // Flag any previously marked new items as not new
-        $playlist->groups()->where('new', true)->update(['new' => false]);
-        $playlist->channels()->where('new', true)->update(['new' => false]);
-        $playlist->series()->where('new', true)->update(['new' => false]);
+        $this->clearPreviousNewFlags($playlist, $batchNo);
 
         // Create the jobs array
         $jobs = [];
@@ -1825,29 +1825,159 @@ class ProcessM3uImport implements ShouldQueue
     /**
      * Assign source_id via collision-relative hashing.
      *
-     * M3U channels carry a raw `source_key` (title + name + group). The first occurrence
-     * keeps the base md5 hash (backwards-compatible), each subsequent duplicate gets a
-     * :dup:N suffix so all entries survive as distinct channel records. Because the key
-     * includes the group, duplicates can only occur within one group, so the counter map
-     * only needs to span the group being chunked. Channels without a `source_key`
-     * (Xtream) pass through with their existing source_id.
+     * M3U channels carry a raw `source_key` (title + name + group). A key that occurs only
+     * once keeps the base md5 hash, unchanged from before (backwards-compatible). For a key
+     * that collides (several entries share the same title/name/group), each entry's own
+     * tvg-id - when the feed provides one - is folded into the hash instead of the entry's
+     * position in the file: a feed-order-only change (the entries simply get reordered on
+     * reimport) must not swap which existing channel row a duplicate-named entry's URL/config
+     * lands on, and position is the only thing that changes when that happens. Entries with
+     * no tvg-id of their own fall back to the previous :dup:N encounter-order numbering,
+     * since there is no better signal available for them. Because the key includes the group,
+     * duplicates can only occur within one group, so this only needs to span the group being
+     * chunked. Channels without a `source_key` (Xtream) pass through with their existing
+     * source_id.
      */
     public static function assignCollisionSourceIds(Enumerable $channels): Enumerable
     {
-        $seen = [];
+        $items = $channels->all();
 
-        return $channels->map(function (array $item) use (&$seen) {
+        $occurrences = [];
+        foreach ($items as $item) {
             if (! empty($item['source_key'])) {
-                $count = $seen[$item['source_key']] ?? 0;
-                $item['source_id'] = $count === 0
-                    ? md5($item['source_key'])
-                    : md5($item['source_key'].':dup:'.$count);
-                $seen[$item['source_key']] = $count + 1;
+                $occurrences[$item['source_key']] = ($occurrences[$item['source_key']] ?? 0) + 1;
             }
-            unset($item['source_key']);
+        }
 
-            return $item;
-        });
+        $ordinalSeen = [];
+        $stableSeen = [];
+
+        foreach ($items as $index => $item) {
+            $sourceKey = $item['source_key'] ?? null;
+
+            if (! empty($sourceKey)) {
+                if (($occurrences[$sourceKey] ?? 0) <= 1) {
+                    $items[$index]['source_id'] = md5($sourceKey);
+                } else {
+                    $stableId = $item['stream_id'] ?? null;
+
+                    if (! empty($stableId)) {
+                        $compositeKey = $sourceKey.'|sid:'.$stableId;
+                        $count = $stableSeen[$compositeKey] ?? 0;
+                        $items[$index]['source_id'] = $count === 0
+                            ? md5($compositeKey)
+                            : md5($compositeKey.':dup:'.$count);
+                        $stableSeen[$compositeKey] = $count + 1;
+                    } else {
+                        $count = $ordinalSeen[$sourceKey] ?? 0;
+                        $items[$index]['source_id'] = $count === 0
+                            ? md5($sourceKey)
+                            : md5($sourceKey.':dup:'.$count);
+                        $ordinalSeen[$sourceKey] = $count + 1;
+                    }
+                }
+            }
+
+            unset($items[$index]['source_key']);
+        }
+
+        return collect($items);
+    }
+
+    /**
+     * Prepare a chunk's upsert rows for channels the provider moved between categories.
+     *
+     * Xtream channels are keyed by stream_id, so a channel moved by the provider keeps its
+     * row, and `group_id` is left out of the upsert so manual moves survive a sync.
+     *
+     * - Streams an earlier category already imported this run are dropped from the rows, so
+     *   the first category listing a stream owns its row and `group_internal` names it.
+     * - Any other existing row in a different group is moved here when that group is missing,
+     *   soft-deleted, or still the provider group it was last imported into. A channel the
+     *   user moved to another group fails that check and stays put.
+     * - Nothing is moved into a blank category: it can't be told apart from a failed or
+     *   partial category lookup, which would pull every channel into one group.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    public static function applyProviderGroupMoves(
+        int $playlistId,
+        int $groupId,
+        ?string $groupName,
+        array $rows,
+        string $batchNo,
+    ): array {
+        $sourceIds = array_values(array_filter(
+            array_map(fn (array $row): string => (string) ($row['source_id'] ?? ''), $rows),
+            fn (string $sourceId): bool => $sourceId !== '',
+        ));
+        if ($sourceIds === []) {
+            return $rows;
+        }
+
+        $existing = Channel::query()
+            ->leftJoin('groups', 'groups.id', '=', 'channels.group_id')
+            ->where('channels.playlist_id', $playlistId)
+            ->where('channels.is_custom', false)
+            ->whereIn('channels.source_id', $sourceIds)
+            ->get([
+                'channels.id',
+                'channels.source_id',
+                'channels.group_id',
+                'channels.group_internal',
+                'channels.import_batch_no',
+                'groups.id as current_group_id',
+                'groups.deleted_at as group_deleted_at',
+                'groups.custom as group_custom',
+                'groups.name_internal as group_name_internal',
+            ]);
+
+        $importedThisRun = $existing->where('import_batch_no', $batchNo)
+            ->map(fn (Channel $channel): string => (string) $channel->source_id)
+            ->all();
+        if ($importedThisRun !== []) {
+            $rows = array_values(array_filter(
+                $rows,
+                fn (array $row): bool => ! in_array((string) ($row['source_id'] ?? ''), $importedThisRun, true),
+            ));
+        }
+
+        if (($rows[0]['group_internal'] ?? '') === '') {
+            return $rows;
+        }
+
+        $movedIds = $existing
+            ->filter(fn (Channel $channel): bool => $channel->import_batch_no !== $batchNo
+                && $channel->group_id !== $groupId
+                && ($channel->current_group_id === null
+                    || $channel->group_deleted_at !== null
+                    || (! $channel->group_custom && $channel->group_name_internal === $channel->group_internal)))
+            ->pluck('id');
+        if ($movedIds->isNotEmpty()) {
+            Channel::whereIn('id', $movedIds)->update([
+                'group_id' => $groupId,
+                'group' => $groupName,
+            ]);
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Clear the `new` flag left over from the previous sync.
+     *
+     * Groups are created or restored (new = true) before this runs, and every group seen
+     * this run already carries the current batch number, so those are left alone.
+     */
+    private function clearPreviousNewFlags(Playlist $playlist, string $batchNo): void
+    {
+        $playlist->groups()
+            ->where('new', true)
+            ->where(fn ($query) => $query->whereNull('import_batch_no')->orWhere('import_batch_no', '!=', $batchNo))
+            ->update(['new' => false]);
+        $playlist->channels()->where('new', true)->update(['new' => false]);
+        $playlist->series()->where('new', true)->update(['new' => false]);
     }
 
     /**
@@ -2012,9 +2142,7 @@ class ProcessM3uImport implements ShouldQueue
 
         // Flag any previously marked new items as not new, so only genuinely
         // new channels (inserted, not updated) carry new=true after this run.
-        $playlist->groups()->where('new', true)->update(['new' => false]);
-        $playlist->channels()->where('new', true)->update(['new' => false]);
-        $playlist->series()->where('new', true)->update(['new' => false]);
+        $this->clearPreviousNewFlags($playlist, $batchNo);
 
         // Create the jobs array
         $jobs = [];

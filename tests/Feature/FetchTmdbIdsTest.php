@@ -502,6 +502,48 @@ it('overwrites existing IDs when overwrite is true', function () {
     expect($channel->info['tmdb_id'])->toBe(603);
 });
 
+it('keeps the existing correct tmdb_id when overwrite search finds no confident match (issue #1647)', function () {
+    Http::fake([
+        // Overwrite's re-search finds nothing confident for this title.
+        'https://api.themoviedb.org/3/search/movie*' => Http::response(['results' => []], 200),
+        'https://api.themoviedb.org/3/movie/424/external_ids*' => Http::response([
+            'imdb_id' => 'tt0108052',
+        ], 200),
+        'https://api.themoviedb.org/3/movie/424*' => Http::response([
+            'id' => 424,
+            'title' => "Schindler's List",
+            'overview' => 'In German-occupied Poland...',
+            'release_date' => '1993-12-15',
+        ], 200),
+    ]);
+
+    $channel = Channel::factory()->create([
+        'playlist_id' => $this->playlist->id,
+        'user_id' => $this->user->id,
+        'is_vod' => true,
+        'title' => "Schindler's List",
+        'tmdb_id' => 424, // Already correct
+        'year' => null, // Missing metadata the user wants refreshed
+    ]);
+
+    $job = new TestableFetchTmdbIds(
+        vodChannelIds: [$channel->id],
+        seriesIds: null,
+        overwriteExisting: true,
+        user: $this->user,
+    );
+
+    $job->handle(app(TmdbService::class));
+
+    $channel->refresh();
+
+    // The known-good ID must survive a failed overwrite re-search, and metadata should
+    // still get populated from it - not discarded in favor of reporting "not found".
+    expect($channel->tmdb_id)->toBe(424)
+        ->and($channel->info['tmdb_search_failed'] ?? false)->toBeFalse()
+        ->and($channel->info['plot'])->toBe('In German-occupied Poland...');
+});
+
 it('refreshes VOD rating from TMDB when overwrite is true and metadata already populated', function () {
     Http::fake([
         'https://api.themoviedb.org/3/search/movie*' => Http::response([

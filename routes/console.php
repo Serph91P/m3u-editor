@@ -63,7 +63,7 @@ $inProcess('app:epg-cache-health-check')
 
 // Check backup
 $inProcess('app:run-scheduled-backups')
-    ->everyTwoMinutes();
+    ->everyMinute();
 
 // Cleanup logos
 Schedule::command('app:logo-cleanup --force')
