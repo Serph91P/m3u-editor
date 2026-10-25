@@ -571,7 +571,7 @@ class FetchTmdbIds implements ShouldQueue
             $currentGenre = $info['genre'] ?? $channel->group ?? '';
             if (! empty($currentGenre) && ! str_contains($currentGenre, ',') && strlen($currentGenre) <= 20
                 && ($info['tmdb_genre_checked'] ?? null) !== $currentGenre) {
-                $details = $tmdb->getMovieDetails((int) $tmdbId);
+                $details = $tmdb->getMovieDetailsWithTvFallback((int) $tmdbId, $info['tmdb_media_type'] ?? null);
                 $genreUpdated = false;
                 if ($details) {
                     $info['tmdb_genre_checked'] = $currentGenre;
@@ -699,9 +699,14 @@ class FetchTmdbIds implements ShouldQueue
                 $info['imdb_id'] = $result['imdb_id'];
             }
 
-            // Fetch full movie details from TMDB to populate metadata
-            $details = $tmdb->getMovieDetails((int) $result['tmdb_id']);
+            // Fetch full movie details from TMDB to populate metadata, falling back to
+            // the TV endpoint when this tmdb_id turns out to belong to a series (#1590).
+            // Pass the media type from a previous fetch, if known, to skip straight to
+            // the right endpoint instead of retrying the movie lookup every time.
+            $details = $tmdb->getMovieDetailsWithTvFallback((int) $result['tmdb_id'], $info['tmdb_media_type'] ?? null);
             if ($details) {
+                $info['tmdb_media_type'] = $details['media_type'] ?? 'movie';
+
                 // Populate IMDB ID if missing
                 if (! empty($details['imdb_id']) && empty($updateData['imdb_id'])) {
                     $updateData['imdb_id'] = $details['imdb_id'];
