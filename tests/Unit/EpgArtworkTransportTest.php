@@ -219,6 +219,78 @@ class EpgArtworkTransportTest extends TestCase
         ]], $playlist));
     }
 
+    public function test_backdrop_exports_reject_known_non_landscape_geometry_without_promoting_secondary_art(): void
+    {
+        $wide = ['url' => 'https://example.com/wide.jpg', 'width' => 960, 'height' => 540];
+        $controller = new XtreamApiController;
+        $export = new ReflectionMethod($controller, 'epgProgrammeArtwork');
+        foreach ([
+            ['width' => 1400, 'height' => 1400],
+            ['width' => 1400, 'height' => 1400, 'orient' => 'L'],
+            ['width' => 500, 'height' => 750, 'orient' => 'L'],
+        ] as $geometry) {
+            $invalid = ['url' => 'https://example.com/invalid.jpg', 'type' => 'backdrop', ...$geometry];
+            foreach ([[$invalid], [$invalid, $wide], [$wide, $invalid]] as $images) {
+                $programme = ['icon' => '', 'images' => $images];
+                $expected = count($images) === 1 ? null : $wide['url'];
+                $json = $export->invoke($controller, $programme, (object) ['enable_logo_proxy' => false]);
+                self::assertSame($expected, $json['backdrop_url'] ?? null);
+                self::assertArrayNotHasKey('poster_url', $json);
+                self::assertArrayNotHasKey('still_url', $json);
+                $document = new \DOMDocument;
+                self::assertTrue($document->loadXML('<programme>'.$this->exportArtwork($programme).'</programme>'));
+                $xpath = new \DOMXPath($document);
+                self::assertSame($expected ?? '', $xpath->evaluate('string(/programme/image[@type="backdrop"])'));
+                self::assertSame(count($images), $document->getElementsByTagName('icon')->length);
+                self::assertSame(0.0, $xpath->evaluate('count(/programme/icon[not(@width) or not(@height)])'));
+                self::assertSame(0.0, $xpath->evaluate('count(/programme/image[@type="poster"])'));
+            }
+        }
+    }
+
+    public function test_landscape_role_selection_keeps_dimensionless_compatibility_and_role_boundaries(): void
+    {
+        $wide = ['url' => 'https://example.com/wide.jpg', 'width' => 960, 'height' => 540];
+        $controller = new XtreamApiController;
+        $export = new ReflectionMethod($controller, 'epgProgrammeArtwork');
+        foreach (['still', 'backdrop'] as $role) {
+            foreach ([
+                [[], true],
+                [['orient' => 'L'], true],
+                [['orient' => 'P'], false],
+                [['width' => 0, 'height' => 1080], true],
+                [['width' => 1920, 'height' => 1080, 'orient' => 'P'], true],
+                [['width' => 1400, 'height' => 1400], false],
+                [['width' => 1400, 'height' => 1400, 'orient' => 'L'], false],
+                [['width' => 500, 'height' => 750, 'orient' => 'L'], false],
+            ] as [$geometry, $eligible]) {
+                $image = ['url' => 'https://example.com/typed.jpg', 'type' => $role, ...$geometry];
+                foreach ([[$image], [$image, $wide], [$wide, $image]] as $images) {
+                    $selected = $role === 'backdrop' ? EpgProgrammeArtwork::backdrop($images) : EpgProgrammeArtwork::still($images);
+                    $expected = $eligible ? $image : ($role === 'backdrop' && count($images) > 1 ? $wide : null);
+                    self::assertSame($expected, $selected);
+                    $json = $export->invoke($controller, ['icon' => '', 'images' => $images], (object) ['enable_logo_proxy' => false]);
+                    self::assertSame($expected['url'] ?? null, $json[$role.'_url'] ?? null);
+                    self::assertArrayNotHasKey('poster_url', $json);
+                }
+            }
+        }
+        foreach (['still', 'screenshot', 'person', 'character'] as $role) {
+            $secondary = ['url' => 'https://example.com/secondary.jpg', 'type' => $role, 'width' => 1920, 'height' => 1080];
+            $square = ['url' => 'https://example.com/square.jpg', 'type' => 'backdrop', 'width' => 1400, 'height' => 1400];
+            foreach ([[$square, $secondary, $wide], [$wide, $square, $secondary], [$secondary, $wide, $square], [$secondary, $square, $wide], [$square, $wide, $secondary], [$wide, $secondary, $square]] as $images) {
+                $programme = ['icon' => '', 'images' => $images];
+                $json = $export->invoke($controller, $programme, (object) ['enable_logo_proxy' => false]);
+                self::assertSame($wide['url'], $json['backdrop_url']);
+                self::assertSame($role === 'still' ? $secondary['url'] : null, $json['still_url'] ?? null);
+                self::assertArrayNotHasKey('poster_url', $json);
+                self::assertStringContainsString('orient="L">'.$wide['url'].'</image>', $this->exportArtwork($programme));
+                self::assertNull(EpgProgrammeArtwork::backdrop([$secondary]));
+                self::assertNull(EpgProgrammeArtwork::still([$square]));
+            }
+        }
+    }
+
     /** @return array{icon: string, images: list<array<string, mixed>>} */
     private function importArtwork(string $xml): array
     {

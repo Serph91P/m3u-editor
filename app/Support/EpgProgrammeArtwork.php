@@ -130,7 +130,11 @@ class EpgProgrammeArtwork
 
         $backdrops = array_values(array_filter(
             $programmeImages,
-            fn (array $image): bool => self::type($image) === 'backdrop' && self::orientation($image) !== 'P',
+            fn (array $image): bool => self::type($image) === 'backdrop' && match (self::orientation($image)) {
+                'L' => true,
+                null => (int) ($image['width'] ?? 0) <= 0 || (int) ($image['height'] ?? 0) <= 0,
+                default => false,
+            },
         ));
 
         return self::wide($backdrops) ?? $backdrops[0] ?? self::wide($programmeImages);
@@ -146,7 +150,11 @@ class EpgProgrammeArtwork
     {
         $stills = array_values(array_filter(
             self::validImages($images),
-            fn (array $image): bool => self::type($image) === 'still' && self::orientation($image) !== 'P',
+            fn (array $image): bool => self::type($image) === 'still' && match (self::orientation($image)) {
+                'L' => true,
+                null => (int) ($image['width'] ?? 0) <= 0 || (int) ($image['height'] ?? 0) <= 0,
+                default => false,
+            },
         ));
 
         return self::wide($stills) ?? $stills[0] ?? null;
