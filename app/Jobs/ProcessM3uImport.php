@@ -1229,12 +1229,20 @@ class ProcessM3uImport implements ShouldQueue
         // SourceGroup rename detection + upsert + stale cleanup runs before the lazy
         // generators are iterated so shouldIncludeChannel() / shouldIncludeVod() see
         // post-rename selected-group names on the first sync after a provider rename.
-        [$this->selectedGroups, $liveGroupsByName] = $this->syncSourceGroupType(
+        [$this->selectedGroups, $liveGroupsByName, $liveRenames] = $this->syncSourceGroupType(
             $liveGroups ?? collect(), 'live', 'selected_groups', $this->selectedGroups, $playlist
         );
-        [$this->selectedVodGroups, $vodGroupsByName] = $this->syncSourceGroupType(
+        [$this->selectedVodGroups, $vodGroupsByName, $vodRenames] = $this->syncSourceGroupType(
             $vodGroups ?? collect(), 'vod', 'selected_vod_groups', $this->selectedVodGroups, $playlist
         );
+
+        // The enabled-groups snapshot (built in the constructor, before this sync's
+        // provider data was even fetched) is still keyed by each group's pre-rename
+        // name. Without this, a group renamed by the provider in this same sync would
+        // still be enabled in the database, but its new VOD/live channels would fail
+        // the enabled-group name match below and come in disabled (issue #1649).
+        $this->applyRenamesToEnabledGroupSnapshot($liveRenames, 'live');
+        $this->applyRenamesToEnabledGroupSnapshot($vodRenames, 'vod');
 
         // Setup group sort, if Playlist auto sort is enabled
         $groupOrder = null;
@@ -1669,7 +1677,13 @@ class ProcessM3uImport implements ShouldQueue
      * @param  string  $type  'live' or 'vod'.
      * @param  string  $selectedKey  import_prefs key ('selected_groups' or 'selected_vod_groups').
      * @param  array  $currentSelected  Current value of $this->selectedGroups or $this->selectedVodGroups.
-     * @return array{0: list<string>, 1: Collection} Updated selected-groups array, and a category_name-keyed map for O(1) lookup.
+     * @return array{0: list<string>, 1: Collection, 2: array<string, string>} Updated selected-groups array, a
+     *                                                                         category_name-keyed map for O(1)
+     *                                                                         lookup, and the old-name => new-name
+     *                                                                         rename map (callers also use this to
+     *                                                                         keep any other old-name snapshot, such
+     *                                                                         as $this->enabledGroups, in sync - see
+     *                                                                         issue #1649).
      */
     private function syncSourceGroupType(
         Collection $groups,
@@ -1819,7 +1833,36 @@ class ProcessM3uImport implements ShouldQueue
             ->all();
         Bouquet::appendNewGroupNames($playlistId, $type, $newNames);
 
-        return [$currentSelected, $groups->unique('category_name')->keyBy('category_name')];
+        return [$currentSelected, $groups->unique('category_name')->keyBy('category_name'), $renames];
+    }
+
+    /**
+     * Rewrite a provider-name rename map (old name => new name, from
+     * syncSourceGroupType()) onto the enabled-groups snapshots built in the
+     * constructor, so a group renamed by the provider during this same sync
+     * still matches when deciding whether its new channels auto-enable
+     * (issue #1649 - without this, an already-enabled group that the
+     * provider happened to rename this run would silently stop matching its
+     * own new channels for the rest of this sync).
+     *
+     * @param  array<string, string>  $renames
+     * @param  'live'|'vod'  $type
+     */
+    private function applyRenamesToEnabledGroupSnapshot(array $renames, string $type): void
+    {
+        if (empty($renames)) {
+            return;
+        }
+
+        $rename = fn ($name) => $renames[$name] ?? $name;
+
+        $this->enabledGroups = $this->enabledGroups->map($rename);
+
+        if ($type === 'live') {
+            $this->enabledLiveGroups = $this->enabledLiveGroups->map($rename);
+        } else {
+            $this->enabledVodGroups = $this->enabledVodGroups->map($rename);
+        }
     }
 
     /**
