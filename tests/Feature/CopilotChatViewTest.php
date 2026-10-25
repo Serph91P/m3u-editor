@@ -33,6 +33,55 @@ it('renders assistant markdown without reasoning, raw HTML, or script links', fu
         ->not->toContain('onerror');
 });
 
+it('renders a pending tool call as waiting, not successful (issue #1779)', function (): void {
+    // ConversationManager::getMessagesForChat() sets success => !($status === 'failed'),
+    // so a pending/undecided call carries success=true until status is checked too.
+    $html = renderCopilotMessage([
+        'role' => 'tool_call',
+        'tool_name' => 'map_epg_channel',
+        'success' => true,
+        'status' => 'pending',
+        'result' => null,
+        'error' => null,
+    ]);
+
+    expect($html)
+        ->toContain('Waiting for approval')
+        ->not->toContain('text-success-500')
+        ->not->toContain('text-danger-500');
+});
+
+it('renders an executed tool call as successful', function (): void {
+    $html = renderCopilotMessage([
+        'role' => 'tool_call',
+        'tool_name' => 'map_epg_channel',
+        'success' => true,
+        'status' => 'executed',
+        'result' => 'ok',
+        'error' => null,
+    ]);
+
+    expect($html)
+        ->toContain('text-success-500')
+        ->not->toContain('Waiting for approval');
+});
+
+it('renders a failed tool call as an error', function (): void {
+    $html = renderCopilotMessage([
+        'role' => 'tool_call',
+        'tool_name' => 'map_epg_channel',
+        'success' => false,
+        'status' => 'failed',
+        'result' => null,
+        'error' => 'Tool execution failed.',
+    ]);
+
+    expect($html)
+        ->toContain('text-danger-500')
+        ->toContain('Tool execution failed.')
+        ->not->toContain('Waiting for approval');
+});
+
 it('renders the approval prompt as a Filament callout', function (): void {
     $this->actingAs(User::factory()->create());
     Filament::setCurrentPanel(Filament::getPanel('admin'));
