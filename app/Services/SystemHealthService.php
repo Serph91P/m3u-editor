@@ -298,23 +298,34 @@ class SystemHealthService
      */
     protected function containerCpuCount(): ?int
     {
+        $quotaCount = null;
+
         $max = $this->readFile('/sys/fs/cgroup/cpu.max');
         if ($max !== null) {
             [$quota, $period] = array_pad(explode(' ', trim($max)), 2, null);
             if ($quota !== null && $quota !== 'max' && is_numeric($quota) && is_numeric($period) && (int) $period > 0) {
-                return max((int) ceil((int) $quota / (int) $period), 1);
+                $quotaCount = max((int) ceil((int) $quota / (int) $period), 1);
             }
         }
 
-        $quota = $this->readFile('/sys/fs/cgroup/cpu/cpu.cfs_quota_us');
-        $period = $this->readFile('/sys/fs/cgroup/cpu/cpu.cfs_period_us');
-        if ($quota !== null && $period !== null && (int) trim($quota) > 0 && (int) trim($period) > 0) {
-            return max((int) ceil((int) trim($quota) / (int) trim($period)), 1);
+        if ($quotaCount === null) {
+            $quota = $this->readFile('/sys/fs/cgroup/cpu/cpu.cfs_quota_us');
+            $period = $this->readFile('/sys/fs/cgroup/cpu/cpu.cfs_period_us');
+            if ($quota !== null && $period !== null && (int) trim($quota) > 0 && (int) trim($period) > 0) {
+                $quotaCount = max((int) ceil((int) trim($quota) / (int) trim($period)), 1);
+            }
         }
 
         $cpuset = $this->readFile('/sys/fs/cgroup/cpuset.cpus.effective') ?? $this->readFile('/sys/fs/cgroup/cpuset/cpuset.cpus');
+        $cpusetCount = $cpuset !== null ? $this->countCpuSet(trim($cpuset)) : null;
 
-        return $cpuset !== null ? $this->countCpuSet(trim($cpuset)) : null;
+        // A quota and a cpuset are independent restrictions that can both
+        // apply at once - the effective count is whichever is narrower.
+        if ($quotaCount !== null && $cpusetCount !== null) {
+            return min($quotaCount, $cpusetCount);
+        }
+
+        return $quotaCount ?? $cpusetCount;
     }
 
     /**

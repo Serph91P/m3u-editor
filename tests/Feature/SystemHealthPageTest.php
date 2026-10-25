@@ -196,6 +196,24 @@ it('reads container memory and CPU limits from the cgroup, not the host', functi
     ])->and(invade($service)->containerCpuCount())->toBe(2);
 });
 
+it('respects a narrower cpuset than the cgroup v2 quota allows (issue #1780)', function () {
+    $service = systemHealthServiceWithCgroupFiles([
+        '/sys/fs/cgroup/cpu.max' => "200000 100000\n",
+        '/sys/fs/cgroup/cpuset.cpus.effective' => "0\n",
+    ]);
+
+    expect(invade($service)->containerCpuCount())->toBe(1);
+});
+
+it('still reports the quota count when the cpuset is not narrower', function () {
+    $service = systemHealthServiceWithCgroupFiles([
+        '/sys/fs/cgroup/cpu.max' => "200000 100000\n",
+        '/sys/fs/cgroup/cpuset.cpus.effective' => "0-1\n",
+    ]);
+
+    expect(invade($service)->containerCpuCount())->toBe(2);
+});
+
 it('treats an unconstrained cgroup as unknown rather than the host total', function () {
     $service = systemHealthServiceWithCgroupFiles([
         '/sys/fs/cgroup/memory.max' => "max\n",
