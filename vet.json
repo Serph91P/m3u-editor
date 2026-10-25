@@ -286,8 +286,8 @@
             "hash": "tree-v2:227c217ed67b9cd48cc589867bf18379e95858e068724b8fbef94713311b024e"
         },
         "livewire/livewire": {
-            "version": "v4.3.5",
-            "hash": "tree-v2:e8f2a6670e136a59e1ecc174390dcc2d5fdb2b6b95fa868e849d2e315d32c38f"
+            "version": "v4.4.8",
+            "hash": "tree-v2:ba227b9c0fa25ee3d5ea715216a41bf70d845016dbf25a3cb2cde91e7e4b3014"
         },
         "monolog/monolog": {
             "version": "3.10.0",
