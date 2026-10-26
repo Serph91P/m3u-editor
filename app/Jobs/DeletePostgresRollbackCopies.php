@@ -37,15 +37,15 @@ class DeletePostgresRollbackCopies implements ShouldQueue
 
             $user = User::where('is_admin', true)->first();
             if ($user) {
-                $message = 'PostgreSQL rollback copy deleted successfully';
+                $message = __('PostgreSQL rollback copy deleted successfully');
                 Notification::make()
                     ->success()
-                    ->title('PostgreSQL rollback copy deleted')
+                    ->title(__('PostgreSQL rollback copy deleted'))
                     ->body($message)
                     ->broadcast($user);
                 Notification::make()
                     ->success()
-                    ->title('PostgreSQL rollback copy deleted')
+                    ->title(__('PostgreSQL rollback copy deleted'))
                     ->body($message)
                     ->sendToDatabase($user);
             }
@@ -54,15 +54,15 @@ class DeletePostgresRollbackCopies implements ShouldQueue
 
             $user = User::where('is_admin', true)->first();
             if ($user) {
-                $message = "Deleting the PostgreSQL rollback copy failed: {$e->getMessage()}";
+                $message = __('Deleting the PostgreSQL rollback copy failed: :error', ['error' => $e->getMessage()]);
                 Notification::make()
                     ->danger()
-                    ->title('Deleting PostgreSQL rollback copy failed')
-                    ->body('Please check the error logs for details')
+                    ->title(__('Deleting PostgreSQL rollback copy failed'))
+                    ->body(__('Please check the error logs for details'))
                     ->broadcast($user);
                 Notification::make()
                     ->danger()
-                    ->title('Deleting PostgreSQL rollback copy failed')
+                    ->title(__('Deleting PostgreSQL rollback copy failed'))
                     ->body(Str::limit($message, 500))
                     ->sendToDatabase($user);
             }
