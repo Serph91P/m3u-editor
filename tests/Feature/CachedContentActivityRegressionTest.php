@@ -49,6 +49,7 @@ it('does not retarget a retried session to another canonical identity', function
 it('bounds reader renewal writes by elapsed time rather than chunks', function (int $chunks): void {
     $this->freezeSecond();
     $lease = $this->activity->acquireReader($this->user, $this->integration, (string) Str::uuid(), $this->target);
+    $this->travel(29)->seconds();
     DB::enableQueryLog();
     DB::flushQueryLog();
 
@@ -57,7 +58,7 @@ it('bounds reader renewal writes by elapsed time rather than chunks', function (
     }
     expect(DB::getQueryLog())->toHaveCount(0);
 
-    $this->travel(30)->seconds();
+    $this->travel(1)->seconds();
     $this->activity->renewReader($lease);
     $this->activity->renewReader($lease);
     expect(DB::getQueryLog())->toHaveCount(1)
