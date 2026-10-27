@@ -1723,7 +1723,7 @@ class PlaylistAlias extends Model
      */
     public static function applyProviderGroupRenames(int $playlistId, string $type, array $renames): void
     {
-        $key = $type === 'vod' ? 'selected_vod_groups' : 'selected_groups';
+        $key = self::CONTENT_FILTER_KEYS[$type];
 
         self::where('playlist_id', $playlistId)->cursor()->each(function (self $alias) use ($key, $type, $renames): void {
             $filter = $alias->group_filter ?? [];

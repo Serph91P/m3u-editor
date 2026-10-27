@@ -1433,27 +1433,10 @@ class ProcessM3uImport implements ShouldQueue
 
         // Create the series categories (needed for pre-processing)
         if ($seriesCategories && $seriesCategories->count() > 0) {
-            foreach ($seriesCategories as $category) {
-                // Need to create a source category entry
-                $sc = SourceCategory::where([
-                    'playlist_id' => $playlist->id,
-                    'source_category_id' => $category['category_id'],
-                ])->first();
-                if (! $sc) {
-                    SourceCategory::create([
-                        'playlist_id' => $playlist->id,
-                        'name' => $category['category_name'],
-                        'source_category_id' => $category['category_id'],
-                    ]);
-                } else {
-                    // Update name in case it has changed
-                    // NOTE: this could cause pre-processing to remove previously selected categories if the name changes,
-                    //       which means this now works the same as Source Categories in that regard...
-                    $sc->update([
-                        'name' => $category['category_name'],
-                    ]);
-                }
+            // Source categories first, so renames reach the selections before they are checked below
+            $this->syncSourceCategories($seriesCategories, $playlist);
 
+            foreach ($seriesCategories as $category) {
                 // Only create category if not preprocessing, or if the category is selected
                 if (! $this->preprocess || $this->shouldIncludeSeries($category['category_name'] ?? '')) {
                     $cat = Category::where([
@@ -1659,6 +1642,70 @@ class ProcessM3uImport implements ShouldQueue
                 event(new SyncCompleted($playlist));
                 self::failSyncRunIfPresent($syncRunId, $error);
             })->dispatch();
+    }
+
+    /**
+     * Sync the playlist's source categories with the provider's series categories, the
+     * same way syncSourceGroupType() does for live and VOD groups: rows the provider no
+     * longer lists are pruned, and a category the provider renamed (same id, new name) has
+     * its new name carried into the selections that stored the old one.
+     *
+     * Only called with a non-empty feed, so a provider that answers with nothing never
+     * wipes the list.
+     *
+     * @param  Collection<int, array<string, mixed>>  $categories  the provider's get_series_categories entries
+     */
+    private function syncSourceCategories(Collection $categories, Playlist $playlist): void
+    {
+        $playlistId = $playlist->id;
+        $categories = $categories
+            ->filter(fn ($category) => ($category['category_id'] ?? null) !== null && ($category['category_name'] ?? null) !== null)
+            ->unique('category_id')
+            ->values();
+
+        SourceCategory::where('playlist_id', $playlistId)
+            ->whereNotIn('source_category_id', $categories->pluck('category_id'))
+            ->delete();
+
+        $existingNames = SourceCategory::where('playlist_id', $playlistId)
+            ->pluck('name', 'source_category_id');
+
+        $renames = [];
+        foreach ($categories as $category) {
+            $oldName = $existingNames->get($category['category_id']);
+            if ($oldName !== null && $oldName !== $category['category_name']) {
+                $renames[$oldName] = $category['category_name'];
+            }
+        }
+
+        foreach ($categories->chunk(50) as $chunk) {
+            SourceCategory::upsert(
+                $chunk->map(fn ($category) => [
+                    'name' => $category['category_name'],
+                    'playlist_id' => $playlistId,
+                    'source_category_id' => $category['category_id'],
+                ])->all(),
+                uniqueBy: ['source_category_id', 'playlist_id'],
+                update: ['name'],
+            );
+        }
+
+        if (empty($renames)) {
+            return;
+        }
+
+        $this->selectedCategories = array_values(array_map(
+            fn ($name) => $renames[$name] ?? $name,
+            $this->selectedCategories
+        ));
+        $importPrefs = $playlist->import_prefs ?? [];
+        if (isset($importPrefs['selected_categories'])) {
+            $playlist->update(['import_prefs' => array_merge($importPrefs, ['selected_categories' => $this->selectedCategories])]);
+            $playlist->refresh();
+        }
+
+        Bouquet::applyProviderRenames($playlistId, 'series', $renames);
+        PlaylistAlias::applyProviderGroupRenames($playlistId, 'series', $renames);
     }
 
     /**

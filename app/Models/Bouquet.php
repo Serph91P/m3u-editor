@@ -188,7 +188,7 @@ class Bouquet extends Model
             return;
         }
 
-        $key = $type === 'vod' ? 'selected_vod_groups' : 'selected_groups';
+        $key = PlaylistAlias::CONTENT_FILTER_KEYS[$type];
 
         self::where('playlist_id', $playlistId)->cursor()->each(function (self $bouquet) use ($key, $renames): void {
             $current = $bouquet->group_selections[$key] ?? [];
