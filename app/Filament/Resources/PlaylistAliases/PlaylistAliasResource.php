@@ -767,7 +767,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                                             $record->unsetRelation('bouquets');
                                                         })
                                                         ->columnSpanFull()
-                                                        ->helperText(__('Channels are allowed if their group is in ANY assigned bouquet OR in the manual selections below. Bouquets and manual picks combine - assigning a bouquet never removes anything the manual pickers allow.'))
+                                                        ->helperText(__('Channels are allowed if their group is in ANY assigned allow bouquet OR in the manual selections below. Groups in a block bouquet are always hidden, even when something else allows them.'))
                                                         ->createOptionForm([
                                                             Forms\Components\TextInput::make('name')->required(),
                                                             Forms\Components\Textarea::make('description'),
@@ -793,11 +793,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
                                                     Schemas\Components\Callout::make(__('Bouquet contributions'))
                                                         ->columnSpanFull()
                                                         ->visible(fn (Get $get): bool => ! empty($get('bouquets')))
-                                                        ->description(fn (Get $get): string => __('Assigned bouquets contribute :live live groups, :vod VOD groups, and :series series categories in addition to your manual selections.', [
-                                                            'live' => count(self::bouquetContributedNames($get, 'live')),
-                                                            'vod' => count(self::bouquetContributedNames($get, 'vod')),
-                                                            'series' => count(self::bouquetContributedNames($get, 'categories')),
-                                                        ])),
+                                                        ->description(fn (Get $get): string => self::bouquetContributionSummary($get)),
                                                 ]),
 
                                             Schemas\Components\Callout::make(__('What you can select'))
@@ -1525,6 +1521,23 @@ class PlaylistAliasResource extends Resource implements CopilotResource
     }
 
     /**
+     * What the assigned bouquets contribute, split into allow and block bouquets.
+     */
+    protected static function bouquetContributionSummary(Get $get): string
+    {
+        $counts = ['live' => 0, 'vod' => 0, 'series' => 0, 'block_live' => 0, 'block_vod' => 0, 'block_series' => 0];
+
+        foreach (self::assignedBouquets($get) as $bouquet) {
+            $prefix = $bouquet->isBlock() ? 'block_' : '';
+            foreach (PlaylistAlias::CONTENT_FILTER_KEYS as $type => $key) {
+                $counts[$prefix.$type] += count(PlaylistAlias::selectionNames($bouquet->group_selections[$key] ?? []));
+            }
+        }
+
+        return __('Allow bouquets add :live live groups, :vod VOD groups and :series series categories. Block bouquets hide :block_live live groups, :block_vod VOD groups and :block_series series categories.', $counts);
+    }
+
+    /**
      * Names contributed by the alias's currently selected bouquets, used by the
      * picker tables to badge rows already covered by a bouquet.
      *
@@ -1539,6 +1552,7 @@ class PlaylistAliasResource extends Resource implements CopilotResource
         };
 
         return self::assignedBouquets($get)
+            ->reject(fn (Bouquet $bouquet): bool => $bouquet->isBlock())
             ->flatMap(fn (Bouquet $bouquet): array => $bouquet->{$method}())
             ->unique()
             ->values()

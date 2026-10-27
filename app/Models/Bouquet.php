@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\BouquetKind;
 use App\Pivots\BouquetPlaylistAlias;
 use App\Rules\ValidRegexPattern;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -17,11 +18,21 @@ class Bouquet extends Model
 
     protected $casts = [
         'group_selections' => 'array',
+        'kind' => BouquetKind::class,
         'auto_include_new_live' => 'boolean',
         'auto_include_new_vod' => 'boolean',
         'auto_include_live_patterns' => 'array',
         'auto_include_vod_patterns' => 'array',
     ];
+
+    /**
+     * Whether this bouquet hides its groups from the aliases it is assigned to,
+     * rather than adding them.
+     */
+    public function isBlock(): bool
+    {
+        return $this->kind === BouquetKind::Block;
+    }
 
     public function user(): BelongsTo
     {
