@@ -8,6 +8,7 @@ use App\Models\CustomPlaylist;
 use App\Models\Group;
 use App\Models\Playlist;
 use App\Models\User;
+use App\Rules\ValidRegexPattern;
 use App\Services\PlaylistService;
 use Filament\Notifications\Notification;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -30,6 +31,11 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
      * @param  array<int>  $groupIds  IDs of Group or Category records to process
      * @param  array<string, mixed>  $data  Form data: mode, category, new_category
      * @param  string  $syncMode  'full_sync' removes channels no longer in source groups; 'add_only' never removes
+     * @param  array<int>  $channelIds  Optional channel IDs to restrict the sync to (live/VOD rules only)
+     * @param  array<string>  $channelNamePatterns  Optional delimiter-less regex patterns matched against channel titles/names
+     *
+     * When either channel filter is set, only channels that match at least one of them
+     * (picked ID or name pattern) are synced out of the selected groups.
      */
     public function __construct(
         public int $userId,
@@ -39,6 +45,8 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
         public array $data,
         public string $type = 'channel',
         public string $syncMode = 'full_sync',
+        public array $channelIds = [],
+        public array $channelNamePatterns = [],
     ) {}
 
     /**
@@ -55,6 +63,10 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
         $mode = $this->data['mode'] ?? 'original';
 
         $playlistTagIds = $playlist->{$meta['tagFunction']}()->pluck('tags.id')->all();
+
+        $compiledPatterns = $this->compiledChannelPatterns();
+        $hasChannelFilter = ! $isSeries && ($this->channelIds !== [] || $compiledPatterns !== []);
+        $pickedChannelIds = array_flip(array_map('intval', $this->channelIds));
 
         // Resolved once here for reuse in the full-sync cleanup below.
         $pivotTable = $meta['pivotTable'];
@@ -89,8 +101,21 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             // rule-managed: it never touches a row that already exists, so a channel a
             // user separately added manually (or that an earlier run already tracked)
             // keeps its existing provenance instead of being silently reclaimed here.
-            $group->{$meta['relation']}()->chunkById(1000, function ($items) use ($meta, $playlistTagIds, $tag): void {
+            $group->{$meta['relation']}()->chunkById(1000, function ($items) use ($meta, $playlistTagIds, $tag, $hasChannelFilter, $pickedChannelIds, $compiledPatterns): void {
+                if ($hasChannelFilter) {
+                    $items = $items->filter(fn ($item): bool => $this->matchesChannelFilter(
+                        (int) $item->id,
+                        [$item->title_custom ?? $item->title, $item->name_custom ?? $item->name],
+                        $pickedChannelIds,
+                        $compiledPatterns,
+                    ));
+                }
+
                 $ids = $items->pluck('id')->all();
+
+                if (empty($ids)) {
+                    return;
+                }
 
                 DB::table($meta['pivotTable'])->insertOrIgnore(
                     array_map(fn (int $id): array => [
@@ -126,18 +151,22 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
                 ? Category::whereIn('id', $this->groupIds)->pluck('id')->all()
                 : Group::whereIn('id', $this->groupIds)->pluck('id')->all();
 
-            DB::table($pivotTable)
-                ->where($pivotForeignKey, $this->customPlaylistId)
-                ->where('auto_synced_playlist_id', $this->playlistId)
-                ->whereNotIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn, $activeGroupIds): void {
-                    // Items currently present in active (non-deleted) source groups only.
-                    // Using $activeGroupIds (not $this->groupIds) ensures channels whose
-                    // group was soft-deleted are not falsely treated as "still present".
-                    $query->select('id')
-                        ->from($itemTable)
-                        ->whereIn($groupColumn, $activeGroupIds);
-                })
-                ->delete();
+            if ($hasChannelFilter) {
+                $this->removeStaleFilteredChannels($pivotTable, $pivotForeignKey, $pivotRelatedKey, $activeGroupIds, $pickedChannelIds, $compiledPatterns);
+            } else {
+                DB::table($pivotTable)
+                    ->where($pivotForeignKey, $this->customPlaylistId)
+                    ->where('auto_synced_playlist_id', $this->playlistId)
+                    ->whereNotIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn, $activeGroupIds): void {
+                        // Items currently present in active (non-deleted) source groups only.
+                        // Using $activeGroupIds (not $this->groupIds) ensures channels whose
+                        // group was soft-deleted are not falsely treated as "still present".
+                        $query->select('id')
+                            ->from($itemTable)
+                            ->whereIn($groupColumn, $activeGroupIds);
+                    })
+                    ->delete();
+            }
 
             // Detach group tags from this custom playlist that no longer have any channels.
             // This removes "ghost" groups left behind when channels are removed.
@@ -194,5 +223,99 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
         if ($playlist->hasEnabledProcessingRules()) {
             SyncCompleted::dispatch($playlist, 'custom_playlist');
         }
+    }
+
+    /**
+     * Delete pivot rows this rule added whose channel no longer sits in an active source
+     * group or no longer matches the channel filter. The filter is evaluated in PHP (name
+     * patterns), so rows are walked in keyset chunks instead of one subquery.
+     *
+     * @param  array<int>  $activeGroupIds
+     * @param  array<int, int>  $pickedChannelIds  Picked channel IDs as array keys
+     * @param  array<string>  $compiledPatterns
+     */
+    private function removeStaleFilteredChannels(
+        string $pivotTable,
+        string $pivotForeignKey,
+        string $pivotRelatedKey,
+        array $activeGroupIds,
+        array $pickedChannelIds,
+        array $compiledPatterns,
+    ): void {
+        $activeGroupLookup = array_flip($activeGroupIds);
+
+        DB::table($pivotTable)
+            ->where($pivotForeignKey, $this->customPlaylistId)
+            ->where('auto_synced_playlist_id', $this->playlistId)
+            ->chunkById(1000, function ($rows) use ($pivotTable, $pivotForeignKey, $pivotRelatedKey, $activeGroupLookup, $pickedChannelIds, $compiledPatterns): void {
+                $channelIds = $rows->pluck($pivotRelatedKey)->all();
+
+                $channels = DB::table('channels')
+                    ->whereIn('id', $channelIds)
+                    ->get(['id', 'group_id', 'title', 'title_custom', 'name', 'name_custom'])
+                    ->keyBy('id');
+
+                $staleIds = array_values(array_filter($channelIds, function ($channelId) use ($channels, $activeGroupLookup, $pickedChannelIds, $compiledPatterns): bool {
+                    $channel = $channels->get($channelId);
+
+                    if (! $channel || ! isset($activeGroupLookup[$channel->group_id])) {
+                        return true;
+                    }
+
+                    return ! $this->matchesChannelFilter(
+                        (int) $channel->id,
+                        [$channel->title_custom ?? $channel->title, $channel->name_custom ?? $channel->name],
+                        $pickedChannelIds,
+                        $compiledPatterns,
+                    );
+                }));
+
+                if ($staleIds !== []) {
+                    DB::table($pivotTable)
+                        ->where($pivotForeignKey, $this->customPlaylistId)
+                        ->where('auto_synced_playlist_id', $this->playlistId)
+                        ->whereIn($pivotRelatedKey, $staleIds)
+                        ->delete();
+                }
+            }, $pivotRelatedKey);
+    }
+
+    /**
+     * A channel passes when it was picked by ID or any of its names matches a pattern.
+     *
+     * @param  array<int, string|null>  $names
+     * @param  array<int, int>  $pickedChannelIds  Picked channel IDs as array keys
+     * @param  array<string>  $compiledPatterns
+     */
+    private function matchesChannelFilter(int $channelId, array $names, array $pickedChannelIds, array $compiledPatterns): bool
+    {
+        if (isset($pickedChannelIds[$channelId])) {
+            return true;
+        }
+
+        foreach ($names as $name) {
+            if ($name === null || $name === '') {
+                continue;
+            }
+
+            foreach ($compiledPatterns as $pattern) {
+                if (@preg_match($pattern, $name) === 1) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function compiledChannelPatterns(): array
+    {
+        return array_values(array_map(
+            fn (string $pattern): string => ValidRegexPattern::compile($pattern),
+            array_filter($this->channelNamePatterns, fn ($pattern): bool => is_string($pattern) && $pattern !== ''),
+        ));
     }
 }

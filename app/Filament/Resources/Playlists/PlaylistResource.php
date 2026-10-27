@@ -39,6 +39,7 @@ use App\Livewire\PlaylistM3uUrl;
 use App\Livewire\XtreamApiInfo;
 use App\Livewire\XtreamDnsStatus;
 use App\Models\Category;
+use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\DynamicGroup;
 use App\Models\Group;
@@ -2989,6 +2990,8 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->required()
                                 ->afterStateUpdated(function (Set $set): void {
                                     $set('groups', []);
+                                    $set('channels', []);
+                                    $set('channel_name_patterns', []);
                                     $set('group_filter', 'selected');
                                 })
                                 ->columnSpan(2),
@@ -3005,7 +3008,11 @@ class PlaylistResource extends Resource implements CopilotResource
                                 ->required()
                                 ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('"New Groups Only" automatically syncs any group flagged as new (first import or re-added) into the Custom Playlist, without needing to select them manually.'))
                                 ->visible(fn (Get $get): bool => $get('type') !== 'series_categories')
-                                ->afterStateUpdated(fn (Set $set) => $set('groups', []))
+                                ->afterStateUpdated(function (Set $set): void {
+                                    $set('groups', []);
+                                    $set('channels', []);
+                                    $set('channel_name_patterns', []);
+                                })
                                 ->columnSpan(2),
                             Select::make('groups')
                                 ->label(__('Groups'))
@@ -3060,6 +3067,51 @@ class PlaylistResource extends Resource implements CopilotResource
                                     $set('groups', []);
                                 })
                                 ->columnSpan(3),
+                            Fieldset::make(__('Filter Channels (optional)'))
+                                ->schema([
+                                    Select::make('channels')
+                                        ->label(__('Limit to Channels'))
+                                        ->multiple()
+                                        ->searchable()
+                                        ->preload(false)
+                                        ->getSearchResultsUsing(function (string $search, Get $get, ?Playlist $record): array {
+                                            $groupIds = array_map('intval', (array) $get('groups'));
+                                            if (! $record || $groupIds === []) {
+                                                return [];
+                                            }
+
+                                            return Channel::where('playlist_id', $record->id)
+                                                ->whereIn('group_id', $groupIds)
+                                                ->where(function ($query) use ($search): void {
+                                                    $query->where('title', 'ilike', "%{$search}%")
+                                                        ->orWhere('title_custom', 'ilike', "%{$search}%")
+                                                        ->orWhere('name', 'ilike', "%{$search}%")
+                                                        ->orWhere('name_custom', 'ilike', "%{$search}%");
+                                                })
+                                                ->orderBy('title')
+                                                ->limit(50)
+                                                ->get(['id', 'title', 'title_custom', 'name', 'name_custom'])
+                                                ->mapWithKeys(fn (Channel $channel): array => [$channel->id => $channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name])
+                                                ->toArray();
+                                        })
+                                        ->getOptionLabelsUsing(fn (array $values): array => Channel::whereIn('id', $values)
+                                            ->get(['id', 'title', 'title_custom', 'name', 'name_custom'])
+                                            ->mapWithKeys(fn (Channel $channel): array => [$channel->id => $channel->title_custom ?? $channel->title ?? $channel->name_custom ?? $channel->name])
+                                            ->toArray()
+                                        )
+                                        ->helperText(__('Leave empty to include all channels in the selected groups.'))
+                                        ->columnSpan(1),
+                                    TagsInput::make('channel_name_patterns')
+                                        ->label(__('Channel Name Patterns'))
+                                        ->rules([new ValidRegexPattern])
+                                        ->placeholder(__('Regex, e.g. ^ESPN'))
+                                        ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('Optional regex (case-sensitive, no delimiters). Only channels whose name matches, or that are picked, are synced. Leave empty to sync all.'))
+                                        ->hintAction(RegexTesterAction::make(name: 'test-auto-add-channels', flags: 'u', samplesContext: 'channels'))
+                                        ->columnSpan(1),
+                                ])
+                                ->columns(2)
+                                ->visible(fn (Get $get): bool => $get('type') !== 'series_categories' && ($get('group_filter') ?? 'selected') !== 'new_only')
+                                ->columnSpanFull(),
                             Select::make('sync_mode')
                                 ->label(__('Sync Mode'))
                                 ->native(false)
