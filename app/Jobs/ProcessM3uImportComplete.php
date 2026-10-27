@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Enums\EpgSourceType;
 use App\Enums\Status;
 use App\Enums\SyncRunPhase;
+use App\Models\Category;
 use App\Models\Channel;
 use App\Models\EpgMap;
 use App\Models\Group;
@@ -175,7 +176,16 @@ class ProcessM3uImportComplete implements ShouldQueue
         // Series are removed along with their whole category, so a stale category batch means its series are going.
         $newSeries = null;
         $removedSeries = null;
+        $newCategories = null;
+        $removedCategories = null;
         if ($this->runningSeriesImport) {
+            // Categories have no "new" flag, so an added one is one created since this sync began.
+            // A removed one is what seriesCleanup() deletes: any category left on an earlier batch.
+            $newCategories = Category::where('playlist_id', $playlist->id)
+                ->where('created_at', '>=', $this->start->copy()->startOfSecond());
+            $removedCategories = Category::where('playlist_id', $playlist->id)
+                ->where('import_batch_no', '!=', $this->batchNo);
+
             $newSeries = Series::where([
                 ['playlist_id', $playlist->id],
                 ['import_batch_no', $this->batchNo],
@@ -201,6 +211,8 @@ class ProcessM3uImportComplete implements ShouldQueue
             $newChannelCount = $newChannels->count();
             $removedSeriesCount = $removedSeries?->count() ?? 0;
             $newSeriesCount = $newSeries?->count() ?? 0;
+            $removedCategoryCount = $removedCategories?->count() ?? 0;
+            $newCategoryCount = $newCategories?->count() ?? 0;
 
             $syncStats = [
                 'time' => $completedIn,
@@ -211,6 +223,8 @@ class ProcessM3uImportComplete implements ShouldQueue
                 'added_channels' => $newChannelCount,
                 'removed_series' => $removedSeriesCount,
                 'added_series' => $newSeriesCount,
+                'removed_categories' => $removedCategoryCount,
+                'added_categories' => $newCategoryCount,
                 'max_hit' => $this->maxHit,
             ];
             $logQueries = [
@@ -220,6 +234,8 @@ class ProcessM3uImportComplete implements ShouldQueue
                 'removedGroups' => $removedGroups,
                 'newSeries' => $newSeries,
                 'removedSeries' => $removedSeries,
+                'newCategories' => $newCategories,
+                'removedCategories' => $removedCategories,
             ];
 
             // Check if we need to invalidate the import before proceeding
@@ -585,7 +601,7 @@ class ProcessM3uImportComplete implements ShouldQueue
      *
      * Each query is cloned before use, so the caller can still run its deletes afterwards.
      *
-     * @param  array{newChannels: Builder|Relation, removedChannels: Builder|Relation, newGroups: Builder|Relation, removedGroups: Builder|Relation, newSeries: Builder|null, removedSeries: Builder|null}  $logQueries
+     * @param  array{newChannels: Builder|Relation, removedChannels: Builder|Relation, newGroups: Builder|Relation, removedGroups: Builder|Relation, newSeries: Builder|null, removedSeries: Builder|null, newCategories: Builder|null, removedCategories: Builder|null}  $logQueries
      */
     private function createSyncLogEntries(PlaylistSyncStatus $sync, array $logQueries): void
     {
@@ -600,6 +616,8 @@ class ProcessM3uImportComplete implements ShouldQueue
             ['query' => $logQueries['newChannels'], 'type' => 'channel', 'status' => 'added'],
             ['query' => $logQueries['removedSeries'], 'type' => 'series', 'status' => 'removed'],
             ['query' => $logQueries['newSeries'], 'type' => 'series', 'status' => 'added'],
+            ['query' => $logQueries['removedCategories'], 'type' => 'category', 'status' => 'removed'],
+            ['query' => $logQueries['newCategories'], 'type' => 'category', 'status' => 'added'],
         ];
 
         // Create the sync log entries
@@ -617,7 +635,7 @@ class ProcessM3uImportComplete implements ShouldQueue
                     'content_type' => match ($entry['type']) {
                         'channel' => $item->is_vod ? 'vod' : 'live',
                         'group' => $item->type === 'vod' ? 'vod' : 'live',
-                        'series' => 'series',
+                        'series', 'category' => 'series',
                     },
                     'status' => $entry['status'],
                     'meta' => $item,

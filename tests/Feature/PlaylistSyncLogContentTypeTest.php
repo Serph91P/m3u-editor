@@ -61,14 +61,15 @@ function seedSyncLogContent(Playlist $playlist, User $user): void
         ]);
     }
 
-    $staleCategory = Category::factory()->for($playlist)->for($user)->create(['import_batch_no' => 'previous-batch']);
+    $staleCategory = Category::factory()->for($playlist)->for($user)->create(['name' => 'Removed category', 'import_batch_no' => 'previous-batch', 'created_at' => now()->subDay()]);
     Series::factory()->for($playlist)->for($user)->create([
         'name' => 'Removed series',
         'category_id' => $staleCategory->id,
         'import_batch_no' => 'previous-batch',
     ]);
 
-    $currentCategory = Category::factory()->for($playlist)->for($user)->create(['import_batch_no' => 'current-batch']);
+    $currentCategory = Category::factory()->for($playlist)->for($user)->create(['name' => 'Existing category', 'import_batch_no' => 'current-batch', 'created_at' => now()->subDay()]);
+    Category::factory()->for($playlist)->for($user)->create(['name' => 'Added category', 'import_batch_no' => 'current-batch']);
     Series::factory()->for($playlist)->for($user)->create([
         'name' => 'Existing series',
         'category_id' => $currentCategory->id,
@@ -112,11 +113,13 @@ it('tags live and vod entries and logs added and removed series', function () {
         ->all();
 
     expect($entries)->toBe([
+        'added category series: Added category',
         'added channel live: New live channel',
         'added channel vod: New vod channel',
         'added group live: New live group',
         'added group vod: New vod group',
         'added series series: Added series',
+        'removed category series: Removed category',
         'removed channel live: Old live channel',
         'removed channel vod: Old vod channel',
         'removed group live: Old live group',
@@ -125,7 +128,11 @@ it('tags live and vod entries and logs added and removed series', function () {
     ])
         ->and($sync->sync_stats['added_series'])->toBe(1)
         ->and($sync->sync_stats['removed_series'])->toBe(1)
-        ->and($sync->sync_stats['added_channels'])->toBe(2);
+        ->and($sync->sync_stats['added_channels'])->toBe(2)
+        ->and($sync->sync_stats['added_categories'])->toBe(1)
+        ->and($sync->sync_stats['removed_categories'])->toBe(1)
+        ->and($sync->addedCategories()->count())->toBe(1)
+        ->and($sync->removedCategories()->count())->toBe(1);
 
     $tabs = LogsRelationManager::setupTabs($sync->id, 'vod');
     expect($tabs['added_channels']->getBadge())->toEqual(1)
@@ -139,8 +146,10 @@ it('does not log series when series import did not run', function () {
 
     $sync = PlaylistSyncStatus::where('playlist_id', $this->playlist->id)->sole();
 
-    expect($sync->logs()->where('type', 'series')->count())->toBe(0)
-        ->and($sync->sync_stats['removed_series'])->toBe(0);
+    expect($sync->logs()->whereIn('type', ['series', 'category'])->count())->toBe(0)
+        ->and($sync->sync_stats['removed_series'])->toBe(0)
+        ->and($sync->sync_stats['removed_categories'])->toBe(0)
+        ->and($sync->sync_stats['added_categories'])->toBe(0);
 });
 
 it('does not invalidate on the series threshold when series import did not run', function () {
