@@ -272,6 +272,7 @@ class BouquetResource extends Resource
             SourceGroupModalSelect::make($statePath, $type)
                 ->label($label)
                 ->helperText($helperText),
+            SourceGroupModalSelect::customGroups($statePath, $type),
             CustomPlaylistGroupModalSelect::make($statePath, $type)
                 ->label($label)
                 ->helperText($helperText),

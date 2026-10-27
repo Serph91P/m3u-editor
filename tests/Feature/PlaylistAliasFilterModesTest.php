@@ -4,8 +4,11 @@
  * Allow and block bouquets.
  */
 
+use App\Filament\Forms\Components\SourceGroupModalSelect;
 use App\Filament\Resources\Bouquets\Pages\ListBouquets;
+use App\Filament\Resources\PlaylistAliases\Pages\EditPlaylistAlias;
 use App\Models\Bouquet;
+use App\Models\Category;
 use App\Models\Channel;
 use App\Models\CustomPlaylist;
 use App\Models\Group;
@@ -14,6 +17,7 @@ use App\Models\Playlist;
 use App\Models\PlaylistAlias;
 use App\Models\Series;
 use App\Models\SourceCategory;
+use App\Models\SourceGroup;
 use App\Models\User;
 use App\Services\XtreamCategoryService;
 use Illuminate\Support\Str;
@@ -209,5 +213,202 @@ describe('forms', function () {
 
         $bouquet = Bouquet::where('name', 'No adult')->firstOrFail();
         expect($bouquet->isBlock())->toBeTrue();
+    });
+});
+
+describe('custom groups', function () {
+    it('allows channels sitting in a custom group, wherever they came from', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'My Sports', custom: true);
+        $curated->update(['name_internal' => 'My Sports']);
+        $moved = modesChannel($this->user, $this->playlist, 'UK: ENTERTAINMENT', $curated);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['My Sports']],
+        ]);
+        $alias = modesAlias($this->user, ['playlist_id' => $this->playlist->id]);
+        $alias->bouquets()->attach($bouquet);
+
+        expect(deliveredIds($alias))->toBe([$moved->id]);
+    });
+
+    it('keeps matching after the custom group is renamed', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'My Sports', custom: true);
+        $curated->update(['name_internal' => 'My Sports']);
+        $moved = modesChannel($this->user, $this->playlist, 'UK: ENTERTAINMENT', $curated);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['My Sports']],
+        ]);
+        $alias = modesAlias($this->user, ['playlist_id' => $this->playlist->id]);
+        $alias->bouquets()->attach($bouquet);
+
+        $curated->update(['name' => 'Renamed']);
+
+        expect(deliveredIds($alias))->toBe([$moved->id])
+            ->and($bouquet->fresh()->staleSelectionNames())->toBe([]);
+    });
+
+    it('lets a block bouquet hide a custom group without dropping ungrouped channels', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'Adults', custom: true);
+        $curated->update(['name_internal' => 'Adults']);
+        modesChannel($this->user, $this->playlist, 'UK: ENTERTAINMENT', $curated);
+        $noGroup = modesChannel($this->user, $this->playlist, 'unused', attributes: ['group_internal' => null, 'group' => null, 'group_id' => null]);
+        $block = Bouquet::factory()->block()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['Adults']],
+        ]);
+        $alias = modesAlias($this->user, ['playlist_id' => $this->playlist->id]);
+        $alias->bouquets()->attach($block);
+
+        expect(deliveredIds($alias))->toBe([$this->sports->id, $this->news->id, $noGroup->id]);
+    });
+
+    it('does not treat a deleted custom group as resolvable', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'Gone', custom: true);
+        $curated->update(['name_internal' => 'Gone']);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['Gone']],
+        ]);
+        $curated->delete();
+
+        expect($bouquet->fresh()->staleSelectionNames())->toBe(['Gone']);
+    });
+
+    it('saves custom group picks next to the provider names', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'My Sports', custom: true);
+        $curated->update(['name_internal' => 'My Sports']);
+        $this->actingAs($this->user);
+
+        Livewire::test(ListBouquets::class)
+            ->callAction('create', [
+                'name' => 'Mixed',
+                'target_type' => 'playlist',
+                'target_id' => $this->playlist->id,
+                'playlist_id' => $this->playlist->id,
+                'custom_group_picks_selected_groups' => ['My Sports'],
+            ])
+            ->assertHasNoActionErrors();
+
+        expect(Bouquet::where('name', 'Mixed')->firstOrFail()->group_selections['selected_groups'])->toBe(['My Sports']);
+    });
+
+    it('round-trips custom group picks through the edit form', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'My Sports', custom: true);
+        $curated->update(['name_internal' => 'My Sports']);
+        SourceGroup::create(['name' => 'UK: SPORTS', 'playlist_id' => $this->playlist->id, 'type' => 'live']);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['UK: SPORTS', 'My Sports']],
+        ]);
+        $this->actingAs($this->user);
+
+        Livewire::test(ListBouquets::class)
+            ->mountTableAction('edit', $bouquet)
+            ->assertTableActionDataSet(['custom_group_picks_selected_groups' => ['My Sports']])
+            ->setTableActionData(['custom_group_picks_selected_groups' => []])
+            ->callMountedTableAction()
+            ->assertHasNoTableActionErrors();
+
+        expect($bouquet->fresh()->group_selections['selected_groups'])->toBe(['UK: SPORTS']);
+    });
+
+    it('orders a custom group in the alias custom live sort', function () {
+        $provider = modesGroup($this->user, $this->playlist, 'UK: SPORTS');
+        $provider->update(['sort_order' => 1]);
+        $curated = modesGroup($this->user, $this->playlist, 'My Sports', custom: true);
+        $curated->update(['name_internal' => 'My Sports', 'sort_order' => 2]);
+        $this->sports->update(['group_id' => $provider->id]);
+        modesChannel($this->user, $this->playlist, 'UK: NEWS', $curated);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['UK: SPORTS', 'My Sports']],
+        ]);
+        $alias = modesAlias($this->user, [
+            'playlist_id' => $this->playlist->id,
+            'group_filter' => ['sort_live_groups_custom' => true, 'live_group_order' => ['My Sports', 'UK: SPORTS']],
+        ]);
+        $alias->bouquets()->attach($bouquet);
+
+        expect(array_column(XtreamCategoryService::groupCategories($alias->fresh(), false), 'category_name'))
+            ->toBe(['My Sports', 'UK: SPORTS']);
+    });
+
+    it('labels custom groups so they are not mistaken for provider groups', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'UK: SPORTS', custom: true);
+        $curated->update(['name_internal' => 'UK: SPORTS']);
+
+        expect(SourceGroupModalSelect::customGroupOptions($this->playlist->id, 'live'))
+            ->toBe(['UK: SPORTS' => 'UK: SPORTS (custom)']);
+    });
+
+    it('selects series in a category the provider did not supply', function () {
+        SourceCategory::create(['playlist_id' => $this->playlist->id, 'source_category_id' => 10, 'name' => 'Drama']);
+        $genre = Category::factory()->for($this->playlist)->for($this->user)->create(['name' => 'Comedy', 'name_internal' => 'Comedy']);
+        $providerCategory = Category::factory()->for($this->playlist)->for($this->user)->create(['name' => 'Drama', 'name_internal' => 'Drama']);
+        $comedy = Series::factory()->for($this->playlist)->for($this->user)->create(['enabled' => true, 'source_category_id' => 20, 'category_id' => $genre->id]);
+        $drama = Series::factory()->for($this->playlist)->for($this->user)->create(['enabled' => true, 'source_category_id' => 10, 'category_id' => $providerCategory->id]);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_categories' => ['Comedy']],
+        ]);
+        $alias = modesAlias($this->user, ['playlist_id' => $this->playlist->id]);
+        $alias->bouquets()->attach($bouquet);
+
+        expect(SourceGroupModalSelect::customGroupOptions($this->playlist->id, 'categories'))->toBe(['Comedy' => 'Comedy (custom)'])
+            ->and($alias->fresh()->series()->pluck('series.id')->all())->toBe([$comedy->id])
+            ->and($bouquet->fresh()->staleSelectionNames())->toBe([]);
+    });
+
+    it('selects what a merged custom group holds', function () {
+        $parent = modesGroup($this->user, $this->playlist, 'All Sports', custom: true);
+        $parent->update(['name_internal' => 'All Sports', 'is_merged' => true]);
+        $child = modesGroup($this->user, $this->playlist, 'UK: SPORTS');
+        $child->update(['parent_id' => $parent->id]);
+        $inChild = modesChannel($this->user, $this->playlist, 'UK: SPORTS', $child);
+        $bouquet = Bouquet::factory()->create([
+            'user_id' => $this->user->id,
+            'playlist_id' => $this->playlist->id,
+            'group_selections' => ['selected_groups' => ['All Sports']],
+        ]);
+        $alias = modesAlias($this->user, ['playlist_id' => $this->playlist->id]);
+        $alias->bouquets()->attach($bouquet);
+
+        expect(deliveredIds($alias))->toContain($inChild->id)
+            ->and(deliveredIds($alias))->not->toContain($this->news->id);
+    });
+
+    it('saves custom picks on the alias form next to the provider picks', function () {
+        $curated = modesGroup($this->user, $this->playlist, 'My Sports', custom: true);
+        $curated->update(['name_internal' => 'My Sports']);
+        $alias = modesAlias($this->user, [
+            'playlist_id' => $this->playlist->id,
+            'group_filter' => ['selected_groups' => ['My Sports']],
+        ]);
+        $this->actingAs($this->user);
+
+        $form = Livewire::test(EditPlaylistAlias::class, ['record' => $alias->getRouteKey()])
+            ->assertSchemaStateSet(['custom_group_picks_selected_groups' => ['My Sports']]);
+
+        $form->fillForm([
+            'xtream_config' => [['url' => 'http://example.com:8080', 'username' => 'alias-user', 'password' => 'alias-pass']],
+            'custom_group_picks_selected_groups' => ['My Sports'],
+        ])->call('save')->assertHasNoFormErrors();
+
+        expect($alias->fresh()->group_filter['selected_groups'])->toBe(['My Sports']);
+
+        Livewire::test(EditPlaylistAlias::class, ['record' => $alias->getRouteKey()])
+            ->fillForm(['custom_group_picks_selected_groups' => []])
+            ->call('save')
+            ->assertHasNoFormErrors();
+
+        expect($alias->fresh()->group_filter['selected_groups'] ?? [])->toBe([]);
     });
 });

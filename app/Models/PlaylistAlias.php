@@ -9,6 +9,7 @@ use App\Pivots\BouquetPlaylistAlias;
 use App\Pivots\MergedPlaylistPivot;
 use App\Traits\HasDefaultAuth;
 use App\Traits\ShortUrlTrait;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -924,7 +925,8 @@ class PlaylistAlias extends Model
 
     /**
      * Restrict a channels query to a standard alias selection: channels whose provider
-     * group (group_internal) is a selected provider group.
+     * group (group_internal) is a selected provider group, or that sit in a selected
+     * custom group (matched on the custom group's name_internal).
      *
      * group_internal is the provider-supplied name updated on every sync and is never
      * overridden by the user, unlike the user-facing group name. Custom channels
@@ -945,7 +947,10 @@ class PlaylistAlias extends Model
 
         $query->where(function ($query) use ($names, $includeUngroupedCustom): void {
             $query->orWhere(fn ($query) => $query->whereNotNull('channels.group_internal')->whereIn('channels.group_internal', $names))
-                ->orWhere(fn ($query) => $query->where('channels.is_custom', true)->whereNotNull('channels.group')->whereIn('channels.group', $names));
+                ->orWhere(fn ($query) => $query->where('channels.is_custom', true)->whereNotNull('channels.group')->whereIn('channels.group', $names))
+                // Custom groups are matched on the group a channel sits in, since the
+                // provider group of a channel moved into one never names it.
+                ->orWhere(fn ($query) => $query->whereNotNull('channels.group_id')->whereIn('channels.group_id', $this->customGroupIds($names)));
             if ($includeUngroupedCustom) {
                 $query->orWhere(fn ($query) => $query->where('channels.is_custom', true)->whereNull('channels.group'));
             }
@@ -961,23 +966,63 @@ class PlaylistAlias extends Model
      */
     private function constrainSeriesToPlaylistCategories($query, array $names, bool $isAllowList): void
     {
-        $resolve = fn (): array => SourceCategory::where('playlist_id', $this->playlist_id)
-            ->whereIn('name', $names)
-            ->pluck('source_category_id')
-            ->all();
-        $sourceCategoryIds = $names === []
-            ? []
-            : ($isAllowList
-                ? ($this->resolvedCategoryIds ??= $resolve())
-                : ($this->resolvedBlockedCategoryIds ??= $resolve()));
-
-        if ($sourceCategoryIds === []) {
+        if ($names === []) {
             $query->whereRaw('1 = 0');
 
             return;
         }
 
-        $query->whereNotNull('series.source_category_id')->whereIn('series.source_category_id', $sourceCategoryIds);
+        $resolve = fn (): array => SourceCategory::where('playlist_id', $this->playlist_id)
+            ->whereIn('name', $names)
+            ->pluck('source_category_id')
+            ->all();
+        $sourceCategoryIds = $isAllowList
+            ? ($this->resolvedCategoryIds ??= $resolve())
+            : ($this->resolvedBlockedCategoryIds ??= $resolve());
+
+        $query->where(function ($query) use ($sourceCategoryIds, $names): void {
+            if ($sourceCategoryIds !== []) {
+                $query->orWhere(fn ($query) => $query->whereNotNull('series.source_category_id')->whereIn('series.source_category_id', $sourceCategoryIds));
+            }
+            // Categories the provider did not supply are matched on the category a series sits in.
+            $query->orWhere(fn ($query) => $query->whereNotNull('series.category_id')->whereIn('series.category_id', $this->customCategoryIds($names)));
+        });
+    }
+
+    /**
+     * The ids of the playlist's custom groups named by name_internal, plus the groups
+     * folded into a merged one, so selecting a merged group selects what it holds.
+     *
+     * @param  array<int, string>  $names
+     */
+    private function customGroupIds(array $names): Builder
+    {
+        $named = fn () => Group::query()->select('id')
+            ->where('playlist_id', $this->playlist_id)
+            ->where('custom', true)
+            ->whereIn('name_internal', $names);
+
+        return Group::query()->select('id')
+            ->where('playlist_id', $this->playlist_id)
+            ->where(fn ($query) => $query->whereIn('id', $named())->orWhereIn('parent_id', $named()));
+    }
+
+    /**
+     * The ids of the playlist's non-provider categories named by name_internal, plus
+     * the categories folded into a merged one.
+     *
+     * @param  array<int, string>  $names
+     */
+    private function customCategoryIds(array $names): Builder
+    {
+        $named = fn () => Category::query()->select('id')
+            ->where('playlist_id', $this->playlist_id)
+            ->nonProvider()
+            ->whereIn('name_internal', $names);
+
+        return Category::query()->select('id')
+            ->where('playlist_id', $this->playlist_id)
+            ->where(fn ($query) => $query->whereIn('id', $named())->orWhereIn('parent_id', $named()));
     }
 
     /**

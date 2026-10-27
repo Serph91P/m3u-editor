@@ -357,12 +357,15 @@ class Bouquet extends Model
         };
 
         if ($this->playlist_id) {
-            $resolve('selected_groups', fn (array $names) => SourceGroup::where('playlist_id', $this->playlist_id)
-                ->where('type', 'live')->whereIn('name', $names)->pluck('name')->all());
-            $resolve('selected_vod_groups', fn (array $names) => SourceGroup::where('playlist_id', $this->playlist_id)
-                ->where('type', 'vod')->whereIn('name', $names)->pluck('name')->all());
-            $resolve('selected_categories', fn (array $names) => SourceCategory::where('playlist_id', $this->playlist_id)
-                ->whereIn('name', $names)->pluck('name')->all());
+            $customNames = fn (string $type, array $names): array => Group::where('playlist_id', $this->playlist_id)
+                ->where('type', $type)->where('custom', true)->whereIn('name_internal', $names)->pluck('name_internal')->all();
+            $resolve('selected_groups', fn (array $names) => array_merge(SourceGroup::where('playlist_id', $this->playlist_id)
+                ->where('type', 'live')->whereIn('name', $names)->pluck('name')->all(), $customNames('live', $names)));
+            $resolve('selected_vod_groups', fn (array $names) => array_merge(SourceGroup::where('playlist_id', $this->playlist_id)
+                ->where('type', 'vod')->whereIn('name', $names)->pluck('name')->all(), $customNames('vod', $names)));
+            $resolve('selected_categories', fn (array $names) => array_merge(SourceCategory::where('playlist_id', $this->playlist_id)
+                ->whereIn('name', $names)->pluck('name')->all(), Category::where('playlist_id', $this->playlist_id)
+                ->nonProvider()->whereIn('name_internal', $names)->pluck('name_internal')->all()));
         } elseif ($this->custom_playlist_id && $this->customPlaylist) {
             $resolve('selected_groups', fn (array $names) => $this->customPlaylist->filterableGroupsQuery(false)
                 ->whereIn('name', $names)->pluck('name')->all());
