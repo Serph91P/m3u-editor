@@ -60,6 +60,14 @@ class Category extends Model
         return $this->belongsTo(User::class);
     }
 
+    /**
+     * Whether the playlist's Category Auto Sort keeps this series category in provider order.
+     */
+    public function isSortOrderLockedToProvider(): bool
+    {
+        return (bool) $this->playlist?->auto_sort_categories;
+    }
+
     public function playlist(): BelongsTo
     {
         return $this->belongsTo(Playlist::class);

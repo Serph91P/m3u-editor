@@ -94,7 +94,6 @@ use Filament\Schemas\Components\Actions;
 use Filament\Schemas\Components\Callout;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Grid;
-use Filament\Schemas\Components\Group as ComponentsGroup;
 use Filament\Schemas\Components\Livewire;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
@@ -3232,46 +3231,50 @@ class PlaylistResource extends Resource implements CopilotResource
                         ->inline(false)
                         ->default(true)
                         ->helperText(__('Automatically assign Group sort number based on playlist order')),
-                    ComponentsGroup::make()
-                        ->columnSpanFull()
-                        ->columns(3)
-                        ->schema([
-                            Toggle::make('disable_catchup')
-                                ->label(__('Disable catch-up'))
-                                ->inline(false)
-                                ->default(false)
-                                ->hintIcon(
-                                    'heroicon-m-question-mark-circle',
-                                    tooltip: __('When enabled, catch-up attributes will be stripped from M3U output and Xtream API responses (tv_archive, tv_archive_duration, has_archive).')
-                                )
-                                ->helperText(__('Strip all catch-up related attributes from the playlist output and Xtream API. Useful when your provider\'s catch-up doesn\'t work or is unreliable.')),
-                            Toggle::make('disable_m3u_xtream_format')
-                                ->label(__('Disable Xtream URL format in M3U output'))
-                                ->inline(false)
-                                ->default(false)
-                                ->hintIcon(
-                                    'heroicon-m-question-mark-circle',
-                                    tooltip: __('When enabled, the provider\'s original stream URL will be used directly in M3U output instead of the internal Xtream-format URL.')
-                                )
-                                ->afterStateHydrated(function (Toggle $component) {
-                                    if (config('app.disable_m3u_xtream_format', false)) {
-                                        $component->state(true);
-                                    }
-                                })
-                                ->dehydrated(fn (): bool => ! config('app.disable_m3u_xtream_format', false))
-                                ->disabled(fn (): bool => config('app.disable_m3u_xtream_format', false))
-                                ->helperText(config('app.disable_m3u_xtream_format', false) ? __('Already set by environment variable!') : __('Output the provider URL directly in M3U instead of routing through the internal Xtream URL format.')),
-                            Toggle::make('output_tvg_type')
-                                ->label(__('Enable TVG Type Output'))
-                                ->inline(false)
-                                ->default(false)
-                                ->hintIcon(
-                                    'heroicon-m-question-mark-circle',
-                                    tooltip: __('This can be used by clients to better categorize channels.')
-                                )
-                                ->helperText(__('When enabled, a <tvg-type> tag will be included in the M3U output based on the channel type (live, vod, series).')),
-
-                        ]),
+                    Toggle::make('auto_sort_categories')
+                        ->label(__('Category Auto Sort'))
+                        ->columnSpan(1)
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __('You will need to re-sync your playlist, or wait for the next scheduled sync, if changing this. This will overwrite any existing series category sort order customization for this playlist.')
+                        )
+                        ->inline(false)
+                        ->default(false)
+                        ->helperText(__('Automatically assign Series Category sort number based on provider order')),
+                    Toggle::make('disable_catchup')
+                        ->label(__('Disable catch-up'))
+                        ->inline(false)
+                        ->default(false)
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __('When enabled, catch-up attributes will be stripped from M3U output and Xtream API responses (tv_archive, tv_archive_duration, has_archive).')
+                        )
+                        ->helperText(__('Strip all catch-up related attributes from the playlist output and Xtream API. Useful when your provider\'s catch-up doesn\'t work or is unreliable.')),
+                    Toggle::make('disable_m3u_xtream_format')
+                        ->label(__('Disable Xtream URL format in M3U output'))
+                        ->inline(false)
+                        ->default(false)
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __('When enabled, the provider\'s original stream URL will be used directly in M3U output instead of the internal Xtream-format URL.')
+                        )
+                        ->afterStateHydrated(function (Toggle $component) {
+                            if (config('app.disable_m3u_xtream_format', false)) {
+                                $component->state(true);
+                            }
+                        })
+                        ->dehydrated(fn (): bool => ! config('app.disable_m3u_xtream_format', false))
+                        ->disabled(fn (): bool => config('app.disable_m3u_xtream_format', false))
+                        ->helperText(config('app.disable_m3u_xtream_format', false) ? __('Already set by environment variable!') : __('Output the provider URL directly in M3U instead of routing through the internal Xtream URL format.')),
+                    Toggle::make('output_tvg_type')
+                        ->label(__('Enable TVG Type Output'))
+                        ->inline(false)
+                        ->default(false)
+                        ->hintIcon(
+                            'heroicon-m-question-mark-circle',
+                            tooltip: __('This can be used by clients to better categorize channels.')
+                        )
+                        ->helperText(__('When enabled, a <tvg-type> tag will be included in the M3U output based on the channel type (live, vod, series).')),
                     Toggle::make('auto_channel_increment')
                         ->label(__('Auto channel number increment'))
                         ->columnSpan(1)

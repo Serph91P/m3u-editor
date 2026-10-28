@@ -1245,9 +1245,16 @@ class ProcessM3uImport implements ShouldQueue
         $this->applyRenamesToEnabledGroupSnapshot($vodRenames, 'vod');
 
         // Setup group sort, if Playlist auto sort is enabled
+        // Xtream groups take their position from the provider's category order; the counter
+        // only numbers groups the provider list does not cover (after the provider range).
         $groupOrder = null;
+        $livePositions = [];
+        $vodPositions = [];
         if ($playlist->auto_sort_groups) {
-            $groupOrder = 1;
+            $liveGroupCount = ($liveGroups ?? collect())->count();
+            $livePositions = $this->providerCategoryPositions($liveGroups ?? collect());
+            $vodPositions = $this->providerCategoryPositions($vodGroups ?? collect(), $liveGroupCount);
+            $groupOrder = $liveGroupCount + ($vodGroups ?? collect())->count() + 1;
         }
         $autoSort = $playlist->auto_sort;
 
@@ -1258,8 +1265,8 @@ class ProcessM3uImport implements ShouldQueue
 
         // Process live streams collection
         if ($liveStreamsEnabled && $liveCollection) {
-            $liveCollection->groupBy('group')->chunk(10)->each(function (LazyCollection $grouped) use ($userId, $playlistId, $batchNo, $preProcessingLive, &$groupOrder, $liveGroupsByName, $autoSort) {
-                $grouped->each(function ($channels, $groupName) use ($userId, $playlistId, $batchNo, $preProcessingLive, &$groupOrder, $liveGroupsByName, $autoSort) {
+            $liveCollection->groupBy('group')->chunk(10)->each(function (LazyCollection $grouped) use ($userId, $playlistId, $batchNo, $preProcessingLive, &$groupOrder, $liveGroupsByName, $autoSort, $livePositions) {
+                $grouped->each(function ($channels, $groupName) use ($userId, $playlistId, $batchNo, $preProcessingLive, &$groupOrder, $liveGroupsByName, $autoSort, $livePositions) {
                     // Add group and associated channels
                     if (! $preProcessingLive) {
                         // For Xtream, try matching by stable source_group_id first so groups
@@ -1295,8 +1302,9 @@ class ProcessM3uImport implements ShouldQueue
                                 'new' => true,
                                 'type' => 'live', // Set group type to live
                             ];
-                            if ($groupOrder !== null) {
-                                $data['sort_order'] = $groupOrder++;
+                            $sortOrder = $this->resolveGroupSortOrder($sourceGroupId, $livePositions, $groupOrder);
+                            if ($sortOrder !== null) {
+                                $data['sort_order'] = $sortOrder;
                             }
                             $group = Group::create($data);
                         } else {
@@ -1317,8 +1325,9 @@ class ProcessM3uImport implements ShouldQueue
                                 $group->restore();
                                 $data['new'] = true; // if restoring, mark as new to trigger any new group logic in downstream processing
                             }
-                            if ($groupOrder !== null) {
-                                $data['sort_order'] = $groupOrder++;
+                            $sortOrder = $this->resolveGroupSortOrder($sourceGroupId, $livePositions, $groupOrder);
+                            if ($sortOrder !== null) {
+                                $data['sort_order'] = $sortOrder;
                             }
                             $group->update($data);
                         }
@@ -1348,8 +1357,8 @@ class ProcessM3uImport implements ShouldQueue
 
         // Process VOD streams collection
         if ($vodStreamsEnabled && $vodCollection) {
-            $vodCollection->groupBy('group')->chunk(10)->each(function (LazyCollection $grouped) use ($userId, $playlistId, $batchNo, $preProcessingVod, &$groupOrder, $vodGroupsByName, $autoSort) {
-                $grouped->each(function ($channels, $groupName) use ($userId, $playlistId, $batchNo, $preProcessingVod, &$groupOrder, $vodGroupsByName, $autoSort) {
+            $vodCollection->groupBy('group')->chunk(10)->each(function (LazyCollection $grouped) use ($userId, $playlistId, $batchNo, $preProcessingVod, &$groupOrder, $vodGroupsByName, $autoSort, $vodPositions) {
+                $grouped->each(function ($channels, $groupName) use ($userId, $playlistId, $batchNo, $preProcessingVod, &$groupOrder, $vodGroupsByName, $autoSort, $vodPositions) {
                     // Add group and associated channels
                     if (! $preProcessingVod) {
                         // For Xtream, try matching by stable source_group_id first so groups
@@ -1385,8 +1394,9 @@ class ProcessM3uImport implements ShouldQueue
                                 'new' => true,
                                 'type' => 'vod', // Set group type to vod
                             ];
-                            if ($groupOrder !== null) {
-                                $data['sort_order'] = $groupOrder++;
+                            $sortOrder = $this->resolveGroupSortOrder($sourceGroupId, $vodPositions, $groupOrder);
+                            if ($sortOrder !== null) {
+                                $data['sort_order'] = $sortOrder;
                             }
                             $group = Group::create($data);
                         } else {
@@ -1407,8 +1417,9 @@ class ProcessM3uImport implements ShouldQueue
                                 $group->restore();
                                 $data['new'] = true; // if restoring, mark as new to trigger any new group logic in downstream processing
                             }
-                            if ($groupOrder !== null) {
-                                $data['sort_order'] = $groupOrder++;
+                            $sortOrder = $this->resolveGroupSortOrder($sourceGroupId, $vodPositions, $groupOrder);
+                            if ($sortOrder !== null) {
+                                $data['sort_order'] = $sortOrder;
                             }
                             $group->update($data);
                         }
@@ -1436,6 +1447,10 @@ class ProcessM3uImport implements ShouldQueue
             // Source categories first, so renames reach the selections before they are checked below
             $this->syncSourceCategories($seriesCategories, $playlist);
 
+            $seriesPositions = $playlist->auto_sort_categories
+                ? $this->providerCategoryPositions($seriesCategories)
+                : [];
+
             foreach ($seriesCategories as $category) {
                 // Only create category if not preprocessing, or if the category is selected
                 if (! $this->preprocess || $this->shouldIncludeSeries($category['category_name'] ?? '')) {
@@ -1443,6 +1458,7 @@ class ProcessM3uImport implements ShouldQueue
                         'playlist_id' => $playlist->id,
                         'source_category_id' => $category['category_id'],
                     ])->first();
+                    $sortOrder = $seriesPositions[(string) $category['category_id']] ?? null;
                     if (! $cat) {
                         $cat = Category::create([
                             'playlist_id' => $playlist->id,
@@ -1451,11 +1467,13 @@ class ProcessM3uImport implements ShouldQueue
                             'source_category_id' => $category['category_id'],
                             'user_id' => $playlist->user_id,
                             'import_batch_no' => $batchNo,
+                            ...($sortOrder !== null ? ['sort_order' => $sortOrder] : []),
                         ]);
                     } else {
                         $cat->update([
                             'name_internal' => $category['category_name'],
                             'import_batch_no' => $batchNo,
+                            ...($sortOrder !== null ? ['sort_order' => $sortOrder] : []),
                         ]);
                     }
                 }
@@ -2061,6 +2079,48 @@ class ProcessM3uImport implements ShouldQueue
         }
 
         return $rows;
+    }
+
+    /**
+     * Map each provider category_id to its 1-based position in the provider's category list.
+     *
+     * @param  Collection<int, array<string, mixed>>  $categories  Provider categories, in provider order.
+     * @param  int  $offset  Added to every position (VOD groups follow the live range).
+     * @return array<string, int>
+     */
+    private function providerCategoryPositions(Collection $categories, int $offset = 0): array
+    {
+        $positions = [];
+        foreach ($categories->values() as $index => $category) {
+            $categoryId = $category['category_id'] ?? null;
+            if ($categoryId !== null) {
+                $positions[(string) $categoryId] = $offset + $index + 1;
+            }
+        }
+
+        return $positions;
+    }
+
+    /**
+     * Resolve a group's sort_order when Group Auto Sort is enabled.
+     *
+     * Groups the provider lists keep the provider's category position. Any other group
+     * (e.g. no stable category id) takes the next counter value after the provider range.
+     *
+     * @param  array<string, int>  $positions  Result of providerCategoryPositions().
+     * @param  int|null  $groupOrder  Fallback counter; null when Group Auto Sort is off.
+     */
+    private function resolveGroupSortOrder(mixed $sourceGroupId, array $positions, ?int &$groupOrder): ?int
+    {
+        if ($groupOrder === null) {
+            return null;
+        }
+
+        if ($sourceGroupId !== null && isset($positions[(string) $sourceGroupId])) {
+            return $positions[(string) $sourceGroupId];
+        }
+
+        return $groupOrder++;
     }
 
     /**

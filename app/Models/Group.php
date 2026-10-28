@@ -51,6 +51,20 @@ class Group extends Model
         return $this->belongsTo(User::class);
     }
 
+    /**
+     * Whether the playlist's auto sort keeps this group in provider order. Xtream imports
+     * follow Group Auto Sort; plain M3U imports number groups from Channel Auto Sort.
+     * Custom groups are never touched by the import, so they stay freely sortable.
+     */
+    public function isSortOrderLockedToProvider(): bool
+    {
+        if ($this->custom || ! $this->playlist) {
+            return false;
+        }
+
+        return (bool) ($this->playlist->xtream ? $this->playlist->auto_sort_groups : $this->playlist->auto_sort);
+    }
+
     public function playlist(): BelongsTo
     {
         return $this->belongsTo(Playlist::class);
