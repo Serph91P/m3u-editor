@@ -194,16 +194,18 @@ class Series extends Model
     }
 
     /**
-     * Provider-sourced series in a category that is still on the provider, but which this sync's
-     * category listing did not return (the series was removed, or re-added under a new series_id).
-     * Locally created series (DVR recordings, rows without a provider id) are never included.
+     * Provider-sourced series that no category listing returned this sync (the series was
+     * removed, or re-added under a new series_id). Every listed series is stamped with the
+     * batch by its provider category id, wherever it sits now, so this also covers series
+     * moved into a genre or custom category. Locally created series (DVR recordings, rows
+     * without a provider series or category id) are never included.
      */
     public function scopeNoLongerListed(Builder $query, string $batchNo): Builder
     {
         return $query->whereNotNull('source_series_id')
+            ->whereNotNull('source_category_id')
             ->where('import_batch_no', '!=', $batchNo)
-            ->where('import_batch_no', '!=', 'dvr')
-            ->whereHas('category', fn (Builder $category) => $category->where('import_batch_no', $batchNo));
+            ->where('import_batch_no', '!=', 'dvr');
     }
 
     /**

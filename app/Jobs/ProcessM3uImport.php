@@ -32,6 +32,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Enumerable;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -1442,6 +1443,14 @@ class ProcessM3uImport implements ShouldQueue
             });
         }
 
+        // The batch the provider categories carry before this sync stamps them: the previous
+        // series sync's. ProcessM3uImportComplete only counts series that sync still listed
+        // toward the removed-series threshold.
+        $previousSeriesBatchNo = Category::where('playlist_id', $playlist->id)
+            ->whereNotNull('source_category_id')
+            ->where('import_batch_no', '!=', $batchNo)
+            ->max('import_batch_no');
+
         // Create the series categories (needed for pre-processing)
         if ($seriesCategories && $seriesCategories->count() > 0) {
             // Source categories first, so renames reach the selections before they are checked below
@@ -1603,6 +1612,7 @@ class ProcessM3uImport implements ShouldQueue
             // (0) so the UI does not show a completed phase that never ran.
             runningSeriesImport: $seriesCategoryCount > 0,
             syncRunId: $this->syncRunId,
+            previousSeriesBatchNo: $previousSeriesBatchNo,
         );
 
         // Start the chain!
@@ -1934,62 +1944,226 @@ class ProcessM3uImport implements ShouldQueue
      * Assign source_id via collision-relative hashing.
      *
      * M3U channels carry a raw `source_key` (title + name + group). A key that occurs only
-     * once keeps the base md5 hash, unchanged from before (backwards-compatible). For a key
-     * that collides (several entries share the same title/name/group), each entry's own
-     * tvg-id - when the feed provides one - is folded into the hash instead of the entry's
-     * position in the file: a feed-order-only change (the entries simply get reordered on
-     * reimport) must not swap which existing channel row a duplicate-named entry's URL/config
-     * lands on, and position is the only thing that changes when that happens. Entries with
-     * no tvg-id of their own fall back to the previous :dup:N encounter-order numbering,
-     * since there is no better signal available for them. Because the key includes the group,
+     * once gets the base md5 hash. For a key that collides (several entries share the same
+     * title/name/group), each entry's own tvg-id - when the feed provides one - is folded into
+     * the hash instead of the entry's position in the file, so a reorder-only reimport can't
+     * swap which row a duplicate-named entry's URL/config lands on. Entries with no tvg-id
+     * fall back to the :dup:N encounter-order numbering. Because the key includes the group,
      * duplicates can only occur within one group, so this only needs to span the group being
      * chunked. Channels without a `source_key` (Xtream) pass through with their existing
      * source_id.
+     *
+     * Those hashes are only used for entries that don't already own a row: when the existing
+     * rows of a key are given, each entry keeps the row it was imported into (see
+     * matchExistingSourceIds()). Otherwise rows hashed by an older scheme, or by this one
+     * before a duplicate appeared or disappeared, would be replaced by new rows and lose
+     * their enabled state, EPG mapping, numbers and custom playlist membership.
+     *
+     * @param  iterable<array{source_key: string, source_id: string, stream_id: ?string, url: ?string, is_vod: bool}>  $existingRows
      */
-    public static function assignCollisionSourceIds(Enumerable $channels): Enumerable
+    public static function assignCollisionSourceIds(Enumerable $channels, iterable $existingRows = []): Enumerable
     {
         $items = $channels->all();
 
-        $occurrences = [];
-        foreach ($items as $item) {
-            if (! empty($item['source_key'])) {
-                $occurrences[$item['source_key']] = ($occurrences[$item['source_key']] ?? 0) + 1;
+        $families = [];
+        foreach ($items as $index => $item) {
+            $sourceKey = (string) ($item['source_key'] ?? '');
+            if ($sourceKey !== '') {
+                $families[$sourceKey][] = $index;
             }
         }
 
-        $ordinalSeen = [];
-        $stableSeen = [];
+        $rowsByFamily = [];
+        foreach ($existingRows as $row) {
+            if (isset($families[$row['source_key']])) {
+                $rowsByFamily[$row['source_key']][] = $row;
+            }
+        }
 
-        foreach ($items as $index => $item) {
-            $sourceKey = $item['source_key'] ?? null;
+        foreach ($families as $sourceKey => $indexes) {
+            $entries = array_map(fn (int|string $index): array => $items[$index], $indexes);
+            $sourceIds = self::freshCollisionSourceIds((string) $sourceKey, $entries);
 
-            if (! empty($sourceKey)) {
-                if (($occurrences[$sourceKey] ?? 0) <= 1) {
-                    $items[$index]['source_id'] = md5($sourceKey);
-                } else {
-                    $stableId = $item['stream_id'] ?? null;
-
-                    if (! empty($stableId)) {
-                        $compositeKey = $sourceKey.'|sid:'.$stableId;
-                        $count = $stableSeen[$compositeKey] ?? 0;
-                        $items[$index]['source_id'] = $count === 0
-                            ? md5($compositeKey)
-                            : md5($compositeKey.':dup:'.$count);
-                        $stableSeen[$compositeKey] = $count + 1;
-                    } else {
-                        $count = $ordinalSeen[$sourceKey] ?? 0;
-                        $items[$index]['source_id'] = $count === 0
-                            ? md5($sourceKey)
-                            : md5($sourceKey.':dup:'.$count);
-                        $ordinalSeen[$sourceKey] = $count + 1;
-                    }
-                }
+            $rows = $rowsByFamily[$sourceKey] ?? [];
+            $alreadyOwned = count($entries) === 1 && count($rows) === 1 && $rows[0]['source_id'] === $sourceIds[0];
+            if ($rows !== [] && ! $alreadyOwned) {
+                $sourceIds = self::matchExistingSourceIds((string) $sourceKey, $entries, $sourceIds, $rows);
             }
 
+            foreach ($indexes as $position => $index) {
+                $items[$index]['source_id'] = $sourceIds[$position];
+            }
+        }
+
+        foreach (array_keys($items) as $index) {
             unset($items[$index]['source_key']);
         }
 
         return collect($items);
+    }
+
+    /**
+     * The hashes a key's entries get when none of them owns a row yet (see
+     * assignCollisionSourceIds()), in entry order.
+     *
+     * @param  list<array<string, mixed>>  $entries
+     * @return list<string>
+     */
+    private static function freshCollisionSourceIds(string $sourceKey, array $entries): array
+    {
+        if (count($entries) === 1) {
+            return [md5($sourceKey)];
+        }
+
+        $sourceIds = [];
+        $ordinal = 0;
+        $stableSeen = [];
+        foreach ($entries as $entry) {
+            $tvgId = (string) ($entry['stream_id'] ?? '');
+
+            if ($tvgId !== '') {
+                $compositeKey = $sourceKey.'|sid:'.$tvgId;
+                $count = $stableSeen[$compositeKey] ?? 0;
+                $sourceIds[] = $count === 0 ? md5($compositeKey) : md5($compositeKey.':dup:'.$count);
+                $stableSeen[$compositeKey] = $count + 1;
+            } else {
+                $sourceIds[] = $ordinal === 0 ? md5($sourceKey) : md5($sourceKey.':dup:'.$ordinal);
+                $ordinal++;
+            }
+        }
+
+        return $sourceIds;
+    }
+
+    /**
+     * Give each entry of a key the source_id of the existing row it was imported into, so
+     * it keeps that row whatever hashing scheme created it. Rows are matched on the same
+     * tvg-id and URL, then the same tvg-id, then the same URL, then the hash the entry would
+     * get anyway, then in order where the tvg-ids don't say they differ. Entries left over
+     * are new and take their fresh hash, moved past any id already in use.
+     *
+     * @param  list<array<string, mixed>>  $entries
+     * @param  list<string>  $freshIds  freshCollisionSourceIds() for $entries
+     * @param  list<array{source_id: string, stream_id: ?string, url: ?string, is_vod: bool}>  $rows
+     * @return list<string>
+     */
+    private static function matchExistingSourceIds(string $sourceKey, array $entries, array $freshIds, array $rows): array
+    {
+        $tvgId = fn (array $value): string => (string) ($value['stream_id'] ?? '');
+        $url = fn (array $value): string => (string) ($value['url'] ?? '');
+        $isVod = fn (array $value): bool => (bool) ($value['is_vod'] ?? false);
+        $typedSourceId = fn (string $sourceId, array $value): string => $sourceId.'|'.(int) $isVod($value);
+
+        $passes = [
+            fn (array $entry, array $row, int $position): bool => $tvgId($entry) !== '' && $tvgId($entry) === $tvgId($row) && $url($entry) === $url($row),
+            fn (array $entry, array $row, int $position): bool => $tvgId($entry) !== '' && $tvgId($entry) === $tvgId($row),
+            fn (array $entry, array $row, int $position): bool => $url($entry) !== '' && $url($entry) === $url($row),
+            fn (array $entry, array $row, int $position): bool => $row['source_id'] === $freshIds[$position],
+            fn (array $entry, array $row, int $position): bool => $tvgId($entry) === '' || $tvgId($row) === '' || $tvgId($entry) === $tvgId($row),
+        ];
+
+        $sourceIds = array_fill(0, count($entries), null);
+        foreach ($passes as $matches) {
+            foreach ($entries as $position => $entry) {
+                if ($sourceIds[$position] !== null) {
+                    continue;
+                }
+                foreach ($rows as $rowKey => $row) {
+                    if ($isVod($entry) === $isVod($row) && $matches($entry, $row, $position)) {
+                        $sourceIds[$position] = $row['source_id'];
+                        unset($rows[$rowKey]);
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Unmatched rows belong to entries the provider dropped; new entries must not take them over
+        $taken = [];
+        foreach ($entries as $position => $entry) {
+            if ($sourceIds[$position] !== null) {
+                $taken[$typedSourceId($sourceIds[$position], $entry)] = true;
+            }
+        }
+        foreach ($rows as $row) {
+            $taken[$typedSourceId($row['source_id'], $row)] = true;
+        }
+
+        foreach ($entries as $position => $entry) {
+            if ($sourceIds[$position] !== null) {
+                continue;
+            }
+            $sourceId = $freshIds[$position];
+            for ($n = 1; isset($taken[$typedSourceId($sourceId, $entry)]); $n++) {
+                $sourceId = md5($sourceKey.':dup:'.$n);
+            }
+            $sourceIds[$position] = $sourceId;
+            $taken[$typedSourceId($sourceId, $entry)] = true;
+        }
+
+        return $sourceIds;
+    }
+
+    /**
+     * The imported channels the entries of one M3U group may already own, for
+     * assignCollisionSourceIds(): every channel in the group, plus channels of a
+     * duplicate name the user moved out to another group (found by the ids that name
+     * can hash to). Each carries the source_key the import builds (title + name + group).
+     *
+     * @return list<array{source_key: string, source_id: string, stream_id: ?string, url: ?string, is_vod: bool}>
+     */
+    private static function existingCollisionRows(int $playlistId, int $groupId, string $groupName, Enumerable $channels): array
+    {
+        $counts = $channels->pluck('source_key')->filter(fn ($sourceKey): bool => (string) $sourceKey !== '')->countBy()->all();
+
+        $candidateIds = [];
+        foreach ($counts as $sourceKey => $count) {
+            if ($count < 2) {
+                continue;
+            }
+            $candidateIds[md5((string) $sourceKey)] = true;
+            for ($n = 1; $n <= $count + 5; $n++) {
+                $candidateIds[md5($sourceKey.':dup:'.$n)] = true;
+            }
+        }
+        foreach ($channels as $channel) {
+            $sourceKey = (string) ($channel['source_key'] ?? '');
+            $tvgId = (string) ($channel['stream_id'] ?? '');
+            if ($tvgId === '' || ($counts[$sourceKey] ?? 0) < 2) {
+                continue;
+            }
+            $candidateIds[md5($sourceKey.'|sid:'.$tvgId)] = true;
+            $candidateIds[md5($sourceKey.'|sid:'.$tvgId.':dup:1')] = true;
+        }
+
+        $query = fn () => DB::table('channels')
+            ->where('playlist_id', $playlistId)
+            ->where('is_custom', false)
+            ->whereNotNull('source_id')
+            ->select(['source_id', 'title', 'name', 'stream_id', 'url', 'is_vod']);
+
+        $rows = [];
+        $collect = function (object $row) use (&$rows, $groupName): void {
+            $rows[$row->source_id.'|'.(int) (bool) $row->is_vod] = [
+                'source_key' => $row->title.$row->name.$groupName,
+                'source_id' => $row->source_id,
+                'stream_id' => $row->stream_id,
+                'url' => $row->url,
+                'is_vod' => (bool) $row->is_vod,
+            ];
+        };
+
+        foreach ($query()->where('group_id', $groupId)->cursor() as $row) {
+            $collect($row);
+        }
+        foreach (array_chunk(array_keys($candidateIds), 1000) as $ids) {
+            foreach ($query()->whereIn('source_id', $ids)->get() as $row) {
+                $collect($row);
+            }
+        }
+
+        return array_values($rows);
     }
 
     /**
@@ -2208,8 +2382,12 @@ class ProcessM3uImport implements ShouldQueue
                         $group->update($data);
                     }
                     // Hash before chunking so duplicate counters span the whole group,
-                    // not just a single 50-item Job payload.
-                    $channels = self::assignCollisionSourceIds($channels);
+                    // not just a single 50-item Job payload. The group's existing rows let
+                    // duplicate-named entries keep the rows they were imported into.
+                    $channels = self::assignCollisionSourceIds(
+                        $channels,
+                        self::existingCollisionRows($playlistId, $group->id, (string) $groupName, $channels),
+                    );
                     $channels->chunk(50)->each(function ($chunk) use ($playlistId, $batchNo, $group, $autoSort) {
                         Job::create([
                             'title' => "Processing channel import for group: {$group->name}",

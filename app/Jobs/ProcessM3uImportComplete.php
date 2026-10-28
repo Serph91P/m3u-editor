@@ -73,6 +73,8 @@ class ProcessM3uImportComplete implements ShouldQueue
         public bool $runningVodImport = true, // Default to true for VOD imports
         public ?int $syncRunId = null,
         bool $runningSeriesImport = false,
+        // The previous series sync's batch number (see ProcessM3uImport), null when unknown
+        public ?string $previousSeriesBatchNo = null,
     ) {
         $this->runningSeriesImport = $runningSeriesImport;
 
@@ -175,6 +177,7 @@ class ProcessM3uImportComplete implements ShouldQueue
         // A series goes when its whole category does (stale category batch) or when its category no longer lists it.
         $newSeries = null;
         $removedSeries = null;
+        $thresholdRemovedSeries = null;
         $newCategories = null;
         $removedCategories = null;
         if ($this->runningSeriesImport) {
@@ -189,12 +192,25 @@ class ProcessM3uImportComplete implements ShouldQueue
             // is one created since this sync began, like a category.
             $newSeries = Series::where('playlist_id', $playlist->id)
                 ->where('created_at', '>=', $this->start->copy()->startOfSecond());
+            $inRemovedCategory = fn ($q) => $q->whereHas('category', function ($category) use ($playlist) {
+                $category->where('playlist_id', $playlist->id)
+                    ->where('import_batch_no', '!=', $this->batchNo);
+            });
             $removedSeries = Series::where('playlist_id', $playlist->id)
-                ->where(function ($q) use ($playlist) {
-                    $q->whereHas('category', function ($category) use ($playlist) {
-                        $category->where('playlist_id', $playlist->id)
-                            ->where('import_batch_no', '!=', $this->batchNo);
-                    })->orWhere(fn ($unlisted) => $unlisted->noLongerListed($this->batchNo));
+                ->where(fn ($q) => $inRemovedCategory($q)->orWhere(fn ($unlisted) => $unlisted->noLongerListed($this->batchNo)));
+
+            // The series threshold guards against a provider blip dropping what the previous
+            // series sync still listed, so it only counts those (and removed categories). Series
+            // no listing has returned for longer, such as duplicates left from before series were
+            // removed one by one, are still removed but would otherwise trip it on every sync.
+            $thresholdRemovedSeries = Series::where('playlist_id', $playlist->id)
+                ->where(function ($q) use ($inRemovedCategory) {
+                    $inRemovedCategory($q);
+
+                    if ($this->previousSeriesBatchNo !== null) {
+                        $q->orWhere(fn ($unlisted) => $unlisted->noLongerListed($this->batchNo)
+                            ->where('import_batch_no', $this->previousSeriesBatchNo));
+                    }
                 });
         }
 
@@ -269,9 +285,10 @@ class ProcessM3uImportComplete implements ShouldQueue
 
                 // Series threshold. Only counted when series import ran this sync: otherwise no category
                 // carries the current batch and every series would look removed (seriesCleanup skips them too).
-                if ($removedSeriesCount > $this->invalidateImportSeriesThreshold) {
+                $thresholdRemovedSeriesCount = $thresholdRemovedSeries?->count() ?? 0;
+                if ($thresholdRemovedSeriesCount > $this->invalidateImportSeriesThreshold) {
                     $this->cancelImport(
-                        "{$removedSeriesCount} series would have been removed, which exceeds the threshold of {$this->invalidateImportSeriesThreshold}.",
+                        "{$thresholdRemovedSeriesCount} series would have been removed, which exceeds the threshold of {$this->invalidateImportSeriesThreshold}.",
                         $user, $playlist, $syncLogsDisabled, $syncStats, $logQueries,
                     );
 

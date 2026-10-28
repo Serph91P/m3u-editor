@@ -886,12 +886,13 @@ class Channel extends Model
                 $movieData = $xtream->getVodInfo($this->source_id, timeout: 60);
 
                 // XtreamService::call() swallows HTTP/transport failures and returns
-                // null (surfaced here as an empty array) rather than throwing, so an
-                // entirely failed provider request looks identical to "the provider
-                // has nothing to say about this VOD" unless we check for it explicitly.
-                // Without this, a failed fetch would still persist last_metadata_fetch
-                // and report success, hiding the failure from the caller.
-                if (empty($movieData['info'] ?? null)) {
+                // null (surfaced here as an empty array) rather than throwing, so a
+                // failed provider request must be checked for explicitly. Without this,
+                // a failed fetch would still persist last_metadata_fetch and report
+                // success, hiding the failure from the caller. A real answer without
+                // extended info ("info": [], common on XUI panels) still carries
+                // movie_data, so it is kept and the TMDB lookup below can fill the gaps.
+                if (empty($movieData['info'] ?? null) && empty($movieData['movie_data'] ?? null)) {
                     Log::warning("VOD metadata fetch returned no data for channel {$this->id} (source_id: {$this->source_id})");
 
                     return false;

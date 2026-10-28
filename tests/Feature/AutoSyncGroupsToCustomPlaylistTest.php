@@ -174,6 +174,15 @@ it('removes a rule-managed channel once it moves to a different, active, unselec
         'name' => 'News',
     ]);
 
+    // This rule is the playlist's only one into the custom playlist, so every tracked row is its own.
+    $this->playlist->updateQuietly(['auto_sync_to_custom_config' => [[
+        'enabled' => true,
+        'type' => 'live_groups',
+        'groups' => [$this->group->id],
+        'custom_playlist_id' => $this->customPlaylist->id,
+        'sync_mode' => 'full_sync',
+    ]]]);
+
     // Synced into the custom playlist by this rule while still in the selected group.
     $movedChannel = Channel::factory()->create([
         'user_id' => $this->user->id,
@@ -241,6 +250,77 @@ it('does not detach a manually attached groupless custom channel the rule never 
 
     expect($this->customPlaylist->channels()->where('channels.id', $activeChannel->id)->exists())->toBeTrue();
     expect($this->customPlaylist->channels()->where('channels.id', $manualChannel->id)->exists())->toBeTrue();
+});
+
+/**
+ * Run one rule's job the way a sync does, with the rules stored on the source playlist.
+ *
+ * @param  array<int>  $groupIds
+ */
+function runAutoSyncRule($test, array $groupIds, array $channelNamePatterns = []): void
+{
+    (new AutoSyncGroupsToCustomPlaylist(
+        userId: $test->user->id,
+        playlistId: $test->playlist->id,
+        groupIds: $groupIds,
+        customPlaylistId: $test->customPlaylist->id,
+        data: ['mode' => 'original'],
+        type: 'channel',
+        syncMode: 'full_sync',
+        channelNamePatterns: $channelNamePatterns,
+    ))->handle();
+}
+
+it('keeps the channels a sibling rule added to the same custom playlist', function () {
+    $news = Group::factory()->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id, 'type' => 'live', 'name' => 'News']);
+    $sportsChannel = Channel::factory()->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id, 'group_id' => $this->group->id]);
+    $newsChannel = Channel::factory()->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id, 'group_id' => $news->id]);
+    $rule = fn (array $groups, array $extra = []) => array_merge([
+        'enabled' => true,
+        'type' => 'live_groups',
+        'groups' => $groups,
+        'custom_playlist_id' => $this->customPlaylist->id,
+        'sync_mode' => 'full_sync',
+    ], $extra);
+    $this->playlist->updateQuietly(['auto_sync_to_custom_config' => [$rule([$this->group->id]), $rule([$news->id])]]);
+
+    // One pipeline run chains the rules in config order, run again to cover both orders
+    runAutoSyncRule($this, [$this->group->id]);
+    runAutoSyncRule($this, [$news->id]);
+    runAutoSyncRule($this, [$this->group->id]);
+
+    expect($this->customPlaylist->channels()->pluck('channels.id')->all())->toContain($sportsChannel->id, $newsChannel->id);
+
+    // A filtered rule drops its own unmatched channel but never the sibling's
+    $this->playlist->updateQuietly(['auto_sync_to_custom_config' => [
+        $rule([$this->group->id]),
+        $rule([$news->id], ['channel_name_patterns' => ['^Never$']]),
+    ]]);
+    runAutoSyncRule($this, [$news->id], ['^Never$']);
+
+    $synced = $this->customPlaylist->channels()->pluck('channels.id')->all();
+    expect($synced)->toContain($sportsChannel->id)
+        ->and($synced)->not->toContain($newsChannel->id);
+});
+
+it('keeps what a "New Groups Only" rule added in earlier runs', function () {
+    $earlier = Channel::factory()->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id, 'group_id' => $this->group->id]);
+    $newGroup = Group::factory()->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id, 'type' => 'live', 'name' => 'Brand New']);
+    $added = Channel::factory()->create(['user_id' => $this->user->id, 'playlist_id' => $this->playlist->id, 'group_id' => $newGroup->id]);
+    $this->playlist->updateQuietly(['auto_sync_to_custom_config' => [[
+        'enabled' => true,
+        'type' => 'live_groups',
+        'group_filter' => 'new_only',
+        'groups' => [],
+        'custom_playlist_id' => $this->customPlaylist->id,
+        'sync_mode' => 'full_sync',
+    ]]]);
+
+    // Earlier run: $this->group was new then. This run: only $newGroup is new.
+    runAutoSyncRule($this, [$this->group->id]);
+    runAutoSyncRule($this, [$newGroup->id]);
+
+    expect($this->customPlaylist->channels()->pluck('channels.id')->all())->toContain($earlier->id, $added->id);
 });
 
 it('does not remove channels from other groups in full_sync mode', function () {

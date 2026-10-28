@@ -266,6 +266,20 @@ describe('custom groups', function () {
         expect(deliveredIds($alias))->toBe([$this->sports->id, $this->news->id, $noGroup->id]);
     });
 
+    it('does not widen a provider pick to a custom group of the same name', function () {
+        SourceGroup::create(['playlist_id' => $this->playlist->id, 'name' => 'UK: SPORTS', 'type' => 'live']);
+        $sameName = modesGroup($this->user, $this->playlist, 'UK: SPORTS', custom: true);
+        $sameName->update(['name_internal' => 'UK: SPORTS']);
+        modesChannel($this->user, $this->playlist, 'UK: ENTERTAINMENT', $sameName);
+        $alias = modesAlias($this->user, [
+            'playlist_id' => $this->playlist->id,
+            'group_filter' => ['selected_groups' => ['UK: SPORTS']],
+        ]);
+
+        expect(deliveredIds($alias))->toBe([$this->sports->id])
+            ->and(SourceGroupModalSelect::customGroupOptions($this->playlist->id, 'live'))->not->toHaveKey('UK: SPORTS');
+    });
+
     it('does not treat a deleted custom group as resolvable', function () {
         $curated = modesGroup($this->user, $this->playlist, 'Gone', custom: true);
         $curated->update(['name_internal' => 'Gone']);

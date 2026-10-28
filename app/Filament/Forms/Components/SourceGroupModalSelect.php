@@ -44,7 +44,8 @@ class SourceGroupModalSelect
      * The playlist's own groups (or, for $type 'categories', categories the provider did
      * not supply), keyed by name_internal with the display name and a "(custom)" marker as
      * the label, so one can't be mistaken for a provider group of the same name. The
-     * display name can be renamed, name_internal is the stable key.
+     * display name can be renamed, name_internal is the stable key. One whose name_internal
+     * matches a provider group or category is left out: it shares the provider pick's key.
      *
      * @return array<string, string>
      */
@@ -52,7 +53,7 @@ class SourceGroupModalSelect
     {
         $query = $type === 'categories'
             ? Category::query()->nonProvider()
-            : Group::query()->where('type', $type)->where('custom', true);
+            : Group::query()->where('type', $type)->where('custom', true)->nonProvider();
 
         return $query
             ->where('playlist_id', $playlistId)

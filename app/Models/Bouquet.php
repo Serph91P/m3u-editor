@@ -358,7 +358,7 @@ class Bouquet extends Model
 
         if ($this->playlist_id) {
             $customNames = fn (string $type, array $names): array => Group::where('playlist_id', $this->playlist_id)
-                ->where('type', $type)->where('custom', true)->whereIn('name_internal', $names)->pluck('name_internal')->all();
+                ->where('type', $type)->where('custom', true)->nonProvider()->whereIn('name_internal', $names)->pluck('name_internal')->all();
             $resolve('selected_groups', fn (array $names) => array_merge(SourceGroup::where('playlist_id', $this->playlist_id)
                 ->where('type', 'live')->whereIn('name', $names)->pluck('name')->all(), $customNames('live', $names)));
             $resolve('selected_vod_groups', fn (array $names) => array_merge(SourceGroup::where('playlist_id', $this->playlist_id)

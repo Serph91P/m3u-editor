@@ -131,13 +131,17 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
             });
         }
 
-        // Full sync: delete pivot rows this rule previously added (tracked via
+        // Full sync: delete pivot rows the source playlist's rules added (tracked via
         // auto_synced_playlist_id, set above) whose item is no longer in one of this
         // rule's active source groups. Using provenance instead of the item's current
         // group means a manually attached item is never swept up here regardless of
-        // its group, and an item this rule added is still removed after it moves to a
-        // different, active, non-selected group - group membership alone can't tell
-        // those two cases apart (issue #1695).
+        // its group (issue #1695).
+        //
+        // Provenance records the source playlist, not the rule, so a rule only treats
+        // every tracked row as its own when it is the source playlist's only rule into
+        // this custom playlist: then an item it added is also removed after moving to a
+        // different, active, non-selected group (issue #1695). With sibling rules, rows
+        // outside this rule's own selected groups belong to them and are left alone.
         // Done entirely in the database — no PHP-level ID collection or diff needed.
         if ($this->syncMode === 'full_sync') {
             $itemTable = $isSeries ? 'series' : 'channels';
@@ -151,12 +155,23 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
                 ? Category::whereIn('id', $this->groupIds)->pluck('id')->all()
                 : Group::whereIn('id', $this->groupIds)->pluck('id')->all();
 
+            ['ownsAllTrackedRows' => $ownsAllTrackedRows, 'siblingGroupIds' => $siblingGroupIds] = $this->siblingRuleScope($isSeries);
+
             if ($hasChannelFilter) {
-                $this->removeStaleFilteredChannels($pivotTable, $pivotForeignKey, $pivotRelatedKey, $activeGroupIds, $pickedChannelIds, $compiledPatterns);
+                $this->removeStaleFilteredChannels($pivotTable, $pivotForeignKey, $pivotRelatedKey, $activeGroupIds, $pickedChannelIds, $compiledPatterns, $ownsAllTrackedRows, $siblingGroupIds);
             } else {
                 DB::table($pivotTable)
                     ->where($pivotForeignKey, $this->customPlaylistId)
                     ->where('auto_synced_playlist_id', $this->playlistId)
+                    ->when(! $ownsAllTrackedRows, function ($query) use ($pivotRelatedKey, $itemTable, $groupColumn): void {
+                        // Only items in this rule's own selected groups (soft-deleted ones
+                        // included) or with no group left; anything else a sibling rule added.
+                        $query->whereIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn): void {
+                            $query->select('id')
+                                ->from($itemTable)
+                                ->where(fn ($query) => $query->whereIn($groupColumn, $this->groupIds)->orWhereNull($groupColumn));
+                        });
+                    })
                     ->whereNotIn($pivotRelatedKey, function ($query) use ($itemTable, $groupColumn, $activeGroupIds): void {
                         // Items currently present in active (non-deleted) source groups only.
                         // Using $activeGroupIds (not $this->groupIds) ensures channels whose
@@ -233,6 +248,8 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
      * @param  array<int>  $activeGroupIds
      * @param  array<int, int>  $pickedChannelIds  Picked channel IDs as array keys
      * @param  array<string>  $compiledPatterns
+     * @param  bool  $ownsAllTrackedRows  See siblingRuleScope()
+     * @param  array<int>  $siblingGroupIds  Groups other rules into this custom playlist also sync
      */
     private function removeStaleFilteredChannels(
         string $pivotTable,
@@ -241,13 +258,17 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
         array $activeGroupIds,
         array $pickedChannelIds,
         array $compiledPatterns,
+        bool $ownsAllTrackedRows,
+        array $siblingGroupIds,
     ): void {
         $activeGroupLookup = array_flip($activeGroupIds);
+        $selectedGroupLookup = array_flip($this->groupIds);
+        $siblingGroupLookup = array_flip($siblingGroupIds);
 
         DB::table($pivotTable)
             ->where($pivotForeignKey, $this->customPlaylistId)
             ->where('auto_synced_playlist_id', $this->playlistId)
-            ->chunkById(1000, function ($rows) use ($pivotTable, $pivotForeignKey, $pivotRelatedKey, $activeGroupLookup, $pickedChannelIds, $compiledPatterns): void {
+            ->chunkById(1000, function ($rows) use ($pivotTable, $pivotForeignKey, $pivotRelatedKey, $activeGroupLookup, $selectedGroupLookup, $siblingGroupLookup, $ownsAllTrackedRows, $pickedChannelIds, $compiledPatterns): void {
                 $channelIds = $rows->pluck($pivotRelatedKey)->all();
 
                 $channels = DB::table('channels')
@@ -255,11 +276,25 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
                     ->get(['id', 'group_id', 'title', 'title_custom', 'name', 'name_custom'])
                     ->keyBy('id');
 
-                $staleIds = array_values(array_filter($channelIds, function ($channelId) use ($channels, $activeGroupLookup, $pickedChannelIds, $compiledPatterns): bool {
+                $staleIds = array_values(array_filter($channelIds, function ($channelId) use ($channels, $activeGroupLookup, $selectedGroupLookup, $siblingGroupLookup, $ownsAllTrackedRows, $pickedChannelIds, $compiledPatterns): bool {
                     $channel = $channels->get($channelId);
 
-                    if (! $channel || ! isset($activeGroupLookup[$channel->group_id])) {
+                    if (! $channel) {
                         return true;
+                    }
+
+                    // Outside this rule's own groups: a sibling rule added it
+                    if (! $ownsAllTrackedRows && $channel->group_id !== null && ! isset($selectedGroupLookup[$channel->group_id])) {
+                        return false;
+                    }
+
+                    if (! isset($activeGroupLookup[$channel->group_id])) {
+                        return true;
+                    }
+
+                    // A sibling rule syncing the same group may have added it without this filter
+                    if (isset($siblingGroupLookup[$channel->group_id])) {
+                        return false;
                     }
 
                     return ! $this->matchesChannelFilter(
@@ -278,6 +313,52 @@ class AutoSyncGroupsToCustomPlaylist implements ShouldQueue
                         ->delete();
                 }
             }, $pivotRelatedKey);
+    }
+
+    /**
+     * How far this rule's full-sync cleanup may reach. auto_synced_playlist_id records which
+     * source playlist added a row, not which of its rules did, so a rule may only treat every
+     * tracked row as its own when it is the only rule on the source playlist that targets this
+     * custom playlist with the same item type (live and VOD channels share one pivot table,
+     * series use their own). This rule is recognised by its stored group selection; a "New
+     * Groups Only" rule never matches one (its groups are this run's new groups), so it always
+     * stays within its own groups.
+     *
+     * @return array{ownsAllTrackedRows: bool, siblingGroupIds: array<int>}
+     */
+    private function siblingRuleScope(bool $isSeries): array
+    {
+        $ownGroupIds = array_map('intval', $this->groupIds);
+        sort($ownGroupIds);
+
+        $foundSelf = false;
+        $hasSiblings = false;
+        $siblingGroupIds = [];
+
+        foreach ((array) (Playlist::find($this->playlistId)?->auto_sync_to_custom_config ?? []) as $rule) {
+            if (! is_array($rule)
+                || (int) ($rule['custom_playlist_id'] ?? 0) !== $this->customPlaylistId
+                || (($rule['type'] ?? null) === 'series_categories') !== $isSeries) {
+                continue;
+            }
+
+            $ruleGroupIds = array_map('intval', (array) ($rule['groups'] ?? []));
+            sort($ruleGroupIds);
+
+            if (! $foundSelf && ($rule['group_filter'] ?? 'selected') !== 'new_only' && $ruleGroupIds === $ownGroupIds) {
+                $foundSelf = true;
+
+                continue;
+            }
+
+            $hasSiblings = true;
+            array_push($siblingGroupIds, ...$ruleGroupIds);
+        }
+
+        return [
+            'ownsAllTrackedRows' => $foundSelf && ! $hasSiblings,
+            'siblingGroupIds' => array_values(array_unique($siblingGroupIds)),
+        ];
     }
 
     /**

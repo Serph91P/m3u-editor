@@ -991,7 +991,9 @@ class PlaylistAlias extends Model
 
     /**
      * The ids of the playlist's custom groups named by name_internal, plus the groups
-     * folded into a merged one, so selecting a merged group selects what it holds.
+     * folded into a merged one, so selecting a merged group selects what it holds. A
+     * custom group named like a provider group is never matched, so a provider pick
+     * can't widen to it (see Group::scopeNonProvider()).
      *
      * @param  array<int, string>  $names
      */
@@ -1000,6 +1002,7 @@ class PlaylistAlias extends Model
         $named = fn () => Group::query()->select('id')
             ->where('playlist_id', $this->playlist_id)
             ->where('custom', true)
+            ->nonProvider()
             ->whereIn('name_internal', $names);
 
         return Group::query()->select('id')
