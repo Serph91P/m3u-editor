@@ -66,6 +66,7 @@ function seedSyncLogContent(Playlist $playlist, User $user): void
         'name' => 'Removed series',
         'category_id' => $staleCategory->id,
         'import_batch_no' => 'previous-batch',
+        'created_at' => now()->subDay(),
     ]);
 
     $currentCategory = Category::factory()->for($playlist)->for($user)->create(['name' => 'Existing category', 'import_batch_no' => 'current-batch', 'created_at' => now()->subDay()]);
@@ -73,7 +74,16 @@ function seedSyncLogContent(Playlist $playlist, User $user): void
     Series::factory()->for($playlist)->for($user)->create([
         'name' => 'Existing series',
         'category_id' => $currentCategory->id,
+        'import_batch_no' => 'current-batch',
+        'created_at' => now()->subDay(),
+    ]);
+    // Still in a surviving category, but the provider no longer lists it
+    Series::factory()->for($playlist)->for($user)->create([
+        'name' => 'Unlisted series',
+        'source_series_id' => 4242,
+        'category_id' => $currentCategory->id,
         'import_batch_no' => 'previous-batch',
+        'created_at' => now()->subDay(),
     ]);
     Series::factory()->for($playlist)->for($user)->create([
         'name' => 'Added series',
@@ -125,9 +135,10 @@ it('tags live and vod entries and logs added and removed series', function () {
         'removed group live: Old live group',
         'removed group vod: Old vod group',
         'removed series series: Removed series',
+        'removed series series: Unlisted series',
     ])
         ->and($sync->sync_stats['added_series'])->toBe(1)
-        ->and($sync->sync_stats['removed_series'])->toBe(1)
+        ->and($sync->sync_stats['removed_series'])->toBe(2)
         ->and($sync->sync_stats['added_channels'])->toBe(2)
         ->and($sync->sync_stats['added_categories'])->toBe(1)
         ->and($sync->sync_stats['removed_categories'])->toBe(1)
@@ -180,7 +191,7 @@ it('still invalidates on the series threshold when series import ran', function 
 
     $sync = PlaylistSyncStatus::where('playlist_id', $this->playlist->id)->sole();
     expect($sync->sync_stats['status'])->toBe('canceled')
-        ->and($sync->removedSeries()->count())->toBe(1);
+        ->and($sync->removedSeries()->count())->toBe(2);
 });
 
 it('backfills the content type of existing log entries from their meta', function () {

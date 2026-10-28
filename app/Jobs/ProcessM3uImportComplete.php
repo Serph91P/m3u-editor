@@ -172,8 +172,7 @@ class ProcessM3uImportComplete implements ShouldQueue
         ]);
 
         // Get the added and removed series, only when series import ran this sync (matches the seriesCleanup gate).
-        // Existing series keep their original batch number, so only rows inserted this sync carry the current one.
-        // Series are removed along with their whole category, so a stale category batch means its series are going.
+        // A series goes when its whole category does (stale category batch) or when its category no longer lists it.
         $newSeries = null;
         $removedSeries = null;
         $newCategories = null;
@@ -186,14 +185,17 @@ class ProcessM3uImportComplete implements ShouldQueue
             $removedCategories = Category::where('playlist_id', $playlist->id)
                 ->where('import_batch_no', '!=', $this->batchNo);
 
-            $newSeries = Series::where([
-                ['playlist_id', $playlist->id],
-                ['import_batch_no', $this->batchNo],
-            ]);
-            $removedSeries = Series::whereHas('category', function ($q) use ($playlist) {
-                $q->where('playlist_id', $playlist->id)
-                    ->where('import_batch_no', '!=', $this->batchNo);
-            });
+            // Series the provider still lists are re-stamped with the current batch, so an added one
+            // is one created since this sync began, like a category.
+            $newSeries = Series::where('playlist_id', $playlist->id)
+                ->where('created_at', '>=', $this->start->copy()->startOfSecond());
+            $removedSeries = Series::where('playlist_id', $playlist->id)
+                ->where(function ($q) use ($playlist) {
+                    $q->whereHas('category', function ($category) use ($playlist) {
+                        $category->where('playlist_id', $playlist->id)
+                            ->where('import_batch_no', '!=', $this->batchNo);
+                    })->orWhere(fn ($unlisted) => $unlisted->noLongerListed($this->batchNo));
+                });
         }
 
         // See if sync logs are disabled
@@ -590,6 +592,9 @@ class ProcessM3uImportComplete implements ShouldQueue
      */
     private function seriesCleanup($playlist): void
     {
+        // Series a surviving category no longer lists (removed by the provider, or re-added under a new id)
+        $playlist->series()->noLongerListed($this->batchNo)->delete(); // will cascade to episodes
+
         foreach ($playlist->categories()->where('import_batch_no', '!=', $this->batchNo)->cursor() as $category) {
             $category->series()->delete(); // will cascade to episodes
             $category->delete();

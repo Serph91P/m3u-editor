@@ -194,6 +194,19 @@ class Series extends Model
     }
 
     /**
+     * Provider-sourced series in a category that is still on the provider, but which this sync's
+     * category listing did not return (the series was removed, or re-added under a new series_id).
+     * Locally created series (DVR recordings, rows without a provider id) are never included.
+     */
+    public function scopeNoLongerListed(Builder $query, string $batchNo): Builder
+    {
+        return $query->whereNotNull('source_series_id')
+            ->where('import_batch_no', '!=', $batchNo)
+            ->where('import_batch_no', '!=', 'dvr')
+            ->whereHas('category', fn (Builder $category) => $category->where('import_batch_no', $batchNo));
+    }
+
+    /**
      * The US content rating (e.g. "TV-MA"): TMDB's first, then the rating a
      * media server sync stored. Shared by get_series_info, tvshow.nfo and the view page.
      */
