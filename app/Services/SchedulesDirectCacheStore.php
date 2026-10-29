@@ -257,15 +257,17 @@ class SchedulesDirectCacheStore
     }
 
     /**
-     * Insert or replace programs. Replacing a program clears its artwork so it
-     * is fetched again with the new data.
+     * Insert or replace programs. A replaced program keeps its cached artwork:
+     * artwork is not covered by the program MD5 and is refreshed on its own
+     * schedule (see SchedulesDirectService::ARTWORK_REFRESH_DAYS).
      *
      * @param  array<int, array{program_id: string, md5: string, data: array<string, mixed>}>  $rows
      */
     public function putPrograms(array $rows): void
     {
         $statement = $this->pdo->prepare(
-            'INSERT OR REPLACE INTO programs (program_id, md5, data, artwork, artwork_fetched_at, last_used_sync) VALUES (?, ?, ?, NULL, NULL, ?)'
+            'INSERT INTO programs (program_id, md5, data, last_used_sync) VALUES (?, ?, ?, ?) '
+            .'ON CONFLICT(program_id) DO UPDATE SET md5 = excluded.md5, data = excluded.data, last_used_sync = excluded.last_used_sync'
         );
         $this->transaction(function () use ($statement, $rows) {
             foreach ($rows as $row) {

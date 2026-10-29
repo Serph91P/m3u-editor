@@ -29,8 +29,10 @@ beforeEach(function () {
     // programID => title
     $this->programs = ['EP0000000001' => 'Show One', 'EP0000000002' => 'Show Two'];
     $this->md5Rejected = false;
-    // Set to make /programs answer with a newer MD5 than the schedules list
-    $this->programsReturnNewerMd5 = false;
+    // Programs updated at SD: /programs answers with the new MD5, and the
+    // schedules list it only once SD has rebuilt them
+    $this->programsUpdated = false;
+    $this->schedulesRebuilt = false;
 
     $this->epg = Epg::factory()->create([
         'user_id' => User::factory()->create()->id,
@@ -44,13 +46,14 @@ beforeEach(function () {
     ]);
 
     $programMd5 = fn (string $programId) => md5($this->programs[$programId]);
+    $updatedMd5 = fn (string $programId) => md5("updated {$programId}");
     $schedule = fn (string $stationId) => [
         'stationID' => $stationId,
         'programs' => array_map(fn (string $programId) => [
             'programID' => $programId,
             'airDateTime' => now()->startOfDay()->toIso8601ZuluString(),
             'duration' => 1800,
-            'md5' => $programMd5($programId),
+            'md5' => $this->programsUpdated && $this->schedulesRebuilt ? $updatedMd5($programId) : $programMd5($programId),
         ], $this->stations[$stationId]),
     ];
     $scheduleMd5 = fn (string $stationId) => md5(json_encode($schedule($stationId)));
@@ -79,7 +82,7 @@ beforeEach(function () {
         'json.schedulesdirect.org/20141201/programs' => fn (Request $request) => Http::response(array_map(
             fn (string $programId) => [
                 'programID' => $programId,
-                'md5' => $this->programsReturnNewerMd5 ? md5("newer {$programId}") : $programMd5($programId),
+                'md5' => $this->programsUpdated ? $updatedMd5($programId) : $programMd5($programId),
                 'titles' => [['title120' => $this->programs[$programId]]],
                 'cast' => [['name' => 'Not cached']],
             ],
@@ -249,14 +252,23 @@ it('is deleted with its EPG', function () {
     expect($path)->not->toBeFile();
 });
 
-it('does not download a program again every sync when /programs returns a newer MD5 than the schedule lists', function () {
-    $this->programsReturnNewerMd5 = true;
+it('trusts the program MD5 and settles once SD rebuilds the schedules', function () {
+    $this->programsUpdated = true;
+    $programRequests = fn () => ($this->requestsTo)('POST', '/programs')->flatMap->data()->count();
 
     ($this->sync)();
-    ($this->sync)();
+    expect($programRequests())->toBe(2);
 
-    expect(($this->requestsTo)('POST', '/programs')->flatMap->data()->sort()->values()->all())
-        ->toBe(['EP0000000001', 'EP0000000002']);
+    // The schedules still list the old MD5, so the programs download again
+    ($this->sync)();
+    expect($programRequests())->toBe(4);
+
+    // Rebuilt schedules list the MD5 already cached: nothing more to download
+    $this->schedulesRebuilt = true;
+    ($this->sync)();
+    expect($programRequests())->toBe(4);
+
+    expect(($this->cacheColumn)("SELECT md5 FROM programs WHERE program_id = 'EP0000000001'"))->toBe([md5('updated EP0000000001')]);
 });
 
 describe('program artwork', function () {
@@ -309,6 +321,19 @@ describe('program artwork', function () {
         expect($artwork[0])->toHaveKey('uri', 'EP0000000001.jpg')->not->toHaveKey('url')
             ->and(Storage::disk('local')->get($this->epg->file_path))
             ->toContain("/schedules-direct/{$this->epg->uuid}/image/EP0000000001.jpg");
+    });
+
+    it('keeps cached artwork when a program downloads again', function () {
+        $this->artworkResponse = 'image';
+        $this->programsUpdated = true;
+
+        ($this->sync)();
+        $firstSync = ($this->artworkRequests)();
+        // The program downloads again while the schedules lag, but its artwork is kept
+        ($this->sync)();
+
+        expect(($this->artworkRequests)())->toBe($firstSync)
+            ->and(Storage::disk('local')->get($this->epg->file_path))->toContain('/image/EP0000000001.jpg');
     });
 
     it('asks again on the next sync when the artwork request failed', function () {

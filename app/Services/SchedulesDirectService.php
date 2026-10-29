@@ -1562,13 +1562,19 @@ class SchedulesDirectService
      * The XMLTV icon attributes for one SchedulesDirect image.
      *
      * @param  array<string, mixed>  $artwork
-     * @return array{uri: string, url: string, type: string, width: int, height: int, orient: string, size: string, category: string, tier: string}
+     *                                         `last_update` is the image's `lastUpdate` as a UNIX timestamp; the image
+     *                                         proxy uses it to tell when its cached copy of the image is out of date.
+     * @param  array<string, mixed>  $artwork
+     * @return array{uri: string, last_update: ?int, url: string, type: string, width: int, height: int, orient: string, size: string, category: string, tier: string}
      */
     private function buildArtworkInfo(array $artwork, string $type, ?string $epgUuid): array
     {
+        $lastUpdate = isset($artwork['lastUpdate']) ? (strtotime((string) $artwork['lastUpdate']) ?: null) : null;
+
         return [
             'uri' => $artwork['uri'],
-            'url' => $this->buildImageUrl($artwork['uri'], $epgUuid),
+            'last_update' => $lastUpdate,
+            'url' => $this->buildImageUrl($artwork['uri'], $epgUuid, $lastUpdate),
             'type' => $type,
             'width' => $artwork['width'] ?? 0,
             'height' => $artwork['height'] ?? 0,
@@ -1658,9 +1664,11 @@ class SchedulesDirectService
     }
 
     /**
-     * Build the complete image URL from the URI
+     * Build the complete image URL from the URI. Proxy URLs carry the image's
+     * lastUpdate as `?v=`, so the proxy refreshes its cached copy when the image
+     * changes (SchedulesDirect URIs are ephemeral, not content hashes).
      */
-    private function buildImageUrl(string $uri, ?string $epgUuid = null): string
+    private function buildImageUrl(string $uri, ?string $epgUuid = null, ?int $lastUpdate = null): string
     {
         // If URI is already a complete URL (starts with https://), return as-is
         if (str_starts_with($uri, 'https://')) {
@@ -1669,7 +1677,8 @@ class SchedulesDirectService
 
         // If we have an EPG UUID, use the proxy URL
         if ($epgUuid) {
-            return ProxyFacade::getBaseUrl().'/schedules-direct/'.$epgUuid.'/image/'.$uri;
+            return ProxyFacade::getBaseUrl().'/schedules-direct/'.$epgUuid.'/image/'.$uri
+                .($lastUpdate ? '?v='.$lastUpdate : '');
         }
 
         // Fallback to direct URL (will require authentication)
@@ -2208,7 +2217,7 @@ class SchedulesDirectService
             if ($batchIndex > 0) {
                 usleep(100000); // 100ms between batches
             }
-            $this->cacheProgramBatch($epg, $cache, $programBatch, $batchIndex, $programMd5s);
+            $this->cacheProgramBatch($epg, $cache, $programBatch, $batchIndex);
         }
     }
 
@@ -2216,15 +2225,15 @@ class SchedulesDirectService
      * POST a batch of programIDs to /programs, streaming the response to disk,
      * and store each returned program in the program cache.
      *
-     * Programs are cached under the MD5 the schedule listed, not the one in the
-     * /programs response. SchedulesDirect occasionally returns a newer MD5 than
-     * its schedules list; caching that would never match the schedule, so the
-     * program would download again on every sync until the schedule changed.
+     * Programs are cached under the MD5 in the /programs response, which
+     * SchedulesDirect says is authoritative. Programs and schedules are not
+     * updated in lock-step: when a program changes its schedules are rebuilt
+     * afterwards, so until then a schedule can list an older MD5 and the program
+     * downloads again; that usually settles by the next sync.
      *
      * @param  array<int, string>  $programBatch
-     * @param  array<string, string>  $listedMd5s  MD5 each schedule listed, keyed by programID
      */
-    private function cacheProgramBatch(Epg $epg, SchedulesDirectCacheStore $cache, array $programBatch, int $batchIndex, array $listedMd5s): void
+    private function cacheProgramBatch(Epg $epg, SchedulesDirectCacheStore $cache, array $programBatch, int $batchIndex): void
     {
         $token = $epg->sd_token;
         // Create a temporary file for the API response
@@ -2276,7 +2285,7 @@ class SchedulesDirectService
                 }
                 $rows[] = [
                     'program_id' => (string) $programId,
-                    'md5' => (string) ($listedMd5s[$programId] ?? $program->md5 ?? ''),
+                    'md5' => (string) ($program->md5 ?? ''),
                     'data' => array_intersect_key((array) $program, array_flip(self::CACHED_PROGRAM_FIELDS)),
                 ];
                 if (count($rows) >= 500) {
@@ -2383,7 +2392,7 @@ class SchedulesDirectService
     private function withCurrentImageUrls(array $artwork, ?string $epgUuid): array
     {
         return array_map(fn (array $image) => isset($image['uri'])
-            ? [...$image, 'url' => $this->buildImageUrl($image['uri'], $epgUuid)]
+            ? [...$image, 'url' => $this->buildImageUrl($image['uri'], $epgUuid, $image['last_update'] ?? null)]
             : $image, $artwork);
     }
 
