@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
+beforeEach(fn () => fakeSchedulesDirectChangeDetection());
+
 it('fetches station artwork and includes in XMLTV', function () {
     $user = User::factory()->create();
 

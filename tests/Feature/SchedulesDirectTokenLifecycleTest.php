@@ -22,6 +22,8 @@ use Illuminate\Support\Facades\Storage;
 
 uses(RefreshDatabase::class);
 
+beforeEach(fn () => fakeSchedulesDirectChangeDetection());
+
 function sdEpg(array $overrides = []): Epg
 {
     return Epg::factory()->create(array_merge([
@@ -975,7 +977,7 @@ it('measures the token lifetime on the Schedules Direct clock', function () {
     expect($epg->fresh()->sd_token_expires_at->timestamp)->toBe(now()->addDay()->subSeconds(60)->timestamp);
 });
 
-it('replaces a leftover from an interrupted sync and leaves only the guide file', function () {
+it('replaces a leftover from an interrupted sync and leaves only the guide file and SD cache', function () {
     Storage::fake('local');
     Bus::fake();
 
@@ -990,7 +992,7 @@ it('replaces a leftover from an interrupted sync and leaves only the guide file'
 
     (new SchedulesDirectService)->syncEpgData($epg);
 
-    expect(Storage::disk('local')->files($epg->folder_path))->toBe([$epg->file_path]);
+    expect(Storage::disk('local')->files($epg->folder_path))->toBe([$epg->file_path, "{$epg->folder_path}/".SchedulesDirectService::CACHE_FILE]);
     expect(Storage::disk('local')->get($epg->file_path))
         ->toContain('Synthetic EP0000000001')
         ->not->toContain('half-written');
