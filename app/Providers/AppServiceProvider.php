@@ -15,8 +15,6 @@ use App\Events\PlaylistUpdated;
 use App\Http\Middleware\EnsureUserCanUseCopilot;
 use App\Jobs\ProcessChannelScrubber;
 use App\Jobs\SyncMediaServer;
-use App\Listeners\AlertOnJobFailed;
-use App\Listeners\PersistUserLocale;
 use App\Livewire\BackupDestinationListRecords;
 use App\Livewire\TmdbSearch;
 use App\Models\Bouquet;
@@ -52,7 +50,6 @@ use App\Support\ApiDocs\DocumentXtreamApiResponses;
 use App\Support\ApiDocs\MergeSameStatusResponses;
 use App\Support\ApiDocs\PruneUnreferencedSchemas;
 use App\Support\CopilotProvider;
-use CraftForge\FilamentLanguageSwitcher\Events\LocaleChanged;
 use Dedoc\Scramble\Scramble;
 use Dedoc\Scramble\Support\Generator\OpenApi;
 use Dedoc\Scramble\Support\Generator\SecurityScheme;
@@ -73,7 +70,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
-use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Routing\Route;
 use Illuminate\Support\Facades\DB;
@@ -211,12 +207,6 @@ class AppServiceProvider extends ServiceProvider
 
         // Register the OIDC Socialite driver (when enabled)
         $this->registerOidcProvider();
-
-        // Persist user locale preference when changed via the language switcher
-        $this->registerLocaleListener();
-
-        // Forward failed queue jobs to Discord/Slack when configured
-        $this->registerJobFailedAlertListener();
 
         // Livewire components
         $this->registerLivewireComponents();
@@ -1279,22 +1269,6 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(
             SocialiteWasCalled::class,
             [OIDCExtendSocialite::class, 'handle'],
-        );
-    }
-
-    private function registerLocaleListener(): void
-    {
-        Event::listen(
-            LocaleChanged::class,
-            PersistUserLocale::class,
-        );
-    }
-
-    private function registerJobFailedAlertListener(): void
-    {
-        Event::listen(
-            JobFailed::class,
-            AlertOnJobFailed::class,
         );
     }
 
