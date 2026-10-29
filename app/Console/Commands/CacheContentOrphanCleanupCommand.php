@@ -47,7 +47,7 @@ class CacheContentOrphanCleanupCommand extends Command
         $query = CachedContentFile::query()
             ->whereNull('file_path')
             ->where('status', '!=', CachedContentFileStatus::Downloading->value)
-            ->where('source', '!=', 'arr')
+            ->notArrTracked()
             ->where('updated_at', '<', $cutoff);
 
         $count = $query->count();
