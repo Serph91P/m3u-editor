@@ -778,6 +778,12 @@ class AppServiceProvider extends ServiceProvider
                     $group->channels()
                         ->update(['group' => $group->name]);
                 }
+
+                // Channels without their own AED profile inherit the group's, and AED
+                // programmes are built into the cached EPG output files.
+                if (array_key_exists('aed_profile_id', $changes) && $group->playlist_id) {
+                    EpgCacheService::clearForGroup($group->id, (int) $group->playlist_id);
+                }
             });
 
             // Custom playlist group/category tags: propagate renames into bouquets
@@ -791,36 +797,18 @@ class AppServiceProvider extends ServiceProvider
                 }
             });
 
-            // A changed EPG mapping is saved immediately, but the generated XMLTV/gzip output
-            // files are served from an output cache that is otherwise only invalidated by the
-            // sync/mapping job chains. Without this, a manual EPG reassignment through the
-            // Channel edit form or the EPG viewer leaves stale output files with the old
-            // channel's programmes until that cache's own TTL expires.
+            // A changed EPG mapping or AED profile is saved immediately, but the generated
+            // XMLTV/gzip output files are served from an output cache that is otherwise only
+            // invalidated by the sync/mapping job chains. Without this, a manual EPG
+            // reassignment or AED profile change through the Channel edit form or the EPG
+            // viewer leaves stale output files with the old programmes until that cache's
+            // own TTL expires.
             Channel::updated(function (Channel $channel) {
-                if (! $channel->wasChanged('epg_channel_id')) {
+                if (! $channel->wasChanged(['epg_channel_id', 'aed_profile_id'])) {
                     return;
                 }
 
-                $channel->loadMissing(['playlist.mergedPlaylists', 'customPlaylists']);
-
-                $affectedPlaylists = collect();
-                if ($channel->playlist) {
-                    $affectedPlaylists->push($channel->playlist);
-                    foreach ($channel->playlist->mergedPlaylists as $merged) {
-                        $affectedPlaylists->push($merged);
-                    }
-                }
-                foreach ($channel->customPlaylists as $custom) {
-                    $affectedPlaylists->push($custom);
-                }
-
-                // clearPlaylistEpgCacheFile() returns false when there was no cached file to
-                // remove; Collection::each() stops iterating the first time its callback
-                // returns exactly false, so the callback must not forward that return value.
-                $affectedPlaylists->unique(fn ($p) => $p->getTable().'-'.$p->id)
-                    ->each(function ($p) {
-                        EpgCacheService::clearPlaylistEpgCacheFile($p);
-                    });
+                EpgCacheService::clearForChannelIds([$channel->id]);
             });
 
             // Failover channels
