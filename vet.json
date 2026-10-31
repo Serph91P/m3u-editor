@@ -586,8 +586,8 @@
             "hash": "tree-v2:6b879f91fb5a5b7a5aca6b1a8aa8c715ad38d1bc3d94c3d9c907690b6c726d0d"
         },
         "symfony/mime": {
-            "version": "v8.1.4",
-            "hash": "tree-v2:895c5c631a46843cb61965c0856e2119f33df2bf920d03b20ff3eb54a536a74b"
+            "version": "v8.1.10",
+            "hash": "tree-v2:f334f867543b396c4c81a227ac4d55634c75345d7b93eeb51971e13888a7f32d"
         },
         "symfony/polyfill-ctype": {
             "version": "v1.37.0",

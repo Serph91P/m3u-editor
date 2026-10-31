@@ -78,12 +78,16 @@ class RunPostProcess implements ShouldQueue
             // Add the counts of added/removed groups/channels to the model
             $this->model->added_groups = $this->lastSync->addedGroups()->count();
             $this->model->removed_groups = $this->lastSync->removedGroups()->count();
+            $this->model->added_categories = $this->lastSync->addedCategories()->count();
+            $this->model->removed_categories = $this->lastSync->removedCategories()->count();
             $this->model->added_channels = $this->lastSync->addedChannels()->count();
             $this->model->removed_channels = $this->lastSync->removedChannels()->count();
 
             // Also add the names of the groups/channels added/removed
             $this->model->added_group_names = implode(' • ', $this->lastSync->addedGroups()->pluck('name')->toArray());
             $this->model->removed_group_names = implode(' • ', $this->lastSync->removedGroups()->pluck('name')->toArray());
+            $this->model->added_category_names = implode(' • ', $this->lastSync->addedCategories()->pluck('name')->toArray());
+            $this->model->removed_category_names = implode(' • ', $this->lastSync->removedCategories()->pluck('name')->toArray());
             $this->model->added_channel_names = implode(' • ', $this->lastSync->addedChannels()->pluck('name')->toArray());
             $this->model->removed_channel_names = implode(' • ', $this->lastSync->removedChannels()->pluck('name')->toArray());
         }
@@ -485,10 +489,14 @@ class RunPostProcess implements ShouldQueue
             'time' => $this->model->sync_time,
             'added_groups' => $this->model->added_groups ?? null,
             'removed_groups' => $this->model->removed_groups ?? null,
+            'added_categories' => $this->model->added_categories ?? null,
+            'removed_categories' => $this->model->removed_categories ?? null,
             'added_channels' => $this->model->added_channels ?? null,
             'removed_channels' => $this->model->removed_channels ?? null,
             'added_group_names' => $this->model->added_group_names ?? null,
             'removed_group_names' => $this->model->removed_group_names ?? null,
+            'added_category_names' => $this->model->added_category_names ?? null,
+            'removed_category_names' => $this->model->removed_category_names ?? null,
             'added_channel_names' => $this->model->added_channel_names ?? null,
             'removed_channel_names' => $this->model->removed_channel_names ?? null,
             default => null,
@@ -513,10 +521,14 @@ class RunPostProcess implements ShouldQueue
             'time' => $this->model->sync_time ?? '',
             'added_groups' => $this->model->added_groups ?? 0,
             'removed_groups' => $this->model->removed_groups ?? 0,
+            'added_categories' => $this->model->added_categories ?? 0,
+            'removed_categories' => $this->model->removed_categories ?? 0,
             'added_channels' => $this->model->added_channels ?? 0,
             'removed_channels' => $this->model->removed_channels ?? 0,
             'added_group_names' => $this->model->added_group_names ?? '',
             'removed_group_names' => $this->model->removed_group_names ?? '',
+            'added_category_names' => $this->model->added_category_names ?? '',
+            'removed_category_names' => $this->model->removed_category_names ?? '',
             'added_channel_names' => $this->model->added_channel_names ?? '',
             'removed_channel_names' => $this->model->removed_channel_names ?? '',
         ];
