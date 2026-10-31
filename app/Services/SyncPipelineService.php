@@ -525,6 +525,12 @@ class SyncPipelineService
                 ],
                 type: $rule['type'] === 'series_categories' ? 'series' : 'channel',
                 syncMode: $rule['sync_mode'] ?? 'full_sync',
+                channelIds: $groupFilter === 'new_only' || $rule['type'] === 'series_categories'
+                    ? []
+                    : array_map('intval', (array) ($rule['channels'] ?? [])),
+                channelNamePatterns: $groupFilter === 'new_only' || $rule['type'] === 'series_categories'
+                    ? []
+                    : array_values(array_filter((array) ($rule['channel_name_patterns'] ?? []), 'is_string')),
             );
         })->filter()->values()->all();
 

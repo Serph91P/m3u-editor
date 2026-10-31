@@ -42,9 +42,30 @@ class Category extends Model
         'is_merged' => 'boolean',
     ];
 
+    /**
+     * Categories the provider did not supply (genre, media server, DVR and merged
+     * categories): no source category shares their name_internal. These are the
+     * categories a bouquet selects by name_internal, as provider ones go by source name.
+     */
+    public function scopeNonProvider(Builder $query): Builder
+    {
+        return $query->whereNotExists(fn ($subQuery) => $subQuery->selectRaw('1')
+            ->from('source_categories')
+            ->whereColumn('source_categories.playlist_id', 'categories.playlist_id')
+            ->whereColumn('source_categories.name', 'categories.name_internal'));
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Whether the playlist's Category Auto Sort keeps this series category in provider order.
+     */
+    public function isSortOrderLockedToProvider(): bool
+    {
+        return (bool) $this->playlist?->auto_sort_categories;
     }
 
     public function playlist(): BelongsTo

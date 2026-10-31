@@ -10,6 +10,11 @@ return new class extends Migration
     private const NEW_INDEX = 'idx_source_playlist_vod';
 
     /**
+     * CREATE/DROP INDEX CONCURRENTLY can't run inside a transaction.
+     */
+    public $withinTransaction = false;
+
+    /**
      * Key imported channels on (source_id, playlist_id, is_vod) instead of (source_id, playlist_id).
      *
      * Xtream rows use the provider stream_id as source_id for both live streams and movies, and
@@ -19,16 +24,24 @@ return new class extends Migration
      * is_vod is backfilled first: it is nullable on databases converted from SQLite, and a NULL
      * never matches the upsert key, so those rows would be duplicated on the next sync.
      *
-     * Migrations run before supervisord starts the app and queue workers (docker/8.4/db-init.sh),
-     * so nothing else is writing to channels while this runs.
+     * db-init runs migrations as a supervisord program alongside the queue workers and the
+     * scheduler, so imports can write to channels while this runs. On Postgres the new key is
+     * built CONCURRENTLY, which doesn't block those writes; an import upsert that runs before it
+     * exists fails (it names the new key as its conflict target) and the sync is retried.
      */
     public function up(): void
     {
         DB::table('channels')->whereNull('is_vod')->update(['is_vod' => false]);
 
-        Schema::table('channels', function (Blueprint $table) {
-            $table->unique(['source_id', 'playlist_id', 'is_vod'], self::NEW_INDEX);
-        });
+        if (DB::getDriverName() === 'pgsql') {
+            // An interrupted concurrent build leaves an INVALID index that IF NOT EXISTS would keep
+            $this->dropInvalidIndex(self::NEW_INDEX);
+            DB::statement('CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "'.self::NEW_INDEX.'" ON channels (source_id, playlist_id, is_vod)');
+        } else {
+            Schema::table('channels', function (Blueprint $table) {
+                $table->unique(['source_id', 'playlist_id', 'is_vod'], self::NEW_INDEX);
+            });
+        }
 
         foreach ($this->uniqueIndexesOn(['source_id', 'playlist_id']) as $index) {
             $this->dropUniqueIndex($index);
@@ -43,14 +56,15 @@ return new class extends Migration
     {
         Schema::table('channels', function (Blueprint $table) {
             $table->unique(['source_id', 'playlist_id'], 'idx_source_playlist');
-            $table->dropUnique(self::NEW_INDEX);
         });
+
+        $this->dropUniqueIndex(self::NEW_INDEX);
     }
 
     /**
      * Schema-built databases hold the old key as a UNIQUE constraint, dropped with
-     * DROP CONSTRAINT. Databases converted from SQLite via pgloader hold a plain index instead,
-     * which DROP CONSTRAINT can't remove.
+     * DROP CONSTRAINT (a quick catalog change). Databases converted from SQLite via pgloader,
+     * and the new key built above, are plain indexes, dropped CONCURRENTLY.
      */
     private function dropUniqueIndex(string $name): void
     {
@@ -68,7 +82,20 @@ return new class extends Migration
 
         DB::statement($isConstraint
             ? 'ALTER TABLE channels DROP CONSTRAINT "'.$name.'"'
-            : 'DROP INDEX "'.$name.'"');
+            : 'DROP INDEX CONCURRENTLY IF EXISTS "'.$name.'"');
+    }
+
+    private function dropInvalidIndex(string $name): void
+    {
+        $isInvalid = DB::table('pg_index')
+            ->join('pg_class', 'pg_class.oid', '=', 'pg_index.indexrelid')
+            ->where('pg_class.relname', $name)
+            ->where('pg_index.indisvalid', false)
+            ->exists();
+
+        if ($isInvalid) {
+            DB::statement('DROP INDEX CONCURRENTLY IF EXISTS "'.$name.'"');
+        }
     }
 
     /**

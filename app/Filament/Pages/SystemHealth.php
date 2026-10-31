@@ -215,7 +215,7 @@ class SystemHealth extends Page
                         ],
                     ),
                 ]),
-            Section::make('m3u-proxy')
+            Section::make('M3U Proxy')
                 ->icon('heroicon-o-arrows-right-left')
                 ->compact()
                 ->schema([
@@ -295,7 +295,7 @@ class SystemHealth extends Page
             'scheduler' => __('Scheduler (cron)'),
             'postgresql' => 'PostgreSQL',
             'redis' => 'Redis',
-            'm3u_proxy' => 'm3u-proxy',
+            'm3u_proxy' => 'M3U Proxy',
             'network_broadcast' => __('Network broadcast worker'),
         ];
 
