@@ -152,8 +152,7 @@ it('queues each requested target while an account prefetch slot is already reser
     expect(CachedContentFile::where('managed_by', 'managed_publishing')->count())->toBe(2);
 });
 
-it('runs the editor prefetch download and watched grace lifecycle with fresh Xtream counters', function () {
-    app(GeneralSettings::class)->shouldReceive('refresh')->andReturnSelf();
+it('queues editor prefetch with fresh Xtream counters and releases a completed cache after watched grace', function () {
     $this->channel->playlist->update([
         'xtream' => true, 'available_streams' => 0,
         'xtream_config' => ['url' => 'http://198.51.100.1', 'username' => 'synthetic', 'password' => 'account'],
@@ -165,17 +164,20 @@ it('runs the editor prefetch download and watched grace lifecycle with fresh Xtr
         'http://198.51.100.1/player_api.php*' => Http::response([
             'user_info' => ['auth' => 1, 'max_connections' => 3, 'active_cons' => 1],
         ]),
-        'http://198.51.100.1/movie/*' => Http::response('synthetic media bytes', 200),
     ]);
     $this->postJson('/player_api.php', [
         ...$this->payload, 'action' => 'm3u_editor_cache_prefetch', 'targets' => $targets,
     ])->assertOk()->assertJsonPath('data.results.0.status', 'queued');
     $file = CachedContentFile::sole();
-    (new DownloadCachedContentFile($file->id))->handle();
-    $file->refresh();
-    expect($file->status->value)->toBe('completed');
+    expect($file->status->value)->toBe('pending');
+    Bus::assertDispatched(DownloadCachedContentFile::class, fn (DownloadCachedContentFile $job): bool => $job->cachedContentFileId === $file->id);
+    Http::assertSentCount(1);
+    Http::assertNotSent(fn ($request): bool => str_contains($request->url(), '/movie/'));
+
+    // The API owns release/grace; actual worker execution is covered by the streaming layer's E2E.
+    $file->update(['status' => 'completed', 'disk' => 'cache', 'file_path' => 'managed/completed.mkv']);
+    Storage::disk($file->disk)->put($file->file_path, 'synthetic media bytes');
     Storage::disk($file->disk)->assertExists($file->file_path);
-    Http::assertSentCount(3); // dispatch counter, fresh worker counter, media
 
     $manual = CachedContentFile::factory()->for($this->playlist)->createQuietly([
         'managed_by' => null, 'status' => 'completed', 'disk' => 'cache', 'file_path' => 'manual/keep.mkv',
