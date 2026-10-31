@@ -51,6 +51,35 @@ class Group extends Model
         return $this->belongsTo(User::class);
     }
 
+    /**
+     * Groups the provider did not supply under their name_internal: no source group of the
+     * same type shares it. A custom group named like a provider group is left out, so a
+     * selection of that provider name never also matches the custom group (and its channels
+     * from other provider groups). Mirrors Category::scopeNonProvider().
+     */
+    public function scopeNonProvider(Builder $query): Builder
+    {
+        return $query->whereNotExists(fn ($subQuery) => $subQuery->selectRaw('1')
+            ->from('source_groups')
+            ->whereColumn('source_groups.playlist_id', 'groups.playlist_id')
+            ->whereColumn('source_groups.type', 'groups.type')
+            ->whereColumn('source_groups.name', 'groups.name_internal'));
+    }
+
+    /**
+     * Whether the playlist's auto sort keeps this group in provider order. Xtream imports
+     * follow Group Auto Sort; plain M3U imports number groups from Channel Auto Sort.
+     * Custom groups are never touched by the import, so they stay freely sortable.
+     */
+    public function isSortOrderLockedToProvider(): bool
+    {
+        if ($this->custom || ! $this->playlist) {
+            return false;
+        }
+
+        return (bool) ($this->playlist->xtream ? $this->playlist->auto_sort_groups : $this->playlist->auto_sort);
+    }
+
     public function playlist(): BelongsTo
     {
         return $this->belongsTo(Playlist::class);

@@ -1856,7 +1856,7 @@ class PlaylistService
     }
 
     /**
-     * Merge the selected Group/Category records' provider-stable names into a
+     * Merge the selected Group/Category records' stable names (name_internal) into a
      * bouquet's selections. Public static so tests can exercise the handler
      * directly. $type: 'live' | 'vod' | 'category'.
      */
@@ -1865,24 +1865,6 @@ class PlaylistService
         $bouquet = Bouquet::where('user_id', auth()->id())->find($bouquetId);
         if (! $bouquet || ! $bouquet->playlist_id) {
             Notification::make()->danger()->title(__('Bouquet not found'))->send();
-
-            return;
-        }
-
-        // Custom groups (user-created, no matching SourceGroup row) only ever match
-        // is_custom channels via the fallback name path - provider channels moved into
-        // them never match. Adding them to a bouquet would make the staleness tooling
-        // falsely flag them, and "Clean up missing" would then delete a half-working
-        // selection. Category records have no `custom` column at all.
-        $originalCount = $records->count();
-        $records = $records->reject(fn ($record) => $record->custom ?? false)->values();
-        $skippedCustomCount = $originalCount - $records->count();
-
-        if ($records->isEmpty()) {
-            Notification::make()
-                ->danger()
-                ->title(__('Custom groups cannot be added to bouquets'))
-                ->send();
 
             return;
         }
@@ -1921,9 +1903,6 @@ class PlaylistService
             'added' => $added,
             'existing' => $names->count() - $added,
         ]);
-        if ($skippedCustomCount > 0) {
-            $body .= ' '.__(':skipped custom group(s) skipped.', ['skipped' => $skippedCustomCount]);
-        }
 
         Notification::make()
             ->success()
