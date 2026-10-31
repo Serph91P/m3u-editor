@@ -366,6 +366,10 @@ class XtreamApiController extends Controller
         $aliasCategoryFilter = $playlist instanceof PlaylistAlias
             ? $playlist->getAllowedCategoryNames()
             : [];
+        // Whether the alias narrows a type at all - an allow-list, an "everything except"
+        // list or a block bouquet. The name lists above are only the Only-mode allow-lists.
+        $aliasFiltersVod = $playlist instanceof PlaylistAlias && $playlist->hasVodGroupFilter();
+        $aliasFiltersSeries = $playlist instanceof PlaylistAlias && $playlist->hasCategoryFilter();
 
         $baseUrl = ProxyFacade::getBaseUrl();
         $rateLimitedResponse = $this->requestRateLimit($action, $playlist, $authMethod, $playlistAuth);
@@ -558,6 +562,7 @@ class XtreamApiController extends Controller
             }
 
             $categoryId = $request->input('category_id');
+            $isCategoryRequest = $categoryId && $categoryId !== 'all';
 
             // Use the optimised query: JOINs instead of eager loads, SQL-level ordering, cursor-compatible.
             $channelsQuery = PlaylistGenerateController::getChannelQuery($playlist, isVod: false);
@@ -583,7 +588,7 @@ class XtreamApiController extends Controller
             }
 
             // Apply category filtering when requested.
-            if ($categoryId && $categoryId !== 'all') {
+            if ($isCategoryRequest) {
                 if ($isCustomPlaylist) {
                     // A custom tag id and a fallback group id live in disjoint ranges
                     // (see XtreamCategoryService::CUSTOM_PLAYLIST_FALLBACK_ID_OFFSET),
@@ -609,13 +614,13 @@ class XtreamApiController extends Controller
                 }
             }
 
-            // Numbered as in the full listing (which may interleave VOD when
-            // include_vod_in_m3u is on, see getChannelQuery()) rather than
-            // restarting the sequence from the start number, or over just this
-            // live-only query, either of which would drift from the M3U/XMLTV
-            // numbers for the same channels (issue #1683).
+            // Numbered as in the full listing rather than restarting the sequence for
+            // one category. With include_vod_in_m3u on, that is the M3U/XMLTV output,
+            // which interleaves VOD (see getChannelQuery()), so a live-only walk would
+            // drift from it (issue #1683). Otherwise live channels are the whole
+            // output, so an unfiltered listing is numbered as it streams.
             $numberSequence = new ChannelNumberSequence($playlist);
-            $categoryNumbers = $numberSequence->isPositional()
+            $categoryNumbers = $numberSequence->isPositional() && ($isCategoryRequest || $playlist->include_vod_in_m3u)
                 ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist), $channelsQuery, $isCustomPlaylist)
                 : null;
 
@@ -718,6 +723,7 @@ class XtreamApiController extends Controller
             }
 
             $categoryId = $request->input('category_id');
+            $isCategoryRequest = $categoryId && $categoryId !== 'all';
 
             // Resolved once, used both by the filter branch below and the
             // streamed response closure further down. Must be declared up
@@ -744,7 +750,7 @@ class XtreamApiController extends Controller
                     );
             }
 
-            if ($categoryId && $categoryId !== 'all') {
+            if ($isCategoryRequest) {
                 if ($isCustomPlaylist) {
                     // A custom tag id and a fallback group id live in disjoint ranges
                     // (see XtreamCategoryService::CUSTOM_PLAYLIST_FALLBACK_ID_OFFSET),
@@ -780,14 +786,20 @@ class XtreamApiController extends Controller
                 }
             }
 
-            // Numbered as in the full listing (which may interleave live channels
-            // around these VOD entries, see getChannelQuery()) rather than
-            // restarting the sequence from the start number, or over just this
-            // VOD-only query, either of which would drift from the M3U/XMLTV
-            // numbers for the same channels (issue #1683).
+            // Numbered as in the full listing rather than restarting the sequence for
+            // one category. With include_vod_in_m3u on, that is the M3U/XMLTV output,
+            // which interleaves live channels around these VOD entries (see
+            // getChannelQuery()), so a VOD-only walk would drift from it (issue #1683).
+            // Otherwise VOD is not in that output and keeps its own sequence, so an
+            // unfiltered listing is numbered as it streams.
             $numberSequence = new ChannelNumberSequence($playlist);
-            $categoryNumbers = $numberSequence->isPositional()
-                ? ChannelNumberSequence::numbersFor($playlist, PlaylistGenerateController::getChannelQuery($playlist), $channelsQuery, $isCustomPlaylist)
+            $categoryNumbers = $numberSequence->isPositional() && ($isCategoryRequest || $playlist->include_vod_in_m3u)
+                ? ChannelNumberSequence::numbersFor(
+                    $playlist,
+                    PlaylistGenerateController::getChannelQuery($playlist, isVod: $playlist->include_vod_in_m3u ? null : true),
+                    $channelsQuery,
+                    $isCustomPlaylist,
+                )
                 : null;
 
             $cursor = $channelsQuery->cursor();
@@ -799,7 +811,7 @@ class XtreamApiController extends Controller
             // see XtreamCategoryService::dynamicCategoryIdsByItem() for why
             // the full listing needs them.
             $dynamicCategoryIdsByChannel = [];
-            if (! $isCustomPlaylist && $dynamicGroupId === null && $sourcePlaylist && empty($aliasVodGroupFilter)) {
+            if (! $isCustomPlaylist && $dynamicGroupId === null && $sourcePlaylist && ! $aliasFiltersVod) {
                 $dynamicCategoryIdsByChannel = XtreamCategoryService::dynamicCategoryIdsByItem($sourcePlaylist, isVod: true);
             }
 
@@ -986,7 +998,7 @@ class XtreamApiController extends Controller
             // Dynamic-category membership for the listing — mirrors the
             // get_vod_streams wiring; see XtreamCategoryService::dynamicCategoryIdsByItem().
             $dynamicCategoryIdsBySeries = [];
-            if (! $isCustomPlaylist && $dynamicGroupId === null && $sourcePlaylist && empty($aliasCategoryFilter)) {
+            if (! $isCustomPlaylist && $dynamicGroupId === null && $sourcePlaylist && ! $aliasFiltersSeries) {
                 $dynamicCategoryIdsBySeries = XtreamCategoryService::dynamicCategoryIdsByItem($sourcePlaylist, isVod: false);
             }
 

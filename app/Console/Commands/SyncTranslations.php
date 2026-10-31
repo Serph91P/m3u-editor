@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 
 /**
  * Scans every PHP file under app/ and every Blade view under resources/views/
@@ -130,6 +131,13 @@ class SyncTranslations extends Command
             }
 
             $path = $file->getRealPath();
+
+            // The translation commands quote __() calls in their own docs and code
+            // templates, which aren't user-facing strings.
+            if (Str::endsWith($path, ['Console/Commands/ExtractTranslations.php', 'Console/Commands/SyncTranslations.php'])) {
+                continue;
+            }
+
             $content = file_get_contents($path);
             $modified = $content;
 

@@ -61,7 +61,7 @@
                 @endif
                 <span class="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{{ $toolName }}</span>
                 @if ($isPending)
-                    <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0">Waiting for approval</span>
+                    <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0">{{ __('Waiting for approval') }}</span>
                 @endif
             </button>
             <div x-show="open" x-collapse
