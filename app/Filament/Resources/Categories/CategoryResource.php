@@ -174,7 +174,10 @@ class CategoryResource extends Resource implements CopilotResource
                     ->type('number')
                     ->placeholder(__('Sort Order'))
                     ->sortable()
-                    ->tooltip(__('Category sort order'))
+                    ->disabled(fn (Category $record): bool => $record->isSortOrderLockedToProvider())
+                    ->tooltip(fn (Category $record): string => $record->isSortOrderLockedToProvider()
+                        ? __('Category Auto Sort is on for this playlist, so this category follows the provider order.')
+                        : __('Category sort order'))
                     ->toggleable(),
                 ToggleColumn::make('enabled')
                     ->label(__('Auto Enable'))

@@ -148,6 +148,8 @@ class ProcessM3uImportSeriesChunk implements ShouldQueue
             ->pluck('last_modified', 'source_series_id');
 
         $insertBuffer = [];
+        $listedExistingIds = [];
+        $listedAnySeries = false;
 
         foreach (Items::fromString($seriesStreamsResponse->body()) as $item) {
             $itemName = trim((string) ($item->name ?? $item->title ?? ''));
@@ -170,11 +172,15 @@ class ProcessM3uImportSeriesChunk implements ShouldQueue
                 continue;
             }
 
+            $listedAnySeries = true;
+
             $lastModified = isset($item->last_modified) && $item->last_modified
                 ? Carbon::createFromTimestamp((int) $item->last_modified)->toDateTimeString()
                 : null;
 
             if ($existingSeriesIds->has($item->series_id)) {
+                $listedExistingIds[] = $item->series_id;
+
                 // Already in DB — only update last_modified if it changed
                 $storedModified = $existingSeriesIds->get($item->series_id);
                 if ($lastModified && $lastModified !== $storedModified) {
@@ -219,6 +225,8 @@ class ProcessM3uImportSeriesChunk implements ShouldQueue
             $this->flushInsertBuffer($insertBuffer, $playlist, $sourceCategoryId, $sourceCategoryName);
         }
 
+        $this->stampListedSeries($playlist, $sourceCategoryId, $listedExistingIds, $listedAnySeries);
+
         // Update progress: scale 0→100 across all chunks. Intermediate chunks are
         // capped at 99 so the UI doesn't show 100% until the final chunk completes.
         $isLastChunk = $this->index === $this->batchCount - 1;
@@ -236,6 +244,81 @@ class ProcessM3uImportSeriesChunk implements ShouldQueue
         }
 
         $playlist->update($update);
+    }
+
+    /**
+     * Stamp the series the provider still lists with this sync's batch number.
+     *
+     * ProcessM3uImportComplete::seriesCleanup() removes every series in a surviving category
+     * that did not get the current batch number, the same way channels are retired, so a series
+     * the provider removed (or re-added under a new series_id) does not linger as a duplicate.
+     *
+     * A category that came back with no usable series is treated as a provider blip rather than
+     * as every series having been removed: all of its existing series are kept.
+     *
+     * @param  list<int|string>  $listedExistingIds  series_ids already in the DB that the listing returned
+     */
+    private function stampListedSeries(Playlist $playlist, mixed $sourceCategoryId, array $listedExistingIds, bool $listedAnySeries): void
+    {
+        if (! $listedAnySeries) {
+            $kept = $playlist->series()
+                ->where('source_category_id', $sourceCategoryId)
+                ->update(['import_batch_no' => $this->batchNo]);
+
+            if ($kept > 0) {
+                Log::warning('ProcessM3uImportSeriesChunk: category returned no series, keeping its existing series', [
+                    'source_category_id' => $sourceCategoryId,
+                    'playlist_id' => $playlist->id,
+                    'kept_series' => $kept,
+                ]);
+            }
+
+            return;
+        }
+
+        foreach (array_chunk($listedExistingIds, 500) as $ids) {
+            $playlist->series()
+                ->where('source_category_id', $sourceCategoryId)
+                ->whereIn('source_series_id', $ids)
+                ->update(['import_batch_no' => $this->batchNo]);
+        }
+    }
+
+    /**
+     * Drop rows whose series_id already exists in the playlist under another category.
+     *
+     * A series the provider moved to this category is moved here too, keeping its enabled state
+     * and everything attached to it. One already stamped by an earlier category this sync (listed
+     * under several categories) stays where it is, so it never flips between them on each sync.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>> The rows that really are new.
+     */
+    private function adoptExistingSeries(array $rows, Playlist $playlist, Category $category, mixed $sourceCategoryId): array
+    {
+        $existingIds = $playlist->series()
+            ->whereIn('source_series_id', array_column($rows, 'source_series_id'))
+            ->pluck('source_series_id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
+
+        if ($existingIds === []) {
+            return $rows;
+        }
+
+        $playlist->series()
+            ->whereIn('source_series_id', $existingIds)
+            ->where('import_batch_no', '!=', $this->batchNo)
+            ->update([
+                'category_id' => $category->id,
+                'source_category_id' => $sourceCategoryId,
+                'import_batch_no' => $this->batchNo,
+            ]);
+
+        return array_values(array_filter(
+            $rows,
+            fn (array $row): bool => ! in_array((string) $row['source_series_id'], $existingIds, true)
+        ));
     }
 
     /**
@@ -261,9 +344,13 @@ class ProcessM3uImportSeriesChunk implements ShouldQueue
                     ]
                 );
 
-                Series::insertOrIgnore(
-                    array_map(fn ($row) => $row + ['category_id' => $category->id], $rows)
-                );
+                $rows = $this->adoptExistingSeries($rows, $playlist, $category, $sourceCategoryId);
+
+                if ($rows !== []) {
+                    Series::insertOrIgnore(
+                        array_map(fn ($row) => $row + ['category_id' => $category->id], $rows)
+                    );
+                }
             }, 5);
         } catch (QueryException $e) {
             // SQLSTATE 23503 = foreign_key_violation (PostgreSQL).
