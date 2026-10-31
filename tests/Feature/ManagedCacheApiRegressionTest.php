@@ -205,6 +205,58 @@ it('queues editor prefetch with fresh Xtream counters and releases a completed c
     Storage::disk('cache')->assertExists($manual->file_path);
 });
 
+it('runs the editor prefetch download and watched grace lifecycle with fresh Xtream counters', function () {
+    app(GeneralSettings::class)->shouldReceive('refresh')->andReturnSelf();
+    $this->channel->playlist->update([
+        'xtream' => true, 'available_streams' => 0,
+        'xtream_config' => ['url' => 'http://198.51.100.1', 'username' => 'synthetic', 'password' => 'account'],
+    ]);
+    $this->channel->update(['url' => 'http://198.51.100.1/movie/synthetic/account/1.mkv']);
+    $item = app(EmbyPublicationCatalogService::class)->buildMapping($this->mapping)['items'][0];
+    $targets = [['canonical_id' => $item['canonical_id'], 'variant_key' => $item['variants'][0]['key']]];
+    Http::fake([
+        'http://198.51.100.1/player_api.php*' => Http::response([
+            'user_info' => ['auth' => 1, 'max_connections' => 3, 'active_cons' => 1],
+        ]),
+        'http://198.51.100.1/movie/*' => Http::response('synthetic media bytes', 200),
+    ]);
+    $this->postJson('/player_api.php', [
+        ...$this->payload, 'action' => 'm3u_editor_cache_prefetch', 'targets' => $targets,
+    ])->assertOk()->assertJsonPath('data.results.0.status', 'queued');
+    $file = CachedContentFile::sole();
+    (new DownloadCachedContentFile($file->id))->handle();
+    $file->refresh();
+    expect($file->status->value)->toBe('completed');
+    Storage::disk($file->disk)->assertExists($file->file_path);
+    expect(Storage::disk($file->disk)->get($file->file_path))->toBe('synthetic media bytes');
+    Http::assertSentCount(3); // dispatch counter, fresh worker counter, media
+
+    $manual = CachedContentFile::factory()->for($this->playlist)->createQuietly([
+        'managed_by' => null, 'status' => 'completed', 'disk' => 'cache', 'file_path' => 'manual/keep.mkv',
+        'content_fingerprint' => 'synthetic-manual-copy',
+    ]);
+    Storage::disk('cache')->put($manual->file_path, 'manual bytes');
+    $release = [...$this->payload, 'action' => 'm3u_editor_cache_release', 'targets' => $targets,
+        'watched' => true, 'cohort_complete' => false, 'delete_after_hours' => 0];
+    $this->postJson('/player_api.php', [...$release, 'request_id' => (string) Str::uuid()])->assertOk();
+    $this->travel(16)->minutes();
+    $job = app(ReleaseWatchedManagedCache::class);
+    $retention = app(CachedContentRetentionService::class);
+    $job->handle($retention);
+    expect($file->fresh())->not->toBeNull(); // one selected profile remains unwatched
+
+    $this->postJson('/player_api.php', [
+        ...$release, 'request_id' => (string) Str::uuid(), 'cohort_complete' => true,
+    ])->assertOk();
+    $job->handle($retention);
+    expect($file->fresh())->not->toBeNull(); // minimum 15-minute grace
+    $this->travel(16)->minutes();
+    $job->handle($retention);
+    expect($file->fresh())->toBeNull()->and($manual->fresh())->not->toBeNull();
+    Storage::disk($file->disk)->assertMissing($file->file_path);
+    Storage::disk('cache')->assertExists($manual->file_path);
+});
+
 it('permits exact old session stop after applied revision changes', function () {
     $session = (string) Str::uuid();
     $start = [...$this->payload, 'action' => 'm3u_editor_cache_playback', 'session_id' => $session, 'sequence' => 1, 'state' => 'start'];
